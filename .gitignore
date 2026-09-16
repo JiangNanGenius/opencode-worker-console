@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.env
+.env.*
+!.env.example
+auth.json
+*password*
+*.log
+.coverage
+.pytest_cache/
+state/
+work/
+artifacts/
+node_modules/

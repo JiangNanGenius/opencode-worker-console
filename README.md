@@ -1,0 +1,144 @@
+# Worker Desk
+
+A local console for OpenCode sessions and a durable, multi-model worker queue.
+
+Manage task ownership, parent/child tasks, worker profiles, automatic routing, sessions and account usage in one place. Use it with Codex through the included `delegate-opencode` skill, or with any coordinator through the CLI and JSON task specs. The interface currently uses Chinese; the CLI and API use English.
+
+## What it does
+
+- **Tasks:** submit bounded investigation, summaries, writing, coding, tests and review; inspect evidence and cancel safely.
+- **Sessions:** browse across projects, search, create, rename, archive/restore, fork, permanently delete and open the native OpenCode conversation. Forking does not send a prompt.
+- **Models:** add, remove and disable profiles; choose provider/model and optional reasoning variant; configure routing and concurrency. Settings apply only when workers and native sessions are idle.
+- **Usage:** DeepSeek balance and Kimi Coding plan windows, sample age and reset time. Other OpenCode providers can run tasks without a usage adapter.
+- **Workspace coordination:** disjoint shared write scopes, resource locks, or isolated Git worktrees based on the current working tree. Review a patch before applying it.
+- **Agent controls:** guide a running worker, bind sessions to workspaces, perform user-authorized deletion, and optionally clean old owned data when disk space is low.
+- **Error bridge:** model/API errors, tool failures, command exit codes, retry state and connection failures reach the coordinator through `status`, `wait` and `collect`, with credential redaction. Pending questions are included in collected results.
+- **Durability:** persistent tasks, observed session recovery without blindly replaying a prompt, and cancellation confirmation before releasing ownership.
+
+No Node build step, database service or paid framework is required. The runtime uses Python's standard library and vanilla HTML/CSS/JavaScript.
+
+## Requirements
+
+- Python 3.9+ and Git. Existing OpenCode is reused; if missing, the installer automatically installs the pinned official version into user storage (npm first, checksum-verified GitHub release fallback).
+- OpenCode 1.18.30 is the integration-tested version. The cross-project session API is experimental; compatibility with older versions is not promised.
+- macOS or Linux/POSIX. Native Windows is not supported (`fcntl` and POSIX processes are used).
+- Configure your provider in OpenCode first. The application reuses OpenCode's local credentials and does not collect API keys in the browser.
+
+## Install
+
+```sh
+git clone https://github.com/JiangNanGenius/opencode-worker-console.git
+cd opencode-worker-console
+python3 scripts/install.py --model YOUR_PROVIDER/YOUR_MODEL
+~/.local/bin/delegate-opencode console --open
+```
+
+The first command maps the three default profiles to your chosen model. You can then change them in **模型与调度**. To opt into the DeepSeek/Kimi preset instead:
+
+```sh
+python3 scripts/install.py --preset deepseek-kimi
+```
+
+Existing installations retain their model configuration. Updating the checked-out source and running `python3 scripts/install.py` replaces runtime code after an idle-state check. Use `--no-start` for installation without launching services.
+
+The installer prints the local addresses and installs:
+
+| Item | Default location |
+| --- | --- |
+| CLI | `~/.local/bin/delegate-opencode` |
+| Optional Codex skill / runtime | `~/.codex/skills/delegate-opencode` |
+| Configuration | `~/.config/opencode/delegate-pool.json` |
+| Private state, evidence and worktrees | `~/.local/state/delegate-opencode` |
+
+`DELEGATE_CONFIG`, `DELEGATE_STATE` and `DELEGATE_INSTALL` support alternate installations. Services start from the calling application and run in the background. After a reboot, the next `submit` or `console --open` starts them again. There is no automatic login service.
+
+## Delegate a task
+
+```sh
+delegate-opencode submit --directory /absolute/project \
+  --group-title 'Parser maintenance' --profile auto --urgency fast \
+  --title 'Investigate empty input' \
+  'Find the empty-input path and summarize relevant files and tests with line evidence.'
+
+delegate-opencode status
+delegate-opencode collect JOB_ID
+delegate-opencode cancel JOB_ID
+```
+
+Read-only is the default task intent. Writing requires literal relative scopes. Worker Auto Approve is enabled by default; workers can use tools and ordinary shell commands without permission prompts. Supply known checks to guide execution:
+
+```sh
+delegate-opencode submit --directory /absolute/project --mode write \
+  --scope src/parser.py --command 'python3 -m unittest -v' \
+  --acceptance 'Preserve existing behavior except the specified empty-input fix.' \
+  'Implement the reviewed empty-input fix and run the authorized tests.'
+```
+
+Use `--workspace isolated` for changes requiring a separate Git worktree. Review `changes.patch`, then run `integrate JOB_ID` to check applicability and `integrate JOB_ID --apply` to apply the reviewed changes. No commit, push or deployment happens automatically.
+
+## Architecture
+
+```text
+Coordinator / Codex skill / CLI / Web task form
+                    |
+        Durable queue + quota-aware routing
+                    |
+             OpenCode server
+                    |
+       Configurable provider/model profiles
+
+Browser -> loopback console + authenticated gateway
+           tasks | sessions | profiles | account usage
+```
+
+The console bootstraps an HttpOnly SameSite cookie and validates Host/Origin. Server authentication stays in the backend. It binds only to `127.0.0.1`; do not expose it to a network. The OpenCode gateway supports native session navigation and streaming.
+
+## Operational boundaries
+
+- Auto Approve defaults to on for the dedicated Worker service, without changing your interactive OpenCode configuration. Disable it in **模型与调度 → Worker 执行权限** for scoped native edits and exact shell allowlists. Settings apply when execution is idle; owned idle sessions are migrated to the selected policy on server startup.
+- Scope and resource locks are cooperative controls, **not an OS sandbox**. In Auto Approve mode, read-only and writable scopes are instructions checked after execution, not tool permission boundaries. Workers run with your filesystem privileges; use trusted repositories.
+- A worker's completion report still needs coordinator review. Evidence can be incomplete or mistaken.
+- Manual continuations in native OpenCode do not create new queue entries or acquire queue write locks.
+- Account usage is shared and sampled. Balance changes are not exact per-task charges. No automatic recharge is performed.
+- Session management shows up to the latest 500 sessions, including archived sessions. Archived sessions are recoverable. Permanent deletion requires the exact title in the browser, or explicit `session delete ID --yes` in the agent CLI; both refuse active sessions or active descendants. Worker evidence remains in the local task ledger.
+- Startup and process recovery do not promise unattended operation after logout, sleep or machine shutdown.
+
+See [operations](references/operations.md), [security](SECURITY.md), and [contributing](CONTRIBUTING.md).
+
+## Development
+
+```sh
+python3 -m unittest discover -s tests -v
+node --check web/app.js
+node --check web/manage.js
+```
+
+Unit tests use temporary files and mocked provider APIs; they need no credentials and make no paid model requests. CI runs the tests on macOS and Linux. Local live verification uses isolated fixtures; do not point verification at a production repository.
+
+OpenCode API references: [server](https://opencode.ai/docs/server/) and [configuration](https://opencode.ai/docs/config/). DeepSeek and Kimi quota adapters query the official provider endpoints; their responses may change independently of OpenCode.
+
+MIT licensed. Independent community project; not affiliated with OpenCode, OpenAI, DeepSeek or Moonshot.
+
+### Guidance, workspaces and cleanup
+
+```sh
+delegate-opencode steer JOB_ID 'Also check the empty case.' --request-id stable-guidance-id
+delegate-opencode session bind SESSION_ID --directory /absolute/workspace
+delegate-opencode session delete SESSION_ID --yes   # only when the user requested deletion
+delegate-opencode cleanup                          # preview
+delegate-opencode cleanup --apply                  # enabled low-space policy
+```
+
+Guidance reaches a later model-step boundary in the current session without changing its
+permissions. Acceptance and model compliance are distinct. Reusing a guidance request ID
+returns its previous status; unknown delivery is never automatically resent.
+
+Workspace migration changes the native session binding and does not move source files.
+Automatic cleanup is disabled by default for public installations. Enable it in the console
+with an age floor, a recent-task retention count and free-space thresholds. It only touches
+owned runtime data and eligible pool-linked archived sessions; worktrees and final evidence
+are retained. The coordinator can also apply a user-requested cleanup with `--apply --force`.
+
+Existing sessions can switch between worktrees of the same Git project. OpenCode 1.18.30 rejects cross-project migration; create a new session bound to the target project instead.
+
+For a compatible code-only update while sessions are running, use `python3 scripts/install.py --live`. It restarts the queue observer and console but retains the OpenCode process and sessions. Provider/agent configuration changes still require an idle runtime.

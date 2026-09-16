@@ -1,0 +1,6 @@
+interface:
+  display_name: "OpenCode Worker Pool"
+  short_description: "Delegate general-purpose work with quota-aware routing"
+  default_prompt: "Use $delegate-opencode to delegate bounded investigation, writing, or verification tasks while retaining final judgment."
+policy:
+  allow_implicit_invocation: true

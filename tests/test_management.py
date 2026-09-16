@@ -1,0 +1,479 @@
+import json
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+import common
+import management
+
+
+def provider_body():
+    return {
+        'all': [
+            {'id': 'deepseek', 'name': 'DeepSeek', 'source': 'api',
+             'env': ['DEEPSEEK_API_KEY'], 'options': {'apiKey': 'sk-secret-provider', 'baseURL': 'https://evil.example'},
+             'models': {'deepseek-flash': {'id': 'deepseek-flash', 'name': 'Flash', 'limit': {'context': 200000, 'output': 8192},
+                                           'variants': {'high': {'temperature': 0.1, 'apiKey': 'sk-secret-variant'},
+                                                        'low': {'temperature': 0.9}}}}},
+            {'id': 'kimi-for-coding', 'name': 'Kimi', 'env': [], 'options': {'key': 'sk-secret-kimi'},
+             'models': {'k3': {'id': 'k3', 'name': 'K3', 'limit': {}, 'variants': []}}},
+        ],
+        'connected': ['deepseek'],
+        'default': {'deepseek': 'deepseek-flash'},
+    }
+
+
+class ManagementTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.state = self.root / 'state'
+        self.config = self.root / 'config.json'
+        self.write_config(self.base_config())
+        self.patchers = [patch.object(common, 'STATE', self.state), patch.object(common, 'CONFIG', self.config)]
+        for p in self.patchers:
+            p.start()
+        common.init()
+
+    def tearDown(self):
+        for p in reversed(self.patchers):
+            p.stop()
+        self.tmp.cleanup()
+
+    # -- helpers ---------------------------------------------------------
+    def base_config(self):
+        return {'version': 1, 'server_url': 'http://127.0.0.1:1234', 'opencode_binary': '/opt/opencode',
+                'console_url': 'http://127.0.0.1:1235', 'max_parallel': 3, 'max_kimi_parallel': 1,
+                'max_steps': 80, 'kimi_reserve_percent': 20,
+                'profiles': {'fast-code': {'model': 'deepseek/deepseek-flash', 'label': 'Flash', 'variant': 'high'},
+                             'senior-code': {'model': 'kimi-for-coding/kimi-for-coding', 'label': 'Kimi', 'variant': 'high'}}}
+
+    def write_config(self, value):
+        self.config.write_text(json.dumps(value, indent=2))
+
+    def read_config(self):
+        return json.loads(self.config.read_text())
+
+    def valid_body(self):
+        return {'profiles': {'fast-code': {'model': 'deepseek/deepseek-flash', 'label': 'Flash', 'variant': 'high'},
+                             'senior-code': {'model': 'kimi-for-coding/kimi-for-coding', 'label': 'Kimi', 'enabled': True}},
+                'max_parallel': 4, 'max_kimi_parallel': 2, 'max_steps': 100, 'kimi_reserve_percent': 25,
+                'routing': {'fast': 'fast-code', 'background': 'senior-code', 'deep': 'senior-code'},
+                'provider_limits': {'deepseek': 2}}
+
+    def add_task(self, task_id, status, session_id=None, title='Pool task'):
+        t = {'id': task_id, 'title': title, 'status': status, 'created_at': time.time()}
+        if session_id:
+            t['session_id'] = session_id
+        common.write_json(common.task_path(task_id), t)
+        return t
+
+    @staticmethod
+    def dispatcher(routes):
+        def api(path, directory=None, method='GET', data=None, timeout=15):
+            key = (method, path)
+            if key not in routes:
+                raise AssertionError('unexpected api call ' + str(key))
+            value = routes[key]
+            return value(directory, data) if callable(value) else value
+        return api
+
+    def test_auto_approve_boolean_validation(self):
+        body = self.valid_body()
+        for value in (True, False):
+            body['auto_approve'] = value
+            self.assertIs(management._validate_settings(body)['auto_approve'], value)
+        for value in ('false', 0, None):
+            body['auto_approve'] = value
+            with self.assertRaises(ValueError):
+                management._validate_settings(body)
+
+    def test_delete_requires_confirmation_and_preserves_task_evidence(self):
+        sid = 'ses_delete'
+        self.add_task('job-delete', 'completed', sid)
+        calls = []
+        def api(path, directory=None, method='GET', data=None, **kwargs):
+            calls.append((method, path))
+            if method == 'DELETE': return True
+            if path.endswith('/children'): return []
+            if path == '/session/status': return {}
+            if path.startswith('/experimental/session'): return []
+            return {'id': sid, 'title': 'Disposable', 'directory': str(self.root)}
+        with patch.object(common, 'api', side_effect=api):
+            with self.assertRaises(ValueError):
+                management.update_session(sid, {'action': 'delete'})
+            self.assertFalse(any(m == 'DELETE' for m, p in calls))
+            result = management.update_session(sid, {'action': 'delete', 'confirm_session_id': sid, 'confirm_title': 'Disposable'})
+        self.assertTrue(result['deleted'])
+        self.assertTrue(common.task('job-delete')['session_deleted'])
+        self.assertEqual(common.task('job-delete')['status'], 'completed')
+
+    def test_delete_refuses_busy_descendant(self):
+        sid = 'ses_parent'
+        def api(path, directory=None, method='GET', data=None, **kwargs):
+            if method == 'DELETE': self.fail('Must not delete busy tree')
+            if path == '/session/status': return {'ses_child': {'type': 'busy'}}
+            if path == '/session/ses_parent/children': return [{'id': 'ses_child'}]
+            if path.startswith('/experimental/session'): return []
+            return {'id': sid, 'title': 'Parent', 'directory': str(self.root)}
+        with patch.object(common, 'api', side_effect=api), self.assertRaises(ValueError):
+            management.update_session(sid, {'action':'delete','confirm_session_id':sid,'confirm_title':'Parent'})
+
+    def test_cross_project_running_status_prevents_config_apply(self):
+        def api(path, directory=None, **kwargs):
+            if path.startswith('/experimental/session'): return [{'directory': '/other/project'}]
+            return {'ses_other': {'type': 'busy'}} if directory else {}
+        with patch.object(common, 'api', side_effect=api), self.assertRaises(ValueError):
+            management.save_settings(self.valid_body())
+
+    def test_bad_provider_limit_and_stale_revision_never_write(self):
+        before = self.config.read_bytes()
+        for value in [0, -1, True, '2', 99]:
+            body = self.valid_body(); body['provider_limits'] = {'deepseek': value}
+            with self.assertRaises(ValueError): management.save_settings(body)
+        body = self.valid_body(); body['revision'] = 99
+        with self.assertRaises(ValueError): management.save_settings(body)
+        self.assertEqual(before, self.config.read_bytes())
+
+    # -- catalog ---------------------------------------------------------
+    def test_catalog_whitelists_provider_and_model_fields(self):
+        with patch.object(common, 'api', return_value=provider_body()):
+            result = management.catalog()
+        providers = result['providers']
+        self.assertEqual([p['id'] for p in providers], ['deepseek', 'kimi-for-coding'])
+        self.assertEqual(set(providers[0].keys()), {'id', 'name', 'connected', 'models'})
+        self.assertTrue(providers[0]['connected'])
+        self.assertFalse(providers[1]['connected'])
+        model = providers[0]['models'][0]
+        self.assertEqual(set(model.keys()), {'id', 'name', 'limit', 'variants'})
+        self.assertEqual(model['id'], 'deepseek-flash')
+        self.assertEqual(model['name'], 'Flash')
+        self.assertEqual(model['limit'], {'context': 200000})
+        self.assertEqual(model['variants'], ['high', 'low'])
+
+    def test_catalog_never_exposes_credentials_options_or_env(self):
+        with patch.object(common, 'api', return_value=provider_body()):
+            raw = json.dumps(management.catalog(), ensure_ascii=False)
+        for secret in ('sk-secret-provider', 'sk-secret-variant', 'sk-secret-kimi', 'apiKey', 'api_key',
+                       'baseURL', 'options', 'env', 'DEEPSEEK_API_KEY', 'source', 'default', 'authorization'):
+            self.assertNotIn(secret, raw)
+
+    def test_catalog_handles_list_response_and_missing_connected(self):
+        body = [{'id': 'p1', 'name': 'P1', 'models': [{'id': 'm1', 'name': 'M1', 'variants': ['a', 'b']}]}]
+        with patch.object(common, 'api', return_value=body):
+            result = management.catalog()
+        self.assertFalse(result['providers'][0]['connected'])
+        self.assertIsNone(result['providers'][0]['models'][0]['limit']['context'])
+        self.assertEqual(result['providers'][0]['models'][0]['variants'], ['a', 'b'])
+
+    # -- settings --------------------------------------------------------
+    def test_settings_returns_only_editable_fields(self):
+        result = management.settings()
+        self.assertEqual(set(result.keys()), {'profiles', 'max_parallel', 'max_kimi_parallel', 'max_steps',
+                                              'kimi_reserve_percent', 'revision', 'cleanup', 'auto_approve'})
+        self.assertEqual(result['max_parallel'], 3)
+        self.assertEqual(result['profiles']['fast-code'],
+                         {'model': 'deepseek/deepseek-flash', 'label': 'Flash', 'variant': 'high', 'enabled': True})
+        for leaked in ('server_url', 'console_url', 'opencode_binary'):
+            self.assertNotIn(leaked, result)
+
+    def test_save_settings_preserves_other_config_and_sets_revision(self):
+        with patch.object(common, 'api', return_value={}) as api:
+            result = management.save_settings(self.valid_body())
+        self.assertFalse(api.call_args.args[0].startswith('http'))
+        self.assertEqual(api.call_args.args[0], '/session/status')
+        stored = self.read_config()
+        self.assertEqual(stored['server_url'], 'http://127.0.0.1:1234')
+        self.assertEqual(stored['opencode_binary'], '/opt/opencode')
+        self.assertEqual(stored['console_url'], 'http://127.0.0.1:1235')
+        self.assertEqual(stored['max_parallel'], 4)
+        self.assertEqual(stored['routing']['deep'], 'senior-code')
+        self.assertEqual(stored['revision'], 1)
+        self.assertTrue(stored['restart_required'])
+        self.assertTrue(result['restart_required'])
+
+    def test_save_settings_increments_existing_revision(self):
+        config = self.base_config()
+        config['revision'] = 7
+        self.write_config(config)
+        with patch.object(common, 'api', return_value={}):
+            management.save_settings(self.valid_body())
+        self.assertEqual(self.read_config()['revision'], 8)
+
+    def test_save_settings_rejects_invalid_without_writing(self):
+        original = self.config.read_text()
+        cases = []
+        bad = self.valid_body(); del bad['max_steps']; cases.append(('missing field', bad))
+        bad = self.valid_body(); bad['profiles'] = {}; cases.append(('empty profiles', bad))
+        bad = self.valid_body(); bad['profiles']['Bad'] = {'model': 'deepseek/x'}; cases.append(('uppercase id', bad))
+        bad = self.valid_body(); bad['profiles']['../evil'] = {'model': 'deepseek/x'}; cases.append(('path id', bad))
+        bad = self.valid_body(); bad['profiles']['ok'] = {'model': 'https://evil.example/model'}; cases.append(('url model', bad))
+        bad = self.valid_body(); bad['profiles']['ok'] = {'model': 'no-slash'}; cases.append(('bare model', bad))
+        bad = self.valid_body(); bad['max_parallel'] = 0; cases.append(('parallel low', bad))
+        bad = self.valid_body(); bad['max_parallel'] = 17; cases.append(('parallel high', bad))
+        bad = self.valid_body(); bad['max_parallel'] = True; cases.append(('bool parallel', bad))
+        bad = self.valid_body(); bad['max_kimi_parallel'] = 5; cases.append(('kimi over parallel', bad))
+        bad = self.valid_body(); bad['max_steps'] = 201; cases.append(('steps high', bad))
+        bad = self.valid_body(); bad['kimi_reserve_percent'] = 101; cases.append(('reserve high', bad))
+        bad = self.valid_body(); del bad['routing']['deep']; cases.append(('routing incomplete', bad))
+        bad = self.valid_body(); bad['routing']['fast'] = 'ghost'; cases.append(('routing unknown', bad))
+        bad = self.valid_body(); bad['profiles']['senior-code']['enabled'] = False; cases.append(('routing disabled', bad))
+        bad = self.valid_body(); bad['provider_limits'] = ['x']; cases.append(('bad limits', bad))
+        for name, body in cases:
+            with self.subTest(name=name):
+                with patch.object(common, 'api') as api:
+                    with self.assertRaises(ValueError):
+                        management.save_settings(body)
+                    api.assert_not_called()
+                self.assertEqual(self.config.read_text(), original)
+
+    def test_save_settings_rejects_non_object(self):
+        with self.assertRaises(ValueError):
+            management.save_settings('not-a-dict')
+
+    def test_save_settings_refuses_while_pool_busy(self):
+        for status in ('queued', 'running', 'starting', 'uncertain'):
+            with self.subTest(status=status):
+                for path in (self.state / 'tasks').glob('*.json'):
+                    path.unlink()
+                self.add_task('job-' + status, status)
+                original = self.config.read_text()
+                with patch.object(common, 'api', return_value={}):
+                    with self.assertRaises(ValueError):
+                        management.save_settings(self.valid_body())
+                self.assertEqual(self.config.read_text(), original)
+
+    def test_save_settings_refuses_while_sessions_busy(self):
+        original = self.config.read_text()
+        with patch.object(common, 'api', return_value={'ses_1': {'type': 'busy'}}):
+            with self.assertRaises(ValueError):
+                management.save_settings(self.valid_body())
+        self.assertEqual(self.config.read_text(), original)
+
+    def test_save_settings_fails_closed_when_status_unavailable(self):
+        original = self.config.read_text()
+        with patch.object(common, 'api', side_effect=common.HttpFailure(500)):
+            with self.assertRaises(ValueError):
+                management.save_settings(self.valid_body())
+        self.assertEqual(self.config.read_text(), original)
+
+    def test_save_settings_ignores_forbidden_keys(self):
+        body = self.valid_body()
+        body.update({'server_url': 'http://evil.example', 'opencode_binary': '/tmp/evil', 'opencode_key': 'sk-secret'})
+        with patch.object(common, 'api', return_value={}):
+            management.save_settings(body)
+        stored = self.read_config()
+        self.assertEqual(stored['server_url'], 'http://127.0.0.1:1234')
+        self.assertEqual(stored['opencode_binary'], '/opt/opencode')
+        self.assertNotIn('opencode_key', stored)
+
+    # -- sessions --------------------------------------------------------
+    def raw_sessions(self):
+        return [
+            {'id': 'ses_1', 'title': 'Alpha task', 'directory': '/repo/a', 'parentID': None, 'projectID': 'p1',
+             'time': {'created': 1, 'updated': 2}, 'extra': 'must-not-leak'},
+            {'id': 'ses_2', 'title': 'Beta task', 'directory': '/repo/b', 'parentID': 'ses_1', 'projectID': 'p2',
+             'time': {'created': 1, 'updated': 3, 'archived': 1700000000000},
+             'parts': [{'type': 'text', 'text': 'secret prompt'}]},
+        ]
+
+    def test_sessions_maps_fields_filters_and_links_tasks(self):
+        self.add_task('job-1', 'completed', session_id='ses_1')
+        routes = {('GET', '/experimental/session?limit=500&archived=true'): self.raw_sessions(),
+                  ('GET', '/session/status'): {'ses_1': {'type': 'busy'}}}
+        with patch.object(common, 'api', side_effect=self.dispatcher(routes)):
+            result = management.sessions({})
+        self.assertEqual(result['truncated'], False)
+        self.assertEqual(result['projects'], ['/repo/a', '/repo/b'])
+        first = result['sessions'][0]
+        self.assertEqual(set(first.keys()), {'id', 'title', 'directory', 'parentID', 'projectID', 'time', 'status', 'task_id'})
+        self.assertEqual(first['task_id'], 'job-1')
+        self.assertEqual(first['status'], {'type': 'busy'})
+        self.assertNotIn('extra', first)
+        self.assertNotIn('parts', result['sessions'][1])
+
+    def test_sessions_search_directory_and_archived_filters(self):
+        routes = {('GET', '/experimental/session?limit=500&archived=true'): self.raw_sessions(),
+                  ('GET', '/session/status'): {}}
+        with patch.object(common, 'api', side_effect=self.dispatcher(routes)):
+            self.assertEqual([s['id'] for s in management.sessions({'search': 'beta'})['sessions']], ['ses_2'])
+            self.assertEqual([s['id'] for s in management.sessions({'search': 'SES_1'})['sessions']], ['ses_1'])
+            self.assertEqual([s['id'] for s in management.sessions({'directory': '/repo/a'})['sessions']], ['ses_1'])
+            self.assertEqual([s['id'] for s in management.sessions({'directory': '/repo'})['sessions']], ['ses_1', 'ses_2'])
+            self.assertEqual([s['id'] for s in management.sessions({'archived': True})['sessions']], ['ses_2'])
+            self.assertEqual([s['id'] for s in management.sessions({'archived': 'true'})['sessions']], ['ses_2'])
+            self.assertEqual([s['id'] for s in management.sessions({'archived': False})['sessions']], ['ses_1'])
+
+    def test_sessions_truncated_at_limit(self):
+        raw = [{'id': 'ses_' + str(i), 'directory': '/repo', 'time': {}} for i in range(management.SESSION_LIMIT)]
+        routes = {('GET', '/experimental/session?limit=500&archived=true'): raw, ('GET', '/session/status'): {}}
+        with patch.object(common, 'api', side_effect=self.dispatcher(routes)):
+            result = management.sessions({})
+        self.assertTrue(result['truncated'])
+        self.assertEqual(len(result['sessions']), management.SESSION_LIMIT)
+
+    # -- update_session --------------------------------------------------
+    def idle_routes(self, session, patch_response, directory_seen):
+        def patch_call(directory, data):
+            directory_seen.append(directory)
+            return patch_response
+        return {('GET', '/session/ses_1'): session,
+                ('GET', '/session/status'): {'ses_1': {'type': 'idle'}},
+                ('PATCH', '/session/ses_1'): patch_call}
+
+    def test_archive_and_restore_use_native_millisecond_timestamps(self):
+        session = {'id': 'ses_1', 'title': 'T', 'directory': '/repo', 'time': {'created': 1}}
+        calls = []
+
+        def patch_call(directory, data):
+            calls.append((directory, data))
+            return dict(session, time={'created': 1, 'archived': data['time']['archived']})
+
+        routes = {('GET', '/session/ses_1'): session,
+                  ('GET', '/session/status'): {'ses_1': {'type': 'idle'}},
+                  ('PATCH', '/session/ses_1'): patch_call}
+        with patch.object(common, 'api', side_effect=self.dispatcher(routes)):
+            before = int(time.time() * 1000)
+            archived = management.update_session('ses_1', {'action': 'archive'})
+            after = int(time.time() * 1000)
+            restored = management.update_session('ses_1', {'action': 'restore'})
+        self.assertEqual(calls[0][0], '/repo')
+        self.assertTrue(before <= calls[0][1]['time']['archived'] <= after)
+        self.assertEqual(archived['time']['archived'], calls[0][1]['time']['archived'])
+        self.assertEqual(calls[1][1], {'time': {'archived': 0}})
+        self.assertEqual(restored['time']['archived'], 0)
+
+    def test_update_session_ignores_caller_supplied_directory(self):
+        session = {'id': 'ses_1', 'title': 'T', 'directory': '/repo/real', 'time': {}}
+        seen = []
+        routes = self.idle_routes(session, dict(session, time={'archived': 1}), seen)
+        with patch.object(common, 'api', side_effect=self.dispatcher(routes)):
+            management.update_session('ses_1', {'action': 'archive', 'directory': '/etc'})
+        self.assertEqual(seen, ['/repo/real'])
+
+    def test_update_session_refuses_active_pool_owned_session(self):
+        self.add_task('job-1', 'running', session_id='ses_1')
+        session = {'id': 'ses_1', 'title': 'T', 'directory': '/repo', 'time': {}}
+        routes = {('GET', '/session/ses_1'): session, ('GET', '/session/status'): {'ses_1': {'type': 'idle'}}}
+        for action in ('archive', 'fork', 'abort'):
+            with self.subTest(action=action):
+                with patch.object(common, 'api', side_effect=self.dispatcher(routes)):
+                    with self.assertRaises(ValueError):
+                        management.update_session('ses_1', {'action': action})
+
+    def test_update_session_busy_guard_blocks_archive_and_fork_allows_abort(self):
+        session = {'id': 'ses_1', 'title': 'T', 'directory': '/repo', 'time': {}}
+        abort_seen = []
+
+        def abort_call(directory, data):
+            abort_seen.append((directory, data))
+            return dict(session)
+
+        routes = {('GET', '/session/ses_1'): session,
+                  ('GET', '/session/status'): {'ses_1': {'type': 'busy'}},
+                  ('POST', '/session/ses_1/abort'): abort_call}
+        with patch.object(common, 'api', side_effect=self.dispatcher(routes)):
+            for action in ('archive', 'fork'):
+                with self.assertRaises(ValueError):
+                    management.update_session('ses_1', {'action': action})
+            result = management.update_session('ses_1', {'action': 'abort'})
+        self.assertEqual(abort_seen, [('/repo', None)])
+        self.assertEqual(result['id'], 'ses_1')
+
+    def test_rename_syncs_pool_task_title_only_after_upstream_success(self):
+        self.add_task('job-1', 'queued', session_id='ses_1', title='old title')
+        session = {'id': 'ses_1', 'title': 'old title', 'directory': '/repo', 'time': {}}
+        routes = self.idle_routes(session, dict(session, title='new title'), [])
+        with patch.object(common, 'api', side_effect=self.dispatcher(routes)):
+            result = management.update_session('ses_1', {'action': 'rename', 'title': 'new title'})
+        self.assertEqual(result['title'], 'new title')
+        self.assertEqual(common.task('job-1')['title'], 'new title')
+
+    def test_rename_does_not_sync_when_upstream_fails(self):
+        self.add_task('job-1', 'queued', session_id='ses_1', title='old title')
+        session = {'id': 'ses_1', 'title': 'old title', 'directory': '/repo', 'time': {}}
+
+        def failing(directory, data):
+            raise common.HttpFailure(500)
+
+        routes = {('GET', '/session/ses_1'): session,
+                  ('GET', '/session/status'): {'ses_1': {'type': 'idle'}},
+                  ('PATCH', '/session/ses_1'): failing}
+        with patch.object(common, 'api', side_effect=self.dispatcher(routes)):
+            with self.assertRaises(common.HttpFailure):
+                management.update_session('ses_1', {'action': 'rename', 'title': 'new title'})
+        self.assertEqual(common.task('job-1')['title'], 'old title')
+
+    def test_fork_sends_empty_body_and_returns_cleaned_child(self):
+        session = {'id': 'ses_1', 'title': 'T', 'directory': '/repo', 'time': {}}
+        seen = []
+
+        def fork_call(directory, data):
+            seen.append((directory, data))
+            return {'id': 'ses_2', 'title': 'T', 'directory': '/repo', 'parentID': 'ses_1',
+                    'time': {}, 'prompt': 'must-not-be-sent'}
+
+        routes = {('GET', '/session/ses_1'): session,
+                  ('GET', '/session/status'): {'ses_1': {'type': 'idle'}},
+                  ('POST', '/session/ses_1/fork'): fork_call}
+        with patch.object(common, 'api', side_effect=self.dispatcher(routes)):
+            result = management.update_session('ses_1', {'action': 'fork'})
+        self.assertEqual(seen, [('/repo', {})])
+        self.assertEqual(result['id'], 'ses_2')
+        self.assertEqual(result['parentID'], 'ses_1')
+        self.assertNotIn('prompt', result)
+
+    def test_update_session_rejects_bad_identifier_and_action(self):
+        session = {'id': 'ses_1', 'title': 'T', 'directory': '/repo', 'time': {}}
+        routes = {('GET', '/session/ses_1'): session, ('GET', '/session/ses_missing'): {},
+                  ('GET', '/session/status'): {}}
+        with patch.object(common, 'api', side_effect=self.dispatcher(routes)):
+            for sid in ('../etc', '', 'ses/1', 42):
+                with self.assertRaises(ValueError):
+                    management.update_session(sid, {'action': 'abort'})
+            for action in ('delete', None, 'truncate'):
+                with self.assertRaises(ValueError):
+                    management.update_session('ses_1', {'action': action})
+            with self.assertRaises(ValueError):
+                management.update_session('ses_1', 'not-a-dict')
+            with self.assertRaises(ValueError):
+                management.update_session('ses_missing', {'action': 'abort'})
+
+    # -- create_session --------------------------------------------------
+    def test_create_session_posts_title_only_without_prompt(self):
+        directory = self.root / 'project'
+        directory.mkdir()
+        seen = []
+
+        def create_call(directory_param, data):
+            seen.append((directory_param, data))
+            return {'id': 'ses_new', 'title': data['title'], 'directory': directory_param, 'time': {}}
+
+        routes = {('POST', '/session'): create_call, ('GET', '/session/status'): {}}
+        with patch.object(common, 'api', side_effect=self.dispatcher(routes)):
+            result = management.create_session({'directory': str(directory), 'title': '  New session  '})
+        self.assertEqual(seen, [(str(directory), {'title': 'New session'})])
+        self.assertEqual(result['id'], 'ses_new')
+        self.assertEqual(result['title'], 'New session')
+
+    def test_create_session_rejects_bad_directories_and_titles(self):
+        directory = self.root / 'project'
+        directory.mkdir()
+        with patch.object(common, 'api') as api:
+            for body in ({'directory': 'relative/path', 'title': 'x'},
+                         {'directory': str(self.root / 'missing'), 'title': 'x'},
+                         {'directory': str(directory), 'title': '   '},
+                         {'directory': '', 'title': 'x'},
+                         'not-a-dict'):
+                with self.subTest(body=body):
+                    with self.assertRaises(ValueError):
+                        management.create_session(body)
+            api.assert_not_called()
+
+
+if __name__ == '__main__':
+    unittest.main()

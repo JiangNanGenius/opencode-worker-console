@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light"><title>Worker Desk · OpenCode Console</title>
+  <link rel="stylesheet" href="/console-assets/style.css">
+  <script src="/console-assets/app.js" defer></script>
+  <script src="/console-assets/manage.js" defer></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/console" aria-label="任务控制台首页"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M5 5h7v7H5zM16 5h7v7h-7zM5 16h7v7H5zM16 16h7v7h-7z"/></svg><span>Worker Desk<small>LOCAL × OPENCODE</small></span></a>
+    <nav class="primary-nav" aria-label="工作台导航"><button data-view="tasks" class="selected">任务调度</button><button data-view="sessions">OpenCode 会话</button><button data-view="models">模型与调度</button></nav><div class="nav-heading">任务归属</div>
+    <nav id="groups" aria-label="按主任务筛选"><div class="sidebar-loading">正在读取任务…</div></nav>
+    <div class="sidebar-bottom"><div class="model-heading">WORKER DESK</div><p>调查、总结、编写与验证<br>本地运行 · 多模型协作</p></div>
+  </aside>
+  <main>
+    <header class="page-header"><div><h1 id="page-title">任务调度</h1><p id="page-description">看清任务归属、执行进展与可用额度。</p></div><div class="connection"><span id="health" class="health"><i></i>正在连接</span><span id="updated">—</span></div></header>
+    <div id="error" role="alert" hidden></div>
+    <div id="view-tasks" class="view-panel">
+    <section class="quota-section" aria-label="账户余额与计划额度">
+      <div class="quota-block"><div class="quota-label"><span><i class="model-dot fast"></i>DeepSeek</span><span id="ds-state" class="muted">读取中</span></div><div class="balance"><span id="ds-balance">—</span><small>账户可用余额</small></div><div id="ds-time" class="quota-foot">等待最近一次采样</div></div>
+      <div class="quota-block kimi-block"><div class="quota-label"><span><i class="model-dot senior"></i>Kimi 会员计划</span><button id="refresh-quota" class="text-button">刷新额度 <span aria-hidden="true">↻</span></button></div><div id="kimi-windows" class="windows"><p class="muted">正在读取计划用量…</p></div><div id="kimi-time" class="quota-foot">K2.8 与 K3 共用此额度池</div></div>
+    </section>
+    <section class="tasks-section" aria-labelledby="tasks-heading">
+      <div class="section-header"><div><h2 id="tasks-heading">全部任务</h2><span id="counts" class="muted"></span></div><label class="search"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 4 4"/></svg><input id="search" type="search" placeholder="搜索任务或模型" aria-label="搜索任务或模型"></label></div>
+      <div class="toolbar"><button id="new-task" class="primary-button">新建任务</button><div id="filters" role="group" aria-label="任务状态筛选"><button data-filter="all" class="selected" aria-pressed="true">全部</button><button data-filter="active" aria-pressed="false">执行中</button><button data-filter="attention" aria-pressed="false">待处理</button><button data-filter="completed" aria-pressed="false">已完成</button></div><span class="table-hint">点击任务名称，在 OpenCode 中打开 <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3H3v10h10v-3M9 3h4v4M7 9l6-6"/></svg></span></div>
+      <div class="table-wrap"><table><thead><tr><th scope="col">任务 / 所属主任务</th><th scope="col">Worker</th><th scope="col">状态</th><th scope="col">用时</th><th scope="col"><span class="sr-only">详情</span></th></tr></thead><tbody id="task-rows"><tr><td colspan="5" class="empty">正在加载任务…</td></tr></tbody></table></div>
+      <footer class="table-footer"><span id="visible-count">—</span><span>自动更新 · 完成状态仍需主 Agent 验收</span></footer>
+    </section>
+    <section id="detail" class="detail" aria-labelledby="detail-title" hidden><div class="detail-heading"><h2 id="detail-title">任务详情</h2><button id="close-detail" class="text-button">收起详情</button></div><div id="detail-body"></div></section>
+    </div>
+    <section id="view-sessions" class="view-panel" hidden>
+      <div class="section-header"><div><h2>会话库</h2><span id="session-count" class="muted"></span></div><button id="add-workspace" class="secondary-button">添加工作区</button><button id="new-session" class="primary-button">新建会话</button></div>
+      <div class="session-filters"><label class="search"><input id="session-search" type="search" aria-label="搜索会话" placeholder="搜索标题或会话 ID"></label><select id="session-project" aria-label="筛选项目"><option value="">所有项目</option></select><label class="check-label"><input id="session-archived" type="checkbox">已归档</label><button id="refresh-sessions" class="secondary-button">刷新会话</button></div>
+      <div id="session-list" class="session-list"></div><p class="muted">归档可随时恢复。运行中的委派任务请回到任务调度中停止。</p>
+    </section>
+    <section id="view-models" class="view-panel" hidden>
+      <div class="section-header"><div><h2>模型 Profiles</h2><span class="muted">按任务需要选择模型，职能不受档位限制</span></div><button id="add-profile" class="secondary-button">添加 Profile</button></div>
+      <p class="settings-note">从 OpenCode 已配置的服务商选择模型。连接新服务商请在 OpenCode 中操作，密钥由 OpenCode 保管。保存会重启空闲的 Worker 服务；有任务等待或运行时不会应用更改。</p>
+      <datalist id="workspace-options"></datalist><datalist id="model-options"></datalist><div id="profile-list"></div>
+      <div class="settings-card"><h3>自动调度</h3><div class="form-grid"><label>快速任务<select id="route-fast"></select></label><label>后台任务<select id="route-background"></select></label><label>深度任务<select id="route-deep"></select></label><label>最大并发<input id="max-parallel" type="number" min="1" max="16"></label><label>Kimi 最大并发<input id="max-kimi" type="number" min="1" max="16"></label><label>每任务最多步骤<input id="max-steps" type="number" min="1" max="200"></label><label>Kimi 深度任务预留 %<input id="kimi-reserve" type="number" min="0" max="100"></label></div></div>
+      <div class="settings-card"><h3>Worker 执行权限</h3><label class="check-label"><input id="auto-approve" type="checkbox" checked>Auto Approve · 自动批准工具调用</label><p class="muted">默认开启，Worker 可自主使用工具完成任务，无需逐次确认。任务范围由指令约束并在完成后检查；关闭后使用文件范围与命令白名单。仅影响此 Worker 服务。</p></div>
+      <div class="settings-card"><h3>低磁盘空间自动清理</h3><label class="check-label"><input id="cleanup-enabled" type="checkbox">允许按保留规则自动清理</label><p class="muted">只处理本工具的过期运行产物与关联的已归档会话。保留工作树、补丁、报告及最近任务。</p><div class="form-grid"><label>触发阈值 GB<input id="cleanup-min" type="number" min="1" max="1000"></label><label>目标剩余空间 GB<input id="cleanup-target" type="number" min="1" max="2000"></label><label>至少保留天数<input id="cleanup-age" type="number" min="1" max="3650"></label><label>最近任务保留数<input id="cleanup-keep" type="number" min="1" max="10000"></label></div><div class="settings-actions"><button id="cleanup-preview" class="secondary-button">查看清理计划</button><button id="cleanup-run" class="secondary-button">按规则检查并清理</button></div><p id="cleanup-message" role="status" class="muted"></p></div>
+      <div class="settings-actions"><button id="save-settings" class="primary-button">保存并应用</button><button id="reload-settings" class="secondary-button">重新读取</button><span id="settings-message" role="status" class="muted"></span></div>
+      <div class="settings-card"><h3>服务商与可用模型</h3><a class="detail-link" href="/" target="_blank" rel="noopener">打开 OpenCode 管理服务商 ↗</a><div id="provider-list"></div><p class="muted">余额适配目前支持 DeepSeek 和 Kimi；其他服务商可以调度，额度显示为未接入。</p></div>
+    </section>
+    <dialog id="action-dialog"><form id="action-form"><div class="detail-heading"><h2 id="action-title"></h2><button type="button" id="close-action" class="text-button">关闭</button></div><div id="action-fields"></div><p id="action-error" role="alert"></p><div class="dialog-actions"><button type="button" id="cancel-action" class="secondary-button">取消</button><button type="submit" id="confirm-action" class="primary-button">确认</button></div></form></dialog>
+    <footer class="page-footer"><span>本机运行 · API Key 仅由本地服务读取</span><span id="pool-limit">OpenCode Worker Pool</span></footer>
+  </main>
+</body>
+</html>
