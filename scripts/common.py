@@ -21,7 +21,8 @@ TERMINAL = {'completed', 'failed', 'cancelled', 'timed_out', 'needs_attention'}
 
 
 def init():
-    for p in [STATE, STATE / 'tasks', STATE / 'artifacts', STATE / 'logs', STATE / 'worktrees']:
+    for p in [STATE, STATE / 'tasks', STATE / 'artifacts', STATE / 'logs', STATE / 'worktrees',
+              STATE / 'credentials']:
         p.mkdir(parents=True, exist_ok=True, mode=0o700)
         p.chmod(0o700)
 
@@ -176,27 +177,94 @@ def public_task(t):
     return {k: t[k] for k in keys if k in t}
 
 
+def secret_representations(value):
+    """Literal and common reversible encodings of a secret for shared redaction.
+
+    Covers the raw value, URL percent-encoding, JSON-escaped content, standard and
+    URL-safe Base64 (padded and unpadded) and, when the value already has the
+    ``user:password`` shape, its Base64 HTTP Basic credential form. Used for both
+    known local OpenCode credentials and injected credential-reference values so
+    the redaction logic is identical everywhere. This is exposure reduction, not a
+    sandbox and not a guarantee that arbitrary text secrets are detected.
+    """
+    if not isinstance(value, str) or not value:
+        return []
+    reps = {value}
+    try:
+        reps.add(urllib.parse.quote(value, safe=''))
+        reps.add(urllib.parse.quote_plus(value, safe=''))
+    except Exception:
+        pass
+    for ensure_ascii in (False, True):
+        try:
+            reps.add(json.dumps(value, ensure_ascii=ensure_ascii)[1:-1])
+        except Exception:
+            pass
+    try:
+        data = value.encode('utf-8')
+    except Exception:
+        data = None
+    if data:
+        for encoded in (base64.b64encode(data), base64.urlsafe_b64encode(data)):
+            text = encoded.decode('ascii')
+            reps.add(text)
+            reps.add(text.rstrip('='))
+        if b':' in data:
+            reps.add(base64.b64encode(data).decode('ascii'))
+    return sorted((r for r in reps if r), key=len, reverse=True)
+
+
 def redact(value):
     auth_path = Path(os.environ.get('XDG_DATA_HOME', str(Path.home() / '.local/share'))) / 'opencode/auth.json'
-    credentials = []
+    secrets = set()
     for auth in read_json(auth_path, {}).values():
         if isinstance(auth, dict):
-            credentials.extend(v for k, v in auth.items() if k in
-                               ('key', 'access', 'refresh', 'access_token', 'refresh_token')
-                               and isinstance(v, str) and len(v) >= 8)
+            for k, v in auth.items():
+                if k in ('key', 'access', 'refresh', 'access_token', 'refresh_token') and \
+                        isinstance(v, str) and len(v) >= 8:
+                    secrets.update(secret_representations(v))
     password = STATE / 'server-password'
     if password.is_file():
-        credentials.append(password.read_text().strip())
-    credentials = sorted({c for c in credentials if c}, key=len, reverse=True)
+        # A known local protection must fail closed: if the owner-only password
+        # cannot be read, surface the error instead of silently skipping redaction.
+        server_password = password.read_text().strip()
+        if server_password:
+            secrets.update(secret_representations(server_password))
+            # HTTP Basic has a user component the raw secret cannot express; the local
+            # server always authenticates as `opencode`. Add that exact blob so a
+            # captured Authorization header is redacted without exposing the password.
+            try:
+                secrets.add(base64.b64encode(('opencode:' + server_password).encode()).decode())
+            except Exception:
+                pass
+    # Registered local references are resolved lazily so this module stays importable
+    # without them and no circular import is created. Metadata-only, owner-only reads.
+    try:
+        import credentials as credential_refs
+        for registered in credential_refs.redaction_values():
+            secrets.update(secret_representations(registered))
+    except Exception:
+        pass
+    secrets = sorted(secrets, key=len, reverse=True)
     sensitive = {'authorization', 'api_key', 'apikey', 'access_token', 'refresh_token',
                  'password', 'private_key', 'cookie', 'set-cookie'}
     def clean(item):
         if isinstance(item, dict):
-            return {k: '<redacted>' if str(k).lower() in sensitive else clean(v) for k, v in item.items()}
+            result = {}
+            for k, v in item.items():
+                if isinstance(k, str):
+                    key = clean(k)
+                    if k.lower() in sensitive:
+                        result[key] = '<redacted>'
+                        continue
+                else:
+                    key = k
+                result[key] = clean(v)
+            return result
         if isinstance(item, (list, tuple)):
             return [clean(v) for v in item]
         if isinstance(item, str):
-            for secret in credentials:
+            for secret in secrets:
                 item = item.replace(secret, '<redacted>')
             item = re.sub(r'\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})', '<redacted>', item)
             item = re.sub(r'-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z]+ )?PRIVATE KEY-----', '<redacted private key>', item)

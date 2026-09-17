@@ -6,6 +6,7 @@ Manage task ownership, parent/child tasks, worker profiles, automatic routing, s
 
 ## What it does
 
+- **Console access:** username/password sign-in, expiring sessions and sign-out protect both the dashboard and native OpenCode gateway. Optional LAN binding and explicit reverse-proxy origins are configured locally.
 - **Tasks:** delegate coherent bounded outcomes to general-purpose agents, including investigation, implementation, operations and verification. These examples are not a capability allowlist; select work by task fit, available tools and the user's authorization. Inspect evidence and cancel safely.
 - **Sessions:** browse across projects, search, create, rename, archive/restore, fork, permanently delete and open the native OpenCode conversation. Forking does not send a prompt.
 - **Models:** add, remove and disable profiles; choose provider/model and optional reasoning variant; configure routing and concurrency. Settings apply only when workers and native sessions are idle.
@@ -15,6 +16,7 @@ Manage task ownership, parent/child tasks, worker profiles, automatic routing, s
 - **Workspace coordination:** disjoint shared write scopes, resource locks, or isolated Git worktrees based on the current working tree. Review a patch before applying it.
 - **Agent controls:** guide a running worker, bind sessions to workspaces, perform user-authorized deletion, and optionally clean old owned data when disk space is low.
 - **On-demand transcripts:** inspect a worker task or native session with messages, tool inputs, outputs and errors; page through history or explicitly export the full conversation. Regular reports stay concise.
+- **Credential references:** provider authentication stays with OpenCode and the bridge server password stays local. For an extra secret, register a metadata-only file/env reference and run a command with values injected through the child environment and captured output redacted before the model sees it. Exposure reduction, not a sandbox.
 - **Error bridge:** model/API errors, tool failures, command exit codes, retry state and connection failures reach the coordinator through `status`, `wait` and `collect`, with credential redaction. Pending questions are included in collected results.
 - **Billing recovery:** confirmed model billing errors block further provider dispatch despite a cached positive balance. The coordinator receives recovery guidance and candidate profiles, and chooses what happens next. Quota failures never silently switch profiles or replay dispatched work; replenishment is checked through fresh account telemetry.
 - **Durability:** persistent tasks, observed session recovery without blindly replaying a prompt, and cancellation confirmation before releasing ownership.
@@ -91,11 +93,11 @@ Coordinator / Codex skill / CLI / Web task form
                     |
        Configurable provider/model profiles
 
-Browser -> loopback console + authenticated gateway
+Browser -> password-protected console + authenticated gateway
            tasks | sessions | profiles | account usage
 ```
 
-The console bootstraps an HttpOnly SameSite cookie and validates Host/Origin. Server authentication stays in the backend. It binds only to `127.0.0.1`; do not expose it to a network. The OpenCode gateway supports native session navigation and streaming.
+The console requires username/password sign-in and validates allowed Host/Origin values. The public default is `admin` / `admin` on first initialization; replace it before enabling network access. Optional LAN listening and HTTPS reverse-proxy access protect the dashboard and native session gateway with the same login. OpenCode itself remains on loopback; its authentication is supplied only by the backend. Native gateway bodies, process logs and arbitrary tool output are not universally redacted. See [accounts and remote access](references/remote-access.md) for password setup, session behavior and proxy configuration.
 
 ## Operational boundaries
 
@@ -116,6 +118,7 @@ python3 -m unittest discover -s tests -v
 node --check web/i18n.js
 node --check web/app.js
 node --check web/manage.js
+node --check web/login.js
 ```
 
 Console strings live in `web/i18n.js`; interface text is tagged with `data-i18n` attributes or looked up through the `tr()` helper. Adding a locale means adding one entry to the `MESSAGES` table.
@@ -173,3 +176,34 @@ The parent directory must already exist. Do not commit conversation exports.
 than the live session and is unavailable if that optional raw artifact was cleaned up.
 Native deletion and connection failure never silently substitute a saved snapshot.
 `collect --full` still means the full *result report*; use `transcript --full` for messages.
+
+### Credential references
+
+Keep three credential paths separate: **provider auth is owned by OpenCode**; the
+**bridge server password is local and generated**; **deployment/app credentials** should
+use an existing authenticated login or tool. Only when no such tool exists, add a local
+reference. The model never needs the raw value.
+
+```sh
+# The owner-only file already exists, provisioned by your deployment tooling outside Git.
+delegate-opencode credential register deploy --file /private/example/deploy-token
+delegate-opencode credential list
+delegate-opencode credential run --use DEPLOY_TOKEN=deploy --timeout 60 -- \
+  /usr/local/bin/my-deploy-tool --environment staging
+
+# Or an existing environment variable name already exported by your login tooling:
+delegate-opencode credential register deploy-env --env EXAMPLE_DEPLOY_TOKEN
+delegate-opencode credential remove deploy
+```
+
+Values are injected only through the child's environment, never into argv; supplied
+arguments already containing a value or a recognized encoding are rejected. Captured
+stdout/stderr is redacted before it reaches the model, and timeout/output-limit
+termination kills the child process group and suppresses the buffers. This reduces
+accidental exposure for normal authorized workflows; it is not an OS sandbox and does
+not make arbitrary text secrets detectable. Never put secret values in chat, prompts,
+steer text, command substitution or command flags: bridge redaction is late and cannot
+erase what native OpenCode history or a model already saw. Removing a reference or
+rotating a value does not rewrite historic artifacts. Provider keys and the server
+password are deliberately transported to OpenCode, not kept out of native gateway or
+process-log content. See [references/credentials.md](references/credentials.md).

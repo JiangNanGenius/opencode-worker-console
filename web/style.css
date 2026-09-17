@@ -7,3 +7,25 @@
 
 .danger-text{color:#a33d36}.danger-text:hover{color:#7a221c}
 .language-picker{display:inline-flex;align-items:center}.language-select{font:inherit;font-size:11px;color:var(--muted);background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:3px 5px;max-width:140px;cursor:pointer}.language-select:hover{color:var(--ink)}@media(max-width:760px){.page-header{flex-wrap:wrap}.page-header>div:first-child{flex:1 0 100%}.connection{width:100%;padding-top:0;flex-direction:row;align-items:center;justify-content:flex-end;gap:12px;flex-wrap:wrap}.section-header>div{flex:1 0 100%;width:auto}.language-select{max-width:118px}}
+:root{color-scheme:light}
+.account-controls{display:flex;align-items:center;gap:12px;max-width:100%}
+#account-name{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.login-page{min-height:100vh;min-height:100svh;display:flex;flex-direction:column;background:var(--surface)}
+.login-header{display:flex;align-items:center;justify-content:space-between;gap:20px;width:100%;max-width:1120px;margin:0 auto;padding:30px 40px}
+.login-header .brand svg{stroke:var(--accent)}
+.login-page .login-main{flex:1;width:100%;max-width:444px;margin:0 auto;padding:clamp(40px,10vh,110px) 24px 48px}
+.login-main h1{font-size:30px;line-height:1.25;letter-spacing:-.7px;text-wrap:balance}
+.login-intro{color:var(--muted);font-size:14px;line-height:1.7;margin:12px 0 34px}
+#login-form{display:flex;flex-direction:column;gap:10px}
+#login-form label{font-size:13px;font-weight:600;line-height:1.5}
+#login-form input{width:100%;min-height:46px;border:1px solid #bfc8cf;border-radius:7px;background:var(--surface);color:var(--ink);padding:11px 13px;caret-color:var(--accent);font-size:16px}
+#login-username{margin-bottom:14px}
+.password-field{position:relative;display:flex;align-items:center}
+#login-password{padding-right:78px}
+#toggle-password{position:absolute;right:6px;min-height:36px;padding:6px 10px;border:0;border-radius:4px;background:transparent;color:var(--accent);font-size:12px;font-weight:600}
+#toggle-password:hover{background:#edf5f2}
+#login-submit{margin-top:16px;min-height:46px;font-size:14px;border-radius:7px}
+#login-error{margin:4px 0 0;color:#a32c2c;font-size:13px;line-height:1.65}
+.login-help{margin:24px 0 0;color:var(--muted);font-size:12px;line-height:1.8}
+.login-footer{display:flex;justify-content:space-between;gap:16px;width:100%;max-width:1120px;margin:0 auto;padding:24px 40px;color:var(--muted);font-size:11px;line-height:1.6}
+@media(max-width:540px){.login-header{padding:24px}.login-header .brand{font-size:17px}.login-page .login-main{padding-top:40px}.login-main h1{font-size:27px}.login-footer{padding:24px;flex-wrap:wrap}.account-controls{gap:8px}#account-name{max-width:110px}}

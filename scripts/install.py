@@ -143,6 +143,29 @@ def validate_urls(c):
             fail('server_url and console_url must be distinct loopback addresses')
 
 
+def ensure_network_config(c):
+    """Default and validate console bind/origins, preserving any explicit values.
+
+    server_url and console_url stay pinned to loopback; only console_bind may be
+    widened for explicit LAN use, and public origins must be explicitly listed.
+    """
+    import console_auth
+    c.setdefault('console_bind', '127.0.0.1')
+    c.setdefault('console_trusted_proxies', [])
+    origins = c.get('console_allowed_origins')
+    if origins is None:
+        c['console_allowed_origins'] = [c['console_url']]
+    elif not isinstance(origins, list) or not origins:
+        fail('console_allowed_origins must be a non-empty list of origins')
+    try:
+        console_auth.validate_bind(c['console_bind'])
+        for origin in c['console_allowed_origins']:
+            console_auth.validate_origin(origin)
+        console_auth.trusted_proxy_networks(c)
+    except ValueError as error:
+        fail(str(error))
+
+
 def default_profiles(model=None, preset=None):
     if preset:
         return {name: dict(spec) for name, spec in PRESETS[preset].items()}
@@ -199,6 +222,7 @@ def load_or_build_config(args, opencode):
     # provider_limits) are never written for new installs and are left inert
     # on disk for existing configs; max_parallel_per_owner is the only cap.
     validate_urls(c)
+    ensure_network_config(c)
     CONFIG.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, temp = tempfile.mkstemp(dir=str(CONFIG.parent), prefix='.pool-config-')
     try:
@@ -300,6 +324,10 @@ def main(argv=None):
     (STATE / 'logs').mkdir(exist_ok=True, mode=0o700)
     c, fresh = load_or_build_config(args, opencode)
     ensure_password()
+    # Fresh installations get the documented admin/admin console login once.
+    # Existing credentials are never reset by an install or upgrade.
+    import console_auth
+    console_auth.ensure_default_account(STATE)
     backup_existing()
     if args.live:
         import service

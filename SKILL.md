@@ -9,6 +9,10 @@ Use this installed skill's `scripts/delegate.py` with Python 3, or
 `~/.local/bin/delegate-opencode`. Run `service start` before `doctor` if services are unavailable. Missing OpenCode is installed automatically from the official pinned npm package (or a checksum-verified official release when npm is unavailable). Existing credentials and configuration are preserved. Use `quota` when resource
 availability matters. Runtime is a local authenticated service; tasks persist across turns.
 `console --open` starts services as needed and opens the local task/usage dashboard.
+The web console requires its own administrator login; CLI delegation does not use that
+browser session. For account provisioning, LAN access or an HTTPS reverse proxy, read
+[references/remote-access.md](references/remote-access.md). Keep login passwords out of
+task prompts and command arguments; use the local helper's hidden prompt or stdin.
 
 ## Decide and delegate
 
@@ -207,7 +211,10 @@ routing is desired.
   wait for confirmed cancellation. Never submit a duplicate merely because a request timed out.
 
 Read [references/operations.md](references/operations.md) for CLI examples, quota behavior,
-service maintenance and task artifact semantics.
+service maintenance and task artifact semantics. For extra secrets that are not already held
+by an authenticated tool, read [references/credentials.md](references/credentials.md): register
+metadata-only file/env references and run a command with `credential run`, which injects values
+through the child environment and redacts output. Never pass a secret value itself.
 
 ## Guide and manage sessions
 

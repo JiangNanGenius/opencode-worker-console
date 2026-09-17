@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title data-i18n="auth.pageTitle">Sign in · Worker Desk</title>
+  <link rel="stylesheet" href="/console-assets/style.css">
+  <script src="/console-assets/i18n.js" defer></script>
+  <script src="/console-assets/login.js" defer></script>
+</head>
+<body class="login-page">
+  <header class="login-header">
+    <a class="brand" href="/console-login" aria-label="Worker Desk"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M5 5h7v7H5zM16 5h7v7h-7zM5 16h7v7H5zM16 16h7v7h-7z"/></svg><span>Worker Desk</span></a>
+    <label class="language-picker"><span class="sr-only" data-i18n="lang.label">Language</span><select class="language-select" data-language-select data-i18n-aria-label="lang.label"></select></label>
+  </header>
+  <main class="login-main">
+    <h1 data-i18n="auth.heading">Sign in to your workspace</h1>
+    <p class="login-intro" data-i18n="auth.intro">Manage your tasks, models and OpenCode sessions.</p>
+    <form id="login-form">
+      <label for="login-username" data-i18n="auth.username">Username</label>
+      <input id="login-username" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="64" required autofocus>
+      <label for="login-password" data-i18n="auth.password">Password</label>
+      <div class="password-field">
+        <input id="login-password" name="password" type="password" autocomplete="current-password" maxlength="1024" required>
+        <button id="toggle-password" type="button" aria-controls="login-password" aria-pressed="false" data-i18n="auth.show">Show</button>
+      </div>
+      <p id="login-error" role="alert" hidden></p>
+      <button id="login-submit" class="primary-button" type="submit" data-i18n="auth.signIn">Sign in</button>
+    </form>
+    <p class="login-help" data-i18n="auth.help">Use the account configured by your workspace administrator.</p>
+    <noscript>JavaScript is required to sign in.</noscript>
+  </main>
+  <footer class="login-footer"><span>Worker Desk</span><span data-i18n="auth.footer">Your agents, one workspace.</span></footer>
+</body>
+</html>

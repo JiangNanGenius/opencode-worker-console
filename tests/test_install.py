@@ -11,6 +11,7 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+import console_auth
 import install
 
 
@@ -151,6 +152,50 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(c['max_parallel'], 2)
         self.assertEqual(c['max_parallel_per_owner'], 4)
         self.assertEqual(c['profiles'], existing['profiles'])
+
+    def test_fresh_install_sets_console_network_defaults_and_admin_login(self):
+        self.run_install('--model', 'acme/worker')
+        c = json.loads(self.config.read_text())
+        self.assertEqual(c['console_bind'], '127.0.0.1')
+        self.assertEqual(c['console_allowed_origins'], [c['console_url']])
+        self.assertEqual(c['console_trusted_proxies'], [])
+        self.assertTrue(c['console_url'].startswith('http://127.0.0.1:'))
+        account = self.state / 'console-auth' / 'account.json'
+        self.assertTrue(account.exists())
+        self.assertEqual(stat.S_IMODE(account.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(account.parent.stat().st_mode), 0o700)
+        self.assertTrue(console_auth.verify_credentials('admin', 'admin', self.state))
+        # A later install must not reset the provisioned credentials.
+        first = account.read_bytes()
+        self.run_install()
+        self.assertEqual(account.read_bytes(), first)
+
+    def test_existing_console_network_config_is_preserved(self):
+        existing = {'version': 1, 'server_url': 'http://127.0.0.1:41234',
+                    'console_url': 'http://127.0.0.1:41235', 'opencode_binary': '/old/opencode',
+                    'console_bind': '0.0.0.0', 'console_allowed_origins': ['https://desk.example.test'],
+                    'console_trusted_proxies': ['127.0.0.1', '10.0.0.0/8'],
+                    'profiles': {'fast-code': {'model': 'acme/one', 'label': 'Mine'}}}
+        self.config.parent.mkdir(parents=True)
+        self.config.write_text(json.dumps(existing))
+        self.run_install()
+        c = json.loads(self.config.read_text())
+        self.assertEqual(c['console_bind'], '0.0.0.0')
+        self.assertEqual(c['console_allowed_origins'], ['https://desk.example.test'])
+        self.assertEqual(c['console_trusted_proxies'], ['127.0.0.1', '10.0.0.0/8'])
+        # server_url and console_url remain pinned to loopback.
+        self.assertTrue(c['server_url'].startswith('http://127.0.0.1:'))
+        self.assertTrue(c['console_url'].startswith('http://127.0.0.1:'))
+
+    def test_invalid_console_origin_refuses_install(self):
+        existing = {'version': 1, 'server_url': 'http://127.0.0.1:41234',
+                    'console_url': 'http://127.0.0.1:41235', 'opencode_binary': '/old/opencode',
+                    'console_allowed_origins': ['https://*.example.test'],
+                    'profiles': {'fast-code': {'model': 'acme/one'}}}
+        self.config.parent.mkdir(parents=True)
+        self.config.write_text(json.dumps(existing))
+        with self.assertRaises(SystemExit):
+            install.main([])
 
     def test_active_task_refuses_update(self):
         tasks = self.state / 'tasks'

@@ -1,3 +1,4 @@
+import http.client
 import importlib
 import json
 import os
@@ -488,66 +489,84 @@ class PoolTests(unittest.TestCase):
         attention = delegate.wait_result({'id': 'job-test', 'status': 'needs_attention'}, 2)
         self.assertEqual(attention['next_action'], 'collect_and_inspect_errors')
 
-    def test_console_local_auth_and_cross_origin_guards(self):
+    def console_server(self):
+        import console_auth
         server = ThreadingHTTPServer(('127.0.0.1', 0), console_server.Handler)
         server.daemon_threads = True
-        server.cookie = 'test-local-capability'
-        url = 'http://127.0.0.1:' + str(server.server_port)
-        self.c['console_url'] = url
+        self.c['console_url'] = 'http://127.0.0.1:' + str(server.server_port)
         self.config.write_text(json.dumps(self.c))
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
+        server.cookie_name = 'delegate_console_session_' + str(server.server_port)
+        server.allowed_origins = console_auth.origin_tuples(self.c)
+        server.auth_root = self.state
+        console_auth.set_user('admin', 'synthetic-pass', self.state)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server
+
+    def console_call(self, server, method, path, body=None, headers=None):
+        connection = http.client.HTTPConnection('127.0.0.1', server.server_port, timeout=5)
+        request_headers = dict(headers or {})
+        payload = None
+        if body is not None:
+            payload = json.dumps(body).encode()
+            request_headers.setdefault('Content-Type', 'application/json')
+        connection.request(method, path, body=payload, headers=request_headers)
+        response = connection.getresponse()
+        data = response.read()
+        result = (response.status, {k.lower(): v for k, v in response.getheaders()}, data)
+        connection.close()
+        return result
+
+    def test_console_local_auth_and_cross_origin_guards(self):
+        server = self.console_server()
         try:
-            with urllib.request.urlopen(url + '/console') as r:
-                cookie = r.headers.get('Set-Cookie').split(';')[0]
-                self.assertIn(b'Worker Desk', r.read())
-                self.assertIn('HttpOnly', r.headers.get('Set-Cookie'))
-            for path, headers, code in [
-                ('/console-api/state', {}, 401),
-                ('/console', {'Host': 'attacker.example'}, 403),
-                ('/console', {'Origin': 'https://attacker.example'}, 403),
-                ('/console', {'Sec-Fetch-Site': 'cross-site'}, 403),
+            status, headers, _ = self.console_call(server, 'GET', '/console', headers={'Accept': 'text/html'})
+            self.assertEqual(status, 302)
+            self.assertEqual(headers['location'], '/console-login')
+            login_body = {'username': 'admin', 'password': 'synthetic-pass'}
+            for method, path, extra, code in [
+                ('GET', '/console-api/state', {}, 401),
+                ('GET', '/console', {'Host': 'attacker.example'}, 403),
+                ('GET', '/console', {'Origin': 'https://attacker.example'}, 403),
+                ('GET', '/console', {'Sec-Fetch-Site': 'cross-site'}, 403),
+                ('POST', '/console-api/auth/login', {'Sec-Fetch-Site': 'cross-site'}, 403),
             ]:
-                with self.assertRaises(urllib.error.HTTPError) as error:
-                    urllib.request.urlopen(urllib.request.Request(url + path, headers=headers))
-                self.assertEqual(error.exception.code, code)
+                body = login_body if method == 'POST' else None
+                self.assertEqual(self.console_call(server, method, path, body=body, headers=extra)[0], code)
+            status, headers, _ = self.console_call(server, 'POST', '/console-api/auth/login', body=login_body)
+            self.assertEqual(status, 200)
+            self.assertIn('HttpOnly', headers['set-cookie'])
+            cookie = headers['set-cookie'].split(';')[0]
             with patch.object(console_server, 'state', return_value={'tasks': [], 'quota': {}}):
-                req = urllib.request.Request(url + '/console-api/state', headers={'Cookie': cookie})
-                with urllib.request.urlopen(req) as r:
-                    self.assertEqual(json.load(r)['tasks'], [])
+                status, _, data = self.console_call(server, 'GET', '/console-api/state',
+                                                    headers={'Cookie': cookie})
+                self.assertEqual(status, 200)
+                self.assertEqual(json.loads(data)['tasks'], [])
+            status, _, data = self.console_call(server, 'GET', '/console', headers={'Cookie': cookie})
+            self.assertEqual(status, 200)
+            self.assertIn(b'Worker Desk', data)
         finally:
             server.shutdown()
             server.server_close()
 
     def test_console_asset_allowlist_serves_i18n_and_rejects_unknown(self):
-        server = ThreadingHTTPServer(('127.0.0.1', 0), console_server.Handler)
-        server.daemon_threads = True
-        server.cookie = 'test-local-capability'
-        url = 'http://127.0.0.1:' + str(server.server_port)
-        self.c['console_url'] = url
-        self.config.write_text(json.dumps(self.c))
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
+        server = self.console_server()
         try:
-            with urllib.request.urlopen(url + '/console') as r:
-                cookie = r.headers.get('Set-Cookie').split(';')[0]
-            # The i18n bundle is an explicit allowlisted asset and is served as JavaScript.
-            req = urllib.request.Request(url + '/console-assets/i18n.js', headers={'Cookie': cookie})
-            with urllib.request.urlopen(req) as r:
-                body = r.read()
-                self.assertEqual(r.status, 200)
-                self.assertTrue(r.headers.get('Content-Type').startswith('text/javascript'))
-                self.assertIn(b'worker-desk-locale', body)
-                self.assertIn(b'global.I18n', body)
-            # Asset requests still require the bootstrapped capability cookie.
-            with self.assertRaises(urllib.error.HTTPError) as unauthenticated:
-                urllib.request.urlopen(url + '/console-assets/i18n.js')
-            self.assertEqual(unauthenticated.exception.code, 401)
-            # Unknown or traversal asset paths are rejected without reaching the desktop allowlist.
+            # The i18n bundle is public (the login page reuses it) and served as JavaScript.
+            status, headers, body = self.console_call(server, 'GET', '/console-assets/i18n.js')
+            self.assertEqual(status, 200)
+            self.assertTrue(headers['content-type'].startswith('text/javascript'))
+            self.assertIn(b'worker-desk-locale', body)
+            self.assertIn(b'global.I18n', body)
+            # Application assets stay behind the explicit login session.
+            self.assertEqual(self.console_call(server, 'GET', '/console-assets/app.js')[0], 401)
+            login = self.console_call(server, 'POST', '/console-api/auth/login',
+                                      body={'username': 'admin', 'password': 'synthetic-pass'})
+            cookie = login[1]['set-cookie'].split(';')[0]
+            self.assertEqual(self.console_call(server, 'GET', '/console-assets/app.js',
+                                               headers={'Cookie': cookie})[0], 200)
+            # Unknown or traversal asset paths are rejected without reaching the allowlist.
             for path in ('/console-assets/unknown.js', '/console-assets/../i18n.js', '/console-assets/'):
-                with self.assertRaises(urllib.error.HTTPError) as error:
-                    urllib.request.urlopen(urllib.request.Request(url + path, headers={'Cookie': cookie}))
-                self.assertEqual(error.exception.code, 404)
+                self.assertEqual(self.console_call(server, 'GET', path, headers={'Cookie': cookie})[0], 404)
         finally:
             server.shutdown()
             server.server_close()

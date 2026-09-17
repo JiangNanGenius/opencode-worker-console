@@ -10,6 +10,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import common
 import console
+import console_auth
 import quota
 import service
 import bootstrap
@@ -61,3 +62,26 @@ class ConsoleOwnerTests(unittest.TestCase):
             self.assertNotIn('provider_limits', result)
             self.assertTrue(result['pool_healthy'])
             self.assertEqual(result['tasks'], [])
+
+    def test_state_and_settings_do_not_expose_network_or_auth_state(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            state = root / 'state'
+            state.mkdir()
+            config_path = root / 'config.json'
+            config_path.write_text(json.dumps({
+                'profiles': {'senior-code': {'model': 'example/model'}},
+                'server_url': 'http://127.0.0.1:1', 'console_url': 'http://127.0.0.1:2',
+                'console_bind': '0.0.0.0', 'console_allowed_origins': ['https://desk.example.test'],
+                'max_parallel_per_owner': 4, 'kimi_reserve_percent': 0, 'max_steps': 80,
+            }))
+            console_auth.set_user('admin', 'synthetic-secret', state)
+            with patch.object(common, 'CONFIG', config_path), \
+                 patch.object(common, 'STATE', state), \
+                 patch.object(console, 'STATE', state), \
+                 patch.object(quota, 'STATE', state), \
+                 patch.object(console, 'service_health', return_value={'pool': True, 'server': True}):
+                blob = json.dumps({'state': console.state(), 'settings': management.settings()})
+            for secret in ('console_bind', 'console_allowed_origins', 'desk.example.test',
+                           'synthetic-secret', 'console-auth', 'pbkdf2', 'salt', 'hash'):
+                self.assertNotIn(secret, blob)

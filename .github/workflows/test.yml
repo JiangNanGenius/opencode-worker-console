@@ -21,3 +21,4 @@ jobs:
       - run: node --check web/i18n.js
       - run: node --check web/app.js
       - run: node --check web/manage.js
+      - run: node --check web/login.js

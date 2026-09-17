@@ -69,9 +69,11 @@ shows ownership groups, nested children, execution status, model, duration, summ
 DeepSeek balance and Kimi quota windows. It supports search, status filtering, details and
 coalesced quota refresh. Click a task title to open its actual OpenCode web session.
 
-The console binds to loopback, checks Host/Origin, and bootstraps an HttpOnly SameSite
-cookie on local top-level navigation. Its OpenCode gateway supplies server authentication
-in the backend; API keys and the server password never enter browser data. The gateway
+The console requires username/password login and checks explicitly allowed Host/Origin
+values. It defaults to loopback; optional LAN or HTTPS reverse-proxy access is described in
+[remote access](remote-access.md). Its OpenCode gateway supplies server authentication
+in the backend. Native response bodies and process logs are not universally redacted;
+credential handling and its limits are described in [credential references](credentials.md). The gateway
 supports OpenCode streaming and WebSocket traffic. A direct manual continuation inside
 OpenCode is outside the pool's task ledger: submit follow-up work through Astra when file
 ownership and state tracking must remain coordinated.

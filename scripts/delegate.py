@@ -320,8 +320,22 @@ def main():
     s = sub.add_parser('sessions'); s.add_argument('--search', default=''); s.add_argument('--directory'); s.add_argument('--archived', action='store_true')
     s = sub.add_parser('session'); s.add_argument('action', choices=['rename','archive','restore','fork','delete','bind']); s.add_argument('id'); s.add_argument('--title'); s.add_argument('--directory'); s.add_argument('--yes', action='store_true')
     s = sub.add_parser('cleanup'); s.add_argument('--apply', action='store_true'); s.add_argument('--force', action='store_true')
+    s = sub.add_parser('credential', help='Metadata-only local credential references and a redacting runner')
+    csub = s.add_subparsers(dest='action', required=True)
+    cr = csub.add_parser('register'); cr.add_argument('name')
+    cgroup = cr.add_mutually_exclusive_group(required=True)
+    cgroup.add_argument('--file'); cgroup.add_argument('--env')
+    csub.add_parser('list')
+    cm = csub.add_parser('remove'); cm.add_argument('name')
+    crun = csub.add_parser('run')
+    crun.add_argument('--use', action='append', default=[])
+    crun.add_argument('--timeout', type=float, default=60)
+    crun.add_argument('command', nargs=argparse.REMAINDER)
     args = p.parse_args()
     init()
+    if args.cmd == 'credential':
+        import credentials
+        return credentials.command(args)
     if args.cmd == 'daemon':
         return daemon()
     if args.cmd in ('submit', 'wait', 'cancel', 'console', 'steer', 'sessions', 'session', 'cleanup') or (args.cmd == 'transcript' and not args.saved):
@@ -403,7 +417,8 @@ def main():
 
 if __name__ == '__main__':
     try:
-        main()
+        code = main()
+        sys.exit(code if isinstance(code, int) else 0)
     except Exception as e:
         print(json.dumps(diagnostics.exception(e, 'cli'), ensure_ascii=False), file=sys.stderr)
         sys.exit(1)
