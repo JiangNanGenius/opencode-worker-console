@@ -1,6 +1,6 @@
 interface:
   display_name: "OpenCode Worker Pool"
-  short_description: "Delegate general-purpose work with quota-aware routing"
-  default_prompt: "Use $delegate-opencode to delegate bounded investigation, writing, or verification tasks while retaining final judgment."
+  short_description: "Proactively delegate research, implementation and review"
+  default_prompt: "Use $delegate-opencode to proactively hand off substantial investigation, implementation or verification before bulk reading or serial work. Keep UI aesthetics, key decisions and final acceptance with the main agent; review the worker's evidence."
 policy:
   allow_implicit_invocation: true

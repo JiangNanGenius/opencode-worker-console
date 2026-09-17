@@ -1,6 +1,6 @@
 ---
 name: delegate-opencode
-description: Delegate bounded general-purpose work to a local OpenCode worker pool, including file and repository investigation, summaries, analysis, coding, debugging, documentation, testing and independent review. Use to parallelize useful work or keep bulk reading out of Astra's context. Astra retains UI aesthetics, interaction and product decisions, architecture, and final acceptance.
+description: Proactively delegate substantial, bounded work to OpenCode workers. Prefer this skill for repository orientation, multi-file investigation, bulk file reading and summaries, root-cause analysis, implementation, debugging, documentation, tests and independent review; the user need not mention OpenCode or ask for subagents. Delegate before loading large amounts of source into the main context or doing independent subtasks serially. Workers are general-purpose engineers, not limited to mechanical coding, and one worker is useful even without parallel work. Keep trivial edits local; Astra owns UI aesthetics, interaction and product decisions, architecture, and final acceptance. Also use for worker status, guidance, transcripts and session management.
 ---
 
 # Delegate OpenCode work
@@ -12,6 +12,15 @@ availability matters. Runtime is a local authenticated service; tasks persist ac
 
 ## Decide and delegate
 
+- For a substantial task, identify a concrete investigation, implementation or verification
+  subtask and submit it early. Do not wait for an explicit delegation request. In particular,
+  hand off repository mapping and bulk reading before reading all those files yourself.
+  Routine scoped delegation is part of carrying out the user's authorized task.
+- Delegation is useful for context savings as well as parallelism. Use a single worker when
+  appropriate; continue independent work, or wait and review its report before the dependent
+  decision. Do not duplicate the worker's investigation while it runs.
+- Handle a known, tiny edit or short factual answer directly when handing it off would cost
+  more than doing it. Do not manufacture worker tasks just to satisfy a delegation quota.
 - All three profiles are general-purpose. Prefer `senior-code` for suitable independent
   background work, `fast-code` for quick feedback and the critical path, and
   `deep-research` for deep reasoning or large, cross-module investigation. These names
@@ -29,6 +38,21 @@ availability matters. Runtime is a local authenticated service; tasks persist ac
   This keeps main-task ownership and parent/child relationships visible in the console.
 - Normal reversible work already authorized by the user needs no additional confirmation.
   Delegation does not expand authorization for publishing, deployment, account changes or devices.
+
+Start with the CLI; `submit` starts missing services automatically. Do not inspect the
+bridge implementation or run setup checks on every invocation. For example, adapt this
+read-only handoff to the actual project, question and main task title:
+
+```sh
+~/.local/bin/delegate-opencode submit --directory "$PWD" --profile auto \
+  --group-title 'Main task title' --title 'Trace the relevant implementation' \
+  --acceptance 'Return a concise summary, file/line evidence, uncertainties and suggested next steps.' \
+  'Locate the files and call chain relevant to the requested change. Investigate without editing files.'
+```
+
+For implementation, add `--mode write`, literal `--scope` paths and appropriate
+`--command` checks. Use the returned job ID with `wait JOB_ID --seconds 30` and
+`collect JOB_ID`; delegation is not finished until the result has been reviewed.
 
 ## Work together
 
