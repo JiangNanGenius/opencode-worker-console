@@ -124,7 +124,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def request(url, method='GET', data=None, headers=None, timeout=15):
+def request(url, method='GET', data=None, headers=None, timeout=15, include_cursor=False):
     h = dict(headers or {})
     raw = None
     if data is not None:
@@ -134,7 +134,8 @@ def request(url, method='GET', data=None, headers=None, timeout=15):
         req = urllib.request.Request(url, data=raw, headers=h, method=method)
         with urllib.request.build_opener(NoRedirect).open(req, timeout=timeout) as r:
             body = r.read()
-            return json.loads(body) if body else None
+            value = json.loads(body) if body else None
+            return (value, r.headers.get('X-Next-Cursor')) if include_cursor else value
     except urllib.error.HTTPError as e:
         # Extract only human-readable error fields, never headers or arbitrary body data.
         message = None
@@ -153,7 +154,7 @@ def request(url, method='GET', data=None, headers=None, timeout=15):
         raise HttpFailure(message=str(e)) from None
 
 
-def api(path, directory=None, method='GET', data=None, timeout=15):
+def api(path, directory=None, method='GET', data=None, timeout=15, include_cursor=False):
     c = config()
     base = c['server_url']
     parsed = urllib.parse.urlsplit(base)
@@ -163,7 +164,7 @@ def api(path, directory=None, method='GET', data=None, timeout=15):
         path += ('&' if '?' in path else '?') + urllib.parse.urlencode({'directory': directory})
     pw = (STATE / 'server-password').read_text().strip()
     auth = base64.b64encode(('opencode:' + pw).encode()).decode()
-    return request(base + path, method, data, {'Authorization': 'Basic ' + auth}, timeout)
+    return request(base + path, method, data, {'Authorization': 'Basic ' + auth}, timeout, include_cursor)
 
 
 def public_task(t):
@@ -176,15 +177,31 @@ def public_task(t):
 
 
 def redact(value):
-    raw = json.dumps(value, ensure_ascii=False)
     auth_path = Path(os.environ.get('XDG_DATA_HOME', str(Path.home() / '.local/share'))) / 'opencode/auth.json'
-    for provider in read_json(auth_path, {}):
-        try:
-            raw = raw.replace(auth_key(provider), '<redacted>')
-        except ValueError:
-            pass
-    raw = re.sub(r'\bsk-[A-Za-z0-9_-]{12,}', '<redacted>', raw)
-    return json.loads(raw)
+    credentials = []
+    for auth in read_json(auth_path, {}).values():
+        if isinstance(auth, dict):
+            credentials.extend(v for k, v in auth.items() if k in
+                               ('key', 'access', 'refresh', 'access_token', 'refresh_token')
+                               and isinstance(v, str) and len(v) >= 8)
+    password = STATE / 'server-password'
+    if password.is_file():
+        credentials.append(password.read_text().strip())
+    credentials = sorted({c for c in credentials if c}, key=len, reverse=True)
+    sensitive = {'authorization', 'api_key', 'apikey', 'access_token', 'refresh_token',
+                 'password', 'private_key', 'cookie', 'set-cookie'}
+    def clean(item):
+        if isinstance(item, dict):
+            return {k: '<redacted>' if str(k).lower() in sensitive else clean(v) for k, v in item.items()}
+        if isinstance(item, (list, tuple)):
+            return [clean(v) for v in item]
+        if isinstance(item, str):
+            for secret in credentials:
+                item = item.replace(secret, '<redacted>')
+            item = re.sub(r'\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})', '<redacted>', item)
+            item = re.sub(r'-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z]+ )?PRIVATE KEY-----', '<redacted private key>', item)
+        return item
+    return clean(value)
 
 
 def message_id():

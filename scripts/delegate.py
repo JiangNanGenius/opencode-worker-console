@@ -227,6 +227,13 @@ def main():
     s.add_argument('objective', nargs='?')
     s = sub.add_parser('status'); s.add_argument('id', nargs='?')
     s = sub.add_parser('collect'); s.add_argument('id'); s.add_argument('--full', action='store_true')
+    s = sub.add_parser('transcript', help='Read session messages and tool calls only when needed')
+    s.add_argument('id', help='Worker task ID or native OpenCode session ID')
+    s.add_argument('--limit', type=int, default=20, help='Latest message count, 1-100; default 20')
+    s.add_argument('--before', help='Read older messages using next_before from the previous page')
+    s.add_argument('--full', action='store_true', help='Explicitly read the entire available conversation')
+    s.add_argument('--saved', action='store_true', help='Read retained worker evidence instead of live OpenCode')
+    s.add_argument('--output', help='Export to a new private JSON file and return only its location')
     s = sub.add_parser('cancel'); s.add_argument('id')
     s = sub.add_parser('wait'); s.add_argument('id'); s.add_argument('--seconds', type=int, default=30)
     s = sub.add_parser('quota'); s.add_argument('--refresh', action='store_true')
@@ -243,7 +250,7 @@ def main():
     init()
     if args.cmd == 'daemon':
         return daemon()
-    if args.cmd in ('submit', 'wait', 'cancel', 'console', 'steer', 'sessions', 'session', 'cleanup'):
+    if args.cmd in ('submit', 'wait', 'cancel', 'console', 'steer', 'sessions', 'session', 'cleanup') or (args.cmd == 'transcript' and not args.saved):
         from service import start
         start()
     if args.cmd == 'steer':
@@ -273,6 +280,11 @@ def main():
         result = submit(spec)
     elif args.cmd == 'status':
         result = public_task(task(args.id)) if args.id else [public_task(t) for t in tasks()]
+    elif args.cmd == 'transcript':
+        import transcript
+        result = transcript.read(args.id, args.limit, args.before, args.full, args.saved)
+        if args.output:
+            result = transcript.export(result, args.output)
     elif args.cmd == 'collect':
         result = diagnostics.collect(args.id, args.full)
     elif args.cmd == 'cancel':

@@ -167,3 +167,21 @@ Errors from earlier failed tool attempts can coexist with a successfully complet
 A transport error after dispatch means the prompt may have been accepted: observe the
 existing session, never blindly resubmit. The bridge reports information when queried;
 Codex should use bounded `wait` calls while awaiting a delegated result.
+
+
+## Read complete conversations on demand
+
+`transcript JOB_ID` or `transcript SESSION_ID` fetches recent native messages with their original
+`info` and `parts`, including tool inputs, results and errors. Only GET calls are used; reading
+never starts another model turn. Live reads use the directory currently bound to the session.
+
+The default page has 20 messages, oldest-to-newest. If `has_more` is true, pass `next_before`
+to `--before` for the previous page. `--limit` accepts 1-100. Fields longer than 6,000 characters
+are marked, and `truncated_fields` reports their count. `--full` removes pagination and field
+truncation; combine it with `--output /private/path/task.transcript.json` to keep bulk context
+in a private file. Known API/OAuth credentials and the Worker server password are redacted.
+
+Use `--saved` explicitly with a worker task ID for the retained execution transcript, even
+when OpenCode is unavailable or its session was deleted. `source` and `sampled_at` distinguish
+live data from the saved artifact. A live session can keep running after the read completes.
+A full session read does not recursively collect separate child-session conversations.

@@ -13,3 +13,4 @@ state/
 work/
 artifacts/
 node_modules/
+*.transcript.json

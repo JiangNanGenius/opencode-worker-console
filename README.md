@@ -12,6 +12,7 @@ Manage task ownership, parent/child tasks, worker profiles, automatic routing, s
 - **Usage:** DeepSeek balance and Kimi Coding plan windows, sample age and reset time. Other OpenCode providers can run tasks without a usage adapter.
 - **Workspace coordination:** disjoint shared write scopes, resource locks, or isolated Git worktrees based on the current working tree. Review a patch before applying it.
 - **Agent controls:** guide a running worker, bind sessions to workspaces, perform user-authorized deletion, and optionally clean old owned data when disk space is low.
+- **On-demand transcripts:** inspect a worker task or native session with messages, tool inputs, outputs and errors; page through history or explicitly export the full conversation. Regular reports stay concise.
 - **Error bridge:** model/API errors, tool failures, command exit codes, retry state and connection failures reach the coordinator through `status`, `wait` and `collect`, with credential redaction. Pending questions are included in collected results.
 - **Durability:** persistent tasks, observed session recovery without blindly replaying a prompt, and cancellation confirmation before releasing ownership.
 
@@ -142,3 +143,27 @@ are retained. The coordinator can also apply a user-requested cleanup with `--ap
 Existing sessions can switch between worktrees of the same Git project. OpenCode 1.18.30 rejects cross-project migration; create a new session bound to the target project instead.
 
 For a compatible code-only update while sessions are running, use `python3 scripts/install.py --live`. It restarts the queue observer and console but retains the OpenCode process and sessions. Provider/agent configuration changes still require an idle runtime.
+
+
+### Inspect what a worker actually did
+
+```sh
+delegate-opencode transcript JOB_ID                       # latest 20 messages
+delegate-opencode transcript SESSION_ID --limit 5          # any native session
+delegate-opencode transcript JOB_ID --before CURSOR   # next_before from prior page
+delegate-opencode transcript JOB_ID --full --output /private/path/task.transcript.json
+delegate-opencode transcript JOB_ID --saved --full         # retained execution snapshot
+```
+
+Live reads query OpenCode without sending a prompt and include later manual continuations.
+They are a point-in-time view, including when the session is running. Default reads paginate
+and mark fields longer than 6,000 characters as truncated. `--full` requests all available
+messages and preserves complete message parts, tool inputs and outputs, except credential
+redaction. Use `--output` to avoid filling the coordinator's context: it creates a new JSON
+file with owner-only permissions and refuses to overwrite an existing file or symlink.
+The parent directory must already exist. Do not commit conversation exports.
+
+`--saved` works offline for a worker task using its retained `messages.json`; it may be older
+than the live session and is unavailable if that optional raw artifact was cleaned up.
+Native deletion and connection failure never silently substitute a saved snapshot.
+`collect --full` still means the full *result report*; use `transcript --full` for messages.
