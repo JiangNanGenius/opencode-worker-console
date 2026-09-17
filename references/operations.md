@@ -42,8 +42,9 @@ Prefer available plan allowance: use `senior-code` for ordinary coherent work an
 `deep-research` for deep investigation. Use `fast-code` for genuinely tiny specified tasks
 or latency-critical urgent work. `deep-research` also suits large-repository mapping,
 cross-module or ambiguous root causes, architecture/dependency synthesis and consequential
-independent review. Every tier may investigate, edit and test a complete bounded task; the
-profile names do not restrict job roles. `auto` is a coarse convenience based only on
+independent review. Every tier is a general-purpose execution agent: any authorized outcome
+supported by its tools is eligible. Examples and profile names do not restrict job roles.
+`auto` is a coarse convenience based only on
 `urgency` and `complexity`; it does not infer those semantic properties from task text.
 Deep criteria take precedence over a small final edit surface: broad repository reading,
 multiple subsystems, architecture/dependency mapping, an ambiguous root cause or a
@@ -55,10 +56,11 @@ profile choices without manufacturing tasks to meet a quota.
 Routine UI work is eligible for delegation. Workers may implement a specified interface and
 verify source/DOM structure, localization coverage, build/lint output and an existing headless
 browser test command. OpenCode does not have Computer Use; do not ask it to improvise macOS
-GUI control with AppleScript, screenshot utilities or similar terminal workarounds. Astra
-retains real browser/device operation, visual direction, subtle aesthetic and interaction
-judgment, and final rendered acceptance. Worker static evidence is supporting evidence, not
-final UI proof.
+GUI control with AppleScript, screenshot utilities or similar terminal workarounds. Prefer
+Astra for complex real interface operation, visual direction and subtle aesthetic judgment;
+workers can contribute proposals and analysis. This allocation reflects available tools and
+strengths, not a category ban. Astra owns final acceptance; worker static evidence alone is
+not final UI proof.
 
 ## Local console
 

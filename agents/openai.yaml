@@ -1,6 +1,6 @@
 interface:
   display_name: "OpenCode Worker Pool"
-  short_description: "Delegate complete outcomes with plan-first model selection"
-  default_prompt: "Use $delegate-opencode to delegate complete outcomes including investigation, implementation and self-verification; avoid microtasks and batch feedback. Prefer available subscription allowance through senior-code or deep-research; reserve fast-code for tiny or latency-critical work. Keep long workers alive and wait in the same turn. On billing or quota errors, review partial work, autonomously reselect an available model and continue without asking the user to switch. Each Codex conversation has independent worker slots."
+  short_description: "Delegate complete outcomes to general-purpose agents"
+  default_prompt: "Use $delegate-opencode to delegate coherent authorized outcomes to general-purpose agents based on task fit, available tools and subscription allowance, without coding-only roles or a capability allowlist."
 policy:
   allow_implicit_invocation: true

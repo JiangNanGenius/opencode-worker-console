@@ -1,6 +1,6 @@
 ---
 name: delegate-opencode
-description: Proactively delegate substantial, coherent work to OpenCode workers before bulk reading or serial implementation. Prefer available subscription allowance for ordinary work (senior-code) and deep understanding (deep-research); use fast-code for genuinely tiny tasks or urgent work needing the fastest response. Delegate complete outcomes such as investigation, implementation with tests, deployment with verification, documentation and review. All profiles are general-purpose. Astra owns UI aesthetics, product and architecture decisions, complex interaction and final acceptance. Also use for worker status, errors, guidance, transcripts and session management.
+description: Delegate substantial, coherent work to general-purpose OpenCode agents before bulk reading or serial execution. Any authorized task supported by their tools is eligible; examples are not a capability allowlist. Select by task fit and available subscription allowance, using senior-code for ordinary work, deep-research for deep understanding, and fast-code for tiny or latency-critical work. Astra coordinates and reviews, with particular strengths in aesthetics and complex interaction. Also use for worker status, errors, guidance, transcripts and session management.
 ---
 
 # Delegate OpenCode work
@@ -12,6 +12,14 @@ availability matters. Runtime is a local authenticated service; tasks persist ac
 
 ## Decide and delegate
 
+- Treat OpenCode workers as capable general-purpose execution agents, not coding-only
+  assistants or a fixed list of specialist roles. Any part of the user's authorized outcome
+  is eligible when the worker has suitable tools and access. Examples in this skill illustrate
+  task fit; they are not an allowlist. Do not reserve an entire category for Astra merely
+  because it involves operations, decisions, external systems or work other than code.
+  Astra remains accountable for coordination and final acceptance; this does not require
+  Astra to execute every important step. Delegate investigation, proposals and execution
+  wherever useful, and retain the judgments or interactions where Astra adds the most value.
 - Prefer available subscription allowance: use `senior-code` for ordinary coherent work
   and `deep-research` for deep understanding, investigation and consequential review.
   Choose `fast-code` for genuinely tiny, well-specified work or an urgent task whose
@@ -87,9 +95,10 @@ misclassification and correct subsequent choices. Do not create artificial work 
 a utilization target.
 - Delegate bulk reading before loading a repository into Astra's context. Request concise,
   evidence-backed findings and retrieve only the relevant original files or detailed results.
-- Keep visual direction, nuanced aesthetic and interaction judgment, complex browser/device
-  operation, product meaning, difficult decisions and final acceptance with Astra. Workers
-  can implement specified UI and perform routine validation through source/DOM inspection,
+- Prefer Astra for visual direction, nuanced aesthetic and interaction judgment and complex
+  interface operation. Workers can contribute proposals and analysis in these areas too;
+  these strengths guide allocation rather than prohibit delegation. Workers can implement
+  UI and perform routine validation through source/DOM inspection,
   build/lint checks and an existing headless browser test command. OpenCode has no Computer
   Use capability: do not make it assemble AppleScript, screenshot commands or other terminal
   workarounds to operate macOS GUI applications. Astra performs real clicks, visual comparison
@@ -116,9 +125,10 @@ a utilization target.
   automatically as its group; use `--parent-task-id` when a delegated task follows another.
   This keeps main-task ownership and parent/child relationships visible in the console.
 - Normal reversible work already authorized by the user needs no additional confirmation.
-  Deployment within the user's task needs no separate approval merely because a worker
-  performs it. Delegation does not expand authorization to unrelated publishing, environments,
-  account changes or devices.
+  Work within the user's task needs no separate approval merely because a worker performs
+  it. Carry the relevant task authority and context into the handoff; do not invent role-based
+  bans or broaden the user's objective. Return concrete capability, access or scope blockers,
+  rather than saying that a task category belongs to Astra.
 
 Start with the CLI; `submit` starts missing services automatically. Do not inspect the
 bridge implementation or run setup checks on every invocation. For example, adapt this
