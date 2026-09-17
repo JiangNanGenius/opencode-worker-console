@@ -38,8 +38,9 @@ instead of creating a sequence of microtasks. Split tasks when deliverables or w
 scopes are genuinely independent.
 
 Select `profile` deliberately when the coordinator can judge the task's semantic fit.
-Use `fast-code` for urgent, clearly bounded work; `senior-code` for longer independent
-implementation and second opinions; and `deep-research` for large-repository mapping,
+Prefer available plan allowance: use `senior-code` for ordinary coherent work and
+`deep-research` for deep investigation. Use `fast-code` for genuinely tiny specified tasks
+or latency-critical urgent work. `deep-research` also suits large-repository mapping,
 cross-module or ambiguous root causes, architecture/dependency synthesis and consequential
 independent review. Every tier may investigate, edit and test a complete bounded task; the
 profile names do not restrict job roles. `auto` is a coarse convenience based only on
@@ -74,10 +75,13 @@ OpenCode is outside the pool's task ledger: submit follow-up work through Astra 
 ownership and state tracking must remain coordinated.
 
 Global settings: `~/.config/opencode/delegate-pool.json`. This is separate from the
-user's interactive OpenCode configuration. Current defaults: 3 total workers, at most
-1 Kimi worker, 80 agent steps; 30-minute tasks or 60 minutes for deep tasks.
-Model/variant changes saved in the console restart idle execution services; queue limits are read at runtime
-(changing total thread capacity also requires restarting the queue).
+user's interactive OpenCode configuration. The default is four running workers per owning
+Codex conversation (`max_parallel_per_owner`), 80 agent steps, and 30-minute tasks or
+60 minutes for deep tasks. Different conversations have independent slots: there is no shared
+global or provider concurrency ceiling. Child tasks count against the same owner. Non-Codex
+callers fall back to their group/workspace identity. Scope/resource conflicts still queue.
+Model/variant changes saved in the console restart idle execution services; owner limits
+are read at runtime. Legacy global/provider concurrency settings no longer govern dispatch.
 
 ## Quota and routing
 
@@ -89,11 +93,23 @@ wallet payment behavior are not guessed or changed. Unknown values remain unknow
 
 Queries are coalesced for 60 seconds, refreshed every 5 minutes while running or every
 minute while waiting. Idle queues do not query. Transient errors preserve last successful
-data for 15 minutes with a stale marker; older data is unknown and concurrency is limited
-to one per affected provider. Invalid credentials or known exhausted quota block dispatch.
-When any valid Kimi window is below 20%, ordinary auto tasks may use the other configured
-provider; deep tasks reserve Kimi availability. Explicit profiles never silently change.
-Queue status records the route/fallback reason. Unknown quota is not a promise of availability.
+data for 15 minutes with a stale marker; older data is unknown. Invalid credentials or known
+exhausted quota block dispatch; unknown telemetry does not impose a shared concurrency cap.
+Plan allowance is preferred for ordinary and deep work; fast-code is for tiny tasks or
+latency-critical urgent work. The optional Kimi deep-task reserve defaults to 0%, so ordinary
+tasks can use available plan allowance. If configured higher, it holds ordinary tasks below
+that percentage while allowing deep work. Quota or billing failures never switch profiles automatically, including
+tasks submitted with `auto`. Codex receives the blockage and candidate profiles, then
+autonomously selects a suitable alternative and continues authorized work without asking the
+user to approve the switch or recharge. If none is suitable, it reports that specific blockage.
+Fresh telemetry also permits later use of a replenished account. Queue status records
+the reason. Unknown quota is not a promise of availability.
+
+An unequivocal model billing error blocks further provider dispatch even if the cached balance
+was positive. A fresh successful account check can clear the block after replenishment.
+`status`, `wait` and `collect` expose recovery guidance; no dispatched task is automatically
+replayed. Inspect partial work before creating a deliberate continuation linked by
+`--parent-task-id`. Keep healthy capacity waits alive, but act on a quota blockage.
 
 No automatic recharge or booster setting changes. Account-wide before/after quota is not
 attributed as an exact task charge. `stats` reports observed mixed task latency, not a benchmark.
@@ -201,7 +217,7 @@ tests or deep investigation; configured deep tasks may run longer. A nonterminal
 contains `terminal: false`, `continue_waiting: true` and `next_action: call_wait_again`.
 When the requested result depends on that worker, the coordinator must call `wait` again in
 the same turn rather than ending with a progress-only response or asking the user to send
-“continue”. Provider capacity, several quiet waits or the coordinator's desire to finish its
+“continue”. Owner capacity, several quiet waits or the coordinator's desire to finish its
 turn are not cancellation reasons. Cancel only when the user requests it, the scope is
 confirmed wrong or unsafe, the objective is superseded, or a terminal condition requires it.
 

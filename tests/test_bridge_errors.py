@@ -12,15 +12,25 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import common
 import diagnostics
+import quota
 import worker
 
 
 class ErrorBridgeTests(unittest.TestCase):
+    def test_billing_occurrence_uses_failure_completion_time(self):
+        now = time.time()
+        message = {'info': {'id': 'late-error', 'role': 'assistant',
+                           'time': {'created': (now - 600) * 1000, 'completed': now * 1000},
+                           'error': {'name': 'APIError', 'data': {'statusCode': 402}}}}
+        self.assertAlmostEqual(diagnostics.from_messages([message])[0]['occurred_at'], now)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.patches = [patch.object(common, 'STATE', self.root),
                         patch.object(worker, 'STATE', self.root),
+                        patch.object(quota, 'STATE', self.root),
+                        patch.object(quota, 'credential_identity', lambda p: 'cred-' + str(p)),
                         patch.object(common, 'CONFIG', self.root / 'config.json')]
         for p in self.patches: p.start()
         common.init()
@@ -105,3 +115,46 @@ class ErrorBridgeTests(unittest.TestCase):
         common.write_json(common.artifact_dir('job-error') / 'pending.json', pending)
         worker.finish(common.task('job-error'), [], 'needs_attention', 'permission_or_question_pending')
         self.assertEqual(diagnostics.collect('job-error')['result']['pending'], pending)
+
+    def test_billing_error_trips_circuit_and_guides_coordinator(self):
+        messages = [{'info': {'id': 'msg_bill', 'role': 'assistant',
+                              'time': {'created': 1700000000000},
+                              'error': {'name': 'APIError', 'data': {
+                                  'message': 'Insufficient Balance', 'statusCode': 402,
+                                  'isRetryable': False}}}, 'parts': []}]
+        result = worker.finish(common.task('job-error'), messages)
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['reason'], 'provider_billing_insufficient_balance')
+        self.assertIsNotNone(quota.billing_block('test'))
+        compact = diagnostics.collect('job-error')
+        err = compact['result']['errors'][0]
+        self.assertTrue(err['billing'])
+        self.assertFalse(err['retryable'])
+        self.assertEqual(err['suggested_action'], 'inspect_partial_work_and_reselect_profile')
+        rec = compact['recovery']
+        self.assertEqual(rec['blocked_reason'], 'provider_billing_error')
+        self.assertFalse(rec['automatic_fallback'])
+        # Sole profile is circuit-blocked: top-up is the only offered path right now.
+        self.assertEqual(rec['suggested_action'], 'top_up_provider_account_then_resubmit')
+        self.assertEqual(rec['alternatives'], [])
+        # After top-up recovery, historical errors inform guidance but never re-arm.
+        quota.clear('test')
+        self.assertIsNone(quota.billing_block('test'))
+        compact = diagnostics.collect('job-error')
+        self.assertEqual(compact['recovery']['suggested_action'],
+                         'inspect_partial_work_and_reselect_profile')
+        self.assertEqual([a['profile'] for a in compact['recovery']['alternatives']], ['fast'])
+        self.assertIsNone(quota.billing_block('test'))
+
+    def test_tool_text_and_transport_never_trip_billing(self):
+        report = {'outcome':'blocked','summary':'x','evidence':[],'tests':[],'unresolved':[]}
+        messages = [{'info': {'id':'msg_reply','role':'assistant','providerID':'test','modelID':'model'},
+                     'parts': [
+                         {'type':'tool','tool':'bash','callID':'c1','state': {
+                             'status':'error','input':{'command':'curl api'},
+                             'error':'log line: HTTP 402 Insufficient Balance'}},
+                         {'type':'text','text':json.dumps(report)}]}]
+        worker.finish(common.task('job-error'), messages)
+        self.assertIsNone(quota.billing_block('test'))
+        self.assertNotEqual(common.task('job-error').get('reason'),
+                            'provider_billing_insufficient_balance')

@@ -28,7 +28,6 @@ PACKAGE_ITEMS = ['SKILL.md', 'agents', 'scripts', 'references', 'web']
 # Routing defaults (quota.route): fast -> fast-code, background -> senior-code,
 # deep -> deep-research. Profile names must stay aligned with those routes.
 PROFILE_NAMES = ['fast-code', 'senior-code', 'deep-research']
-KIMI_PROVIDER = 'kimi-for-coding'
 PRESETS = {
     'deepseek-kimi': {
         'fast-code': {'model': 'deepseek/deepseek-flash', 'variant': 'high', 'label': 'DeepSeek V4.1 Flash'},
@@ -36,7 +35,11 @@ PRESETS = {
         'deep-research': {'model': 'kimi-for-coding/k3', 'variant': 'high', 'label': 'Kimi K3'},
     }
 }
-TOP_LEVEL_DEFAULTS = {'max_parallel': 3, 'max_steps': 80, 'kimi_reserve_percent': 20, 'auto_approve': True}
+# Concurrency is capped per owning Codex conversation (owner_thread_id), never
+# globally or per provider; the scheduler reads max_parallel_per_owner (default 4).
+# kimi_reserve_percent is optional (0 = no reservation); plan-backed Kimi is
+# already preferred whenever subscription allowance exists.
+TOP_LEVEL_DEFAULTS = {'max_parallel_per_owner': 4, 'max_steps': 80, 'kimi_reserve_percent': 0, 'auto_approve': True}
 ACTIVE_STATUSES = {'queued', 'starting', 'running', 'stopping', 'uncertain'}
 ENV_VARS = ('DELEGATE_INSTALL', 'DELEGATE_STATE', 'DELEGATE_CONFIG', 'DELEGATE_BIN_DIR')
 
@@ -146,11 +149,6 @@ def default_profiles(model=None, preset=None):
     return {name: {'model': model, 'label': model.split('/', 1)[1]} for name in PROFILE_NAMES}
 
 
-def provider_limit_defaults(profiles):
-    providers = {spec['model'].split('/', 1)[0] for spec in profiles.values()}
-    return {KIMI_PROVIDER: 1} if KIMI_PROVIDER in providers else {}
-
-
 def refuse_active_tasks():
     STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
     STATE.chmod(0o700)
@@ -197,8 +195,9 @@ def load_or_build_config(args, opencode):
     if not enabled:
         fail('At least one enabled profile is required')
     c.setdefault('routing', {tier: name if name in enabled else enabled[0] for tier, name in zip(('fast', 'background', 'deep'), PROFILE_NAMES)})
-    c.setdefault('provider_limits', provider_limit_defaults(c['profiles']))
-    c.setdefault('max_kimi_parallel', c['provider_limits'].get(KIMI_PROVIDER, 1))
+    # Legacy global/provider cap fields (max_parallel, max_kimi_parallel,
+    # provider_limits) are never written for new installs and are left inert
+    # on disk for existing configs; max_parallel_per_owner is the only cap.
     validate_urls(c)
     CONFIG.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, temp = tempfile.mkstemp(dir=str(CONFIG.parent), prefix='.pool-config-')

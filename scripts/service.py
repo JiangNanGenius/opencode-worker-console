@@ -39,9 +39,14 @@ def start():
             if logpath.exists() and logpath.stat().st_size > 5 * 1024 * 1024:
                 logpath.replace(logpath.with_suffix('.previous.log'))
             with logpath.open('ab') as log:
+                # A persistent console is not owned by the Codex conversation that
+                # happened to start it. CLI submissions retain their caller's owner;
+                # manual console submissions use their group/workspace fallback.
+                service_env = dict(os.environ)
+                service_env.pop('CODEX_THREAD_ID', None)
                 proc = subprocess.Popen([sys.executable, str(root / script), *args],
                                         cwd=str(STATE), stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                                        start_new_session=True, close_fds=True)
+                                        start_new_session=True, close_fds=True, env=service_env)
             records[name] = {'pid': proc.pid, 'identity': identity(proc.pid)}
             write_json(STATE / 'services.json', records)
             if name == 'server':

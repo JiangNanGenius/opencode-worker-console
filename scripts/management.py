@@ -4,8 +4,9 @@ Exposes a small JSON-ready surface for the local console. Every upstream call
 uses common.api, which is pinned to the authenticated loopback OpenCode server,
 so no caller-supplied URL is ever contacted. Provider options, environment
 variables, credentials and other provider/agent internals are never returned.
+Concurrency is capped per owning Codex conversation (owner_thread_id) via
+max_parallel_per_owner (default 4); there is no global or provider-wide cap.
 """
-import json
 from concurrent.futures import ThreadPoolExecutor
 import os
 import re
@@ -21,6 +22,14 @@ _ROUTING_KEYS = ('fast', 'background', 'deep')
 _ARCHIVED_TRUE = {'1', 'true', 'yes', 'on', 'archived'}
 _ARCHIVED_FALSE = {'0', 'false', 'no', 'off', 'active', 'unarchived'}
 SESSION_LIMIT = 500
+MAX_PARALLEL_PER_OWNER_DEFAULT = 4
+
+
+def _per_owner_limit(value):
+    """Owner slot cap; legacy global fields on disk are never interpreted."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return MAX_PARALLEL_PER_OWNER_DEFAULT
+    return value if 1 <= value <= 16 else MAX_PARALLEL_PER_OWNER_DEFAULT
 
 
 def _text(value, default=''):
@@ -135,14 +144,11 @@ def settings():
             continue
         profiles[name] = {'model': profile.get('model'), 'label': profile.get('label'),
                           'variant': profile.get('variant'), 'enabled': profile.get('enabled', True)}
-    out = {'profiles': profiles, 'max_parallel': c.get('max_parallel'),
-           'max_kimi_parallel': c.get('max_kimi_parallel'), 'max_steps': c.get('max_steps'),
-           'kimi_reserve_percent': c.get('kimi_reserve_percent'), 'revision': c.get('revision', 0),
-           'auto_approve': c.get('auto_approve', True)}
+    out = {'profiles': profiles, 'max_parallel_per_owner': _per_owner_limit(c.get('max_parallel_per_owner')),
+           'max_steps': c.get('max_steps'), 'kimi_reserve_percent': c.get('kimi_reserve_percent'),
+           'revision': c.get('revision', 0), 'auto_approve': c.get('auto_approve', True)}
     if isinstance(c.get('routing'), dict):
         out['routing'] = c['routing']
-    if isinstance(c.get('provider_limits'), dict):
-        out['provider_limits'] = c['provider_limits']
     import cleanup
     out['cleanup'] = cleanup.policy()
     return out
@@ -186,7 +192,7 @@ def _clean_profile(name, value):
 def _validate_settings(body):
     if not isinstance(body, dict):
         raise ValueError('Settings must be an object')
-    for key in ('profiles', 'max_parallel', 'max_kimi_parallel', 'max_steps', 'kimi_reserve_percent'):
+    for key in ('profiles', 'max_parallel_per_owner', 'max_steps', 'kimi_reserve_percent'):
         if key not in body:
             raise ValueError('Missing required setting: ' + key)
     raw_profiles = body.get('profiles')
@@ -195,16 +201,13 @@ def _validate_settings(body):
     if len(raw_profiles) > 32:
         raise ValueError('At most 32 profiles are supported')
     profiles = {name: _clean_profile(name, value) for name, value in raw_profiles.items()}
-    result = {'profiles': profiles, 'max_parallel': _int_setting(body, 'max_parallel', 1, 16),
-              'max_kimi_parallel': _int_setting(body, 'max_kimi_parallel', 1, 16),
+    result = {'profiles': profiles, 'max_parallel_per_owner': _int_setting(body, 'max_parallel_per_owner', 1, 16),
               'max_steps': _int_setting(body, 'max_steps', 1, 200),
               'kimi_reserve_percent': _int_setting(body, 'kimi_reserve_percent', 0, 100)}
     if 'auto_approve' in body:
         if not isinstance(body['auto_approve'], bool):
             raise ValueError('auto_approve must be boolean')
         result['auto_approve'] = body['auto_approve']
-    if result['max_kimi_parallel'] > result['max_parallel']:
-        raise ValueError('max_kimi_parallel cannot exceed max_parallel')
     routing = body.get('routing')
     if routing is not None:
         if not isinstance(routing, dict) or set(routing.keys()) != set(_ROUTING_KEYS):
@@ -214,18 +217,8 @@ def _validate_settings(body):
             if not isinstance(name, str) or name not in profiles or not profiles[name]['enabled']:
                 raise ValueError('routing.' + key + ' must reference an enabled profile')
         result['routing'] = {key: routing[key] for key in _ROUTING_KEYS}
-    provider_limits = body.get('provider_limits')
-    if provider_limits is not None:
-        if not isinstance(provider_limits, dict):
-            raise ValueError('provider_limits must be an object')
-        try:
-            json.dumps(provider_limits)
-        except (TypeError, ValueError):
-            raise ValueError('provider_limits must be JSON-serializable')
-        for provider, limit in provider_limits.items():
-            if not isinstance(provider, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', provider) or isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= result['max_parallel']:
-                raise ValueError('provider_limits values must be integers within max_parallel')
-        result['provider_limits'] = provider_limits
+    # Legacy global/provider cap fields sent by old clients are ignored, never
+    # validated as owner limits, and never re-persisted as active settings.
     if 'cleanup' in body:
         cp = body['cleanup']
         if not isinstance(cp, dict) or not isinstance(cp.get('enabled'), bool):

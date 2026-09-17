@@ -47,7 +47,7 @@ class ManagementTests(unittest.TestCase):
     # -- helpers ---------------------------------------------------------
     def base_config(self):
         return {'version': 1, 'server_url': 'http://127.0.0.1:1234', 'opencode_binary': '/opt/opencode',
-                'console_url': 'http://127.0.0.1:1235', 'max_parallel': 3, 'max_kimi_parallel': 1,
+                'console_url': 'http://127.0.0.1:1235', 'max_parallel_per_owner': 4,
                 'max_steps': 80, 'kimi_reserve_percent': 20,
                 'profiles': {'fast-code': {'model': 'deepseek/deepseek-flash', 'label': 'Flash', 'variant': 'high'},
                              'senior-code': {'model': 'kimi-for-coding/kimi-for-coding', 'label': 'Kimi', 'variant': 'high'}}}
@@ -61,9 +61,8 @@ class ManagementTests(unittest.TestCase):
     def valid_body(self):
         return {'profiles': {'fast-code': {'model': 'deepseek/deepseek-flash', 'label': 'Flash', 'variant': 'high'},
                              'senior-code': {'model': 'kimi-for-coding/kimi-for-coding', 'label': 'Kimi', 'enabled': True}},
-                'max_parallel': 4, 'max_kimi_parallel': 2, 'max_steps': 100, 'kimi_reserve_percent': 25,
-                'routing': {'fast': 'fast-code', 'background': 'senior-code', 'deep': 'senior-code'},
-                'provider_limits': {'deepseek': 2}}
+                'max_parallel_per_owner': 6, 'max_steps': 100, 'kimi_reserve_percent': 25,
+                'routing': {'fast': 'fast-code', 'background': 'senior-code', 'deep': 'senior-code'}}
 
     def add_task(self, task_id, status, session_id=None, title='Pool task'):
         t = {'id': task_id, 'title': title, 'status': status, 'created_at': time.time()}
@@ -130,14 +129,45 @@ class ManagementTests(unittest.TestCase):
         with patch.object(common, 'api', side_effect=api), self.assertRaises(ValueError):
             management.save_settings(self.valid_body())
 
-    def test_bad_provider_limit_and_stale_revision_never_write(self):
+    def test_bad_per_owner_limit_and_stale_revision_never_write(self):
         before = self.config.read_bytes()
-        for value in [0, -1, True, '2', 99]:
-            body = self.valid_body(); body['provider_limits'] = {'deepseek': value}
+        for value in [0, -1, True, '2', 17]:
+            body = self.valid_body(); body['max_parallel_per_owner'] = value
             with self.assertRaises(ValueError): management.save_settings(body)
         body = self.valid_body(); body['revision'] = 99
         with self.assertRaises(ValueError): management.save_settings(body)
         self.assertEqual(before, self.config.read_bytes())
+
+    def test_legacy_global_cap_fields_are_inert_and_never_exposed(self):
+        config = self.base_config()
+        config['max_parallel'] = 9
+        config['max_kimi_parallel'] = 7
+        config['provider_limits'] = {'deepseek': 1}
+        del config['max_parallel_per_owner']
+        self.write_config(config)
+        result = management.settings()
+        self.assertEqual(result['max_parallel_per_owner'], 4)
+        for leaked in ('max_parallel', 'max_kimi_parallel', 'provider_limits'):
+            self.assertNotIn(leaked, result)
+        # A legacy global cap on disk must not be interpreted as the owner limit.
+        body = self.valid_body(); body['max_parallel_per_owner'] = 2
+        with patch.object(common, 'api', return_value={}):
+            management.save_settings(body)
+        stored = self.read_config()
+        self.assertEqual(stored['max_parallel_per_owner'], 2)
+        # Legacy fields remain on disk but are inert, never the owner limit.
+        self.assertEqual(stored['max_parallel'], 9)
+        self.assertEqual(stored['max_kimi_parallel'], 7)
+        self.assertEqual(stored['provider_limits'], {'deepseek': 1})
+
+    def test_settings_defaults_per_owner_limit_when_missing_or_invalid(self):
+        config = self.base_config()
+        del config['max_parallel_per_owner']
+        self.write_config(config)
+        self.assertEqual(management.settings()['max_parallel_per_owner'], 4)
+        config['max_parallel_per_owner'] = 'junk'
+        self.write_config(config)
+        self.assertEqual(management.settings()['max_parallel_per_owner'], 4)
 
     # -- catalog ---------------------------------------------------------
     def test_catalog_whitelists_provider_and_model_fields(self):
@@ -173,9 +203,9 @@ class ManagementTests(unittest.TestCase):
     # -- settings --------------------------------------------------------
     def test_settings_returns_only_editable_fields(self):
         result = management.settings()
-        self.assertEqual(set(result.keys()), {'profiles', 'max_parallel', 'max_kimi_parallel', 'max_steps',
+        self.assertEqual(set(result.keys()), {'profiles', 'max_parallel_per_owner', 'max_steps',
                                               'kimi_reserve_percent', 'revision', 'cleanup', 'auto_approve'})
-        self.assertEqual(result['max_parallel'], 3)
+        self.assertEqual(result['max_parallel_per_owner'], 4)
         self.assertEqual(result['profiles']['fast-code'],
                          {'model': 'deepseek/deepseek-flash', 'label': 'Flash', 'variant': 'high', 'enabled': True})
         for leaked in ('server_url', 'console_url', 'opencode_binary'):
@@ -190,7 +220,7 @@ class ManagementTests(unittest.TestCase):
         self.assertEqual(stored['server_url'], 'http://127.0.0.1:1234')
         self.assertEqual(stored['opencode_binary'], '/opt/opencode')
         self.assertEqual(stored['console_url'], 'http://127.0.0.1:1235')
-        self.assertEqual(stored['max_parallel'], 4)
+        self.assertEqual(stored['max_parallel_per_owner'], 6)
         self.assertEqual(stored['routing']['deep'], 'senior-code')
         self.assertEqual(stored['revision'], 1)
         self.assertTrue(stored['restart_required'])
@@ -213,16 +243,15 @@ class ManagementTests(unittest.TestCase):
         bad = self.valid_body(); bad['profiles']['../evil'] = {'model': 'deepseek/x'}; cases.append(('path id', bad))
         bad = self.valid_body(); bad['profiles']['ok'] = {'model': 'https://evil.example/model'}; cases.append(('url model', bad))
         bad = self.valid_body(); bad['profiles']['ok'] = {'model': 'no-slash'}; cases.append(('bare model', bad))
-        bad = self.valid_body(); bad['max_parallel'] = 0; cases.append(('parallel low', bad))
-        bad = self.valid_body(); bad['max_parallel'] = 17; cases.append(('parallel high', bad))
-        bad = self.valid_body(); bad['max_parallel'] = True; cases.append(('bool parallel', bad))
-        bad = self.valid_body(); bad['max_kimi_parallel'] = 5; cases.append(('kimi over parallel', bad))
+        bad = self.valid_body(); bad['max_parallel_per_owner'] = 0; cases.append(('per-owner low', bad))
+        bad = self.valid_body(); bad['max_parallel_per_owner'] = 17; cases.append(('per-owner high', bad))
+        bad = self.valid_body(); bad['max_parallel_per_owner'] = True; cases.append(('bool per-owner', bad))
+        bad = self.valid_body(); del bad['max_parallel_per_owner']; cases.append(('per-owner missing', bad))
         bad = self.valid_body(); bad['max_steps'] = 201; cases.append(('steps high', bad))
         bad = self.valid_body(); bad['kimi_reserve_percent'] = 101; cases.append(('reserve high', bad))
         bad = self.valid_body(); del bad['routing']['deep']; cases.append(('routing incomplete', bad))
         bad = self.valid_body(); bad['routing']['fast'] = 'ghost'; cases.append(('routing unknown', bad))
         bad = self.valid_body(); bad['profiles']['senior-code']['enabled'] = False; cases.append(('routing disabled', bad))
-        bad = self.valid_body(); bad['provider_limits'] = ['x']; cases.append(('bad limits', bad))
         for name, body in cases:
             with self.subTest(name=name):
                 with patch.object(common, 'api') as api:
@@ -230,6 +259,20 @@ class ManagementTests(unittest.TestCase):
                         management.save_settings(body)
                     api.assert_not_called()
                 self.assertEqual(self.config.read_text(), original)
+
+    def test_save_settings_ignores_legacy_cap_fields_in_body(self):
+        body = self.valid_body()
+        body['max_parallel'] = 9
+        body['max_kimi_parallel'] = 9
+        body['provider_limits'] = {'deepseek': 9}
+        with patch.object(common, 'api', return_value={}):
+            result = management.save_settings(body)
+        for leaked in ('max_parallel', 'max_kimi_parallel', 'provider_limits'):
+            self.assertNotIn(leaked, result)
+        stored = self.read_config()
+        self.assertEqual(stored['max_parallel_per_owner'], 6)
+        for leaked in ('max_parallel', 'max_kimi_parallel', 'provider_limits'):
+            self.assertNotIn(leaked, stored)
 
     def test_save_settings_rejects_non_object(self):
         with self.assertRaises(ValueError):

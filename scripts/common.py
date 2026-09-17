@@ -172,7 +172,7 @@ def public_task(t):
             'group_id', 'group_title', 'parent_task_id', 'owner_thread_id',
             'workspace', 'source_dir', 'directory', 'scopes', 'resources', 'session_id', 'session_deleted', 'session_directory', 'guidance',
             'created_at', 'started_at', 'finished_at', 'reason', 'queue_reason', 'route_reason',
-            'actual_models', 'review_required', 'artifact_dir', 'summary', 'elapsed_seconds', 'errors', 'auto_approve']
+            'actual_models', 'review_required', 'artifact_dir', 'summary', 'elapsed_seconds', 'errors', 'recovery', 'auto_approve']
     return {k: t[k] for k in keys if k in t}
 
 

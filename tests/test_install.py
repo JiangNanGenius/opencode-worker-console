@@ -82,9 +82,10 @@ class InstallTests(unittest.TestCase):
         c = json.loads(self.config.read_text())
         for name in install.PROFILE_NAMES:
             self.assertEqual(c['profiles'][name], {'model': 'acme/worker-1', 'label': 'worker-1'})
-        self.assertEqual(c['provider_limits'], {})
-        self.assertEqual(c['max_kimi_parallel'], 1)
-        self.assertEqual(c['max_parallel'], 3)
+        self.assertEqual(c['max_parallel_per_owner'], 4)
+        self.assertEqual(c['kimi_reserve_percent'], 0)
+        for legacy in ('max_parallel', 'max_kimi_parallel', 'provider_limits'):
+            self.assertNotIn(legacy, c)
         self.assertEqual(c['opencode_binary'], '/usr/bin/opencode')
         self.assertTrue(c['server_url'].startswith('http://127.0.0.1:'))
         self.assertTrue(c['console_url'].startswith('http://127.0.0.1:'))
@@ -112,8 +113,10 @@ class InstallTests(unittest.TestCase):
         for spec in c['profiles'].values():
             self.assertEqual(spec['variant'], 'high')
             self.assertTrue(spec['label'])
-        self.assertEqual(c['provider_limits'], {'kimi-for-coding': 1})
-        self.assertEqual(c['max_kimi_parallel'], 1)
+        self.assertEqual(c['max_parallel_per_owner'], 4)
+        self.assertEqual(c['kimi_reserve_percent'], 0)
+        for legacy in ('max_parallel', 'max_kimi_parallel', 'provider_limits'):
+            self.assertNotIn(legacy, c)
 
     def test_existing_config_unchanged_except_missing_defaults(self):
         existing = {'version': 1, 'server_url': 'http://127.0.0.1:41234',
@@ -124,24 +127,29 @@ class InstallTests(unittest.TestCase):
         self.run_install()
         c = json.loads(self.config.read_text())
         self.assertEqual(c['profiles'], existing['profiles'])
+        # Legacy global/provider caps stay on disk but are inert; the new
+        # per-owner cap defaults to 4 and custom reserve values are preserved.
         self.assertEqual(c['max_parallel'], 5)
         self.assertEqual(c['max_kimi_parallel'], 2)
+        self.assertEqual(c['max_parallel_per_owner'], 4)
+        self.assertEqual(c['kimi_reserve_percent'], 10)
         self.assertEqual(c['opencode_binary'], '/old/opencode')
         self.assertEqual(c['max_steps'], 80)
-        self.assertEqual(c['provider_limits'], {})
         self.assertTrue(c['console_url'].startswith('http://127.0.0.1:'))
         self.assertNotEqual(c['console_url'], c['server_url'])
 
-    def test_kimi_provider_limit_defaulted_only_when_present(self):
+    def test_legacy_provider_limits_remained_inert_on_upgrade(self):
         existing = {'version': 1, 'server_url': 'http://127.0.0.1:41234',
                     'console_url': 'http://127.0.0.1:41235', 'opencode_binary': '/old/opencode',
+                    'max_parallel': 2, 'provider_limits': {'kimi-for-coding': 1},
                     'profiles': {'fast-code': {'model': 'kimi-for-coding/k2', 'label': 'Kimi'}}}
         self.config.parent.mkdir(parents=True)
         self.config.write_text(json.dumps(existing))
         self.run_install()
         c = json.loads(self.config.read_text())
         self.assertEqual(c['provider_limits'], {'kimi-for-coding': 1})
-        self.assertEqual(c['max_kimi_parallel'], 1)
+        self.assertEqual(c['max_parallel'], 2)
+        self.assertEqual(c['max_parallel_per_owner'], 4)
         self.assertEqual(c['profiles'], existing['profiles'])
 
     def test_active_task_refuses_update(self):

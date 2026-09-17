@@ -34,8 +34,10 @@ class PoolTests(unittest.TestCase):
                       'senior-code': {'model': 'kimi-for-coding/kimi-for-coding'},
                       'deep-research': {'model': 'kimi-for-coding/k3'}}}
         self.config.write_text(json.dumps(self.c))
+        self.identities = {'deepseek': 'cred-a', 'kimi-for-coding': 'cred-k'}
         self.patchers = [patch.object(m, 'STATE', self.state) for m in (common, quota, workspace, worker, delegate)]
-        self.patchers += [patch.object(common, 'CONFIG', self.config), patch.object(delegate, 'CONFIG', self.config)]
+        self.patchers += [patch.object(common, 'CONFIG', self.config), patch.object(delegate, 'CONFIG', self.config),
+                          patch.object(quota, 'credential_identity', lambda p: self.identities.get(p))]
         for p in self.patchers:
             p.start()
         common.init()
@@ -103,14 +105,31 @@ class PoolTests(unittest.TestCase):
         t['complexity'] = 'deep'
         self.assertEqual(quota.route(t, self.c, self.q)[0], 'deep-research')
 
-    def test_low_quota_fallback_and_explicit_wait(self):
+    def test_low_quota_blocks_without_fallback_and_keeps_pins(self):
         self.q['kimi-for-coding']['windows'][0]['remaining_percent'] = 10
         t = self.new(profile='auto')
-        self.assertEqual(quota.route(t, self.c, self.q)[0], 'fast-code')
+        profile, why = quota.route(t, self.c, self.q)
+        self.assertIsNone(profile)
+        self.assertEqual(why, 'reserve_kimi_for_complex_work')
+        alts = quota.alternatives(t, self.c, self.q)
+        self.assertEqual([a['profile'] for a in alts], ['fast-code'])
+        rec = quota.recovery(t, self.c, self.q)
+        self.assertEqual(rec['suggested_action'], 'reselect_profile')
+        self.assertFalse(rec['automatic_fallback'])
         t['requested_profile'] = 'senior-code'
         self.assertIsNone(quota.route(t, self.c, self.q)[0])
         t.update(requested_profile='deep-research', complexity='deep')
         self.assertEqual(quota.route(t, self.c, self.q)[0], 'deep-research')
+
+    def test_reserve_defaults_to_zero_unless_configured(self):
+        c = dict(self.c)
+        c.pop('kimi_reserve_percent')
+        self.q['kimi-for-coding']['windows'][0]['remaining_percent'] = 10
+        t = self.new(profile='auto')
+        self.assertEqual(quota.route(t, c, self.q)[0], 'senior-code')
+        self.assertTrue(quota.allowed('kimi-for-coding', self.q, 'normal')[0])
+        # An explicitly configured nonzero reserve is preserved.
+        self.assertFalse(quota.allowed('kimi-for-coding', self.q, 'normal', 20)[0])
 
     def test_expired_cache_not_zero_auth_blocks(self):
         q = {'deepseek': {'state': 'unavailable', 'sampled_at': time.time() - 1000, 'available': False}}
@@ -127,11 +146,12 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(choices[0][2], 'scope_or_resource_in_use')
         self.assertEqual(choices[1][1], 'fast-code')
 
-    def test_kimi_profiles_share_concurrency(self):
+    def test_provider_caps_removed_kimi_profiles_dispatch_freely(self):
         a = self.new(profile='senior-code', scopes=['a'])
         b = self.new(profile='deep-research', scopes=['b'], complexity='deep')
         a.update(status='running', profile='senior-code')
-        self.assertEqual(delegate.choose_ready([a, b], self.c, self.q)[0][2], 'provider_at_capacity')
+        choices = delegate.choose_ready([a, b], self.c, self.q)
+        self.assertEqual(choices[0][1], 'deep-research')
 
     def test_resource_locks_cross_isolation(self):
         a = self.new(resources=['build-output'])
@@ -216,6 +236,16 @@ class PoolTests(unittest.TestCase):
         messages[0]['parts'][0]['text'] = '{"outcome":"done"}'
         self.assertIsNone(worker.summarize_messages(messages)['structured'])
 
+    def test_single_fenced_report_amid_prose_multiple_rejected(self):
+        report = {'outcome': 'done', 'summary': 'Observed', 'evidence': [], 'tests': [], 'unresolved': []}
+        text = 'All checks pass.\n```json\n' + json.dumps(report) + '\n```'
+        messages = [{'info': {'role': 'assistant'}, 'parts': [{'type': 'text', 'text': text}]}]
+        self.assertEqual(worker.summarize_messages(messages)['structured'], report)
+        messages[0]['parts'][0]['text'] = text + '\nDone again.\n```json\n' + json.dumps(report) + '\n```'
+        self.assertIsNone(worker.summarize_messages(messages)['structured'])
+        messages[0]['parts'][0]['text'] = 'Note.\n```json\n{"outcome":"done"}\n```'
+        self.assertIsNone(worker.summarize_messages(messages)['structured'])
+
     def test_parent_relationship_inherits_caller_group(self):
         a = self.new(group_id='group-a', group_title='Parent project')
         b = self.new(group_id='group-a', parent_task_id=a['id'])
@@ -227,6 +257,204 @@ class PoolTests(unittest.TestCase):
         a = quota.window('a', {'limit': 100, 'remaining': 20, 'resetTime': 1800000000})
         b = quota.window('a', {'limit': 100, 'remaining': 20, 'resetTime': 1800000000000})
         self.assertEqual(a['resets_at'], b['resets_at'])
+
+    def test_billing_circuit_blocks_stale_positive_and_pins_explicit(self):
+        t = self.new()  # explicit fast-code on deepseek
+        self.assertEqual(quota.route(t, self.c, self.q)[0], 'fast-code')
+        quota.trip('deepseek', 'Insufficient Balance', 'm1')
+        # The circuit overrides the fresh cached positive sample.
+        profile, why = quota.route(t, self.c, self.q)
+        self.assertIsNone(profile)
+        self.assertEqual(why, 'provider_billing_blocked')
+        rec = quota.recovery(t, self.c, self.q)
+        self.assertEqual(rec['blocked_reason'], 'provider_billing_blocked')
+        self.assertEqual(rec['suggested_action'], 'reselect_profile')
+        self.assertEqual([a['profile'] for a in rec['alternatives']], ['senior-code', 'deep-research'])
+        self.assertFalse(rec['automatic_fallback'])
+        # The explicitly pinned task stays queued; nothing is switched automatically.
+        choices = delegate.choose_ready([common.task(t['id'])], self.c, self.q)
+        self.assertEqual(choices[0][1], None)
+        self.assertEqual(choices[0][2], 'provider_billing_blocked')
+        self.assertEqual(common.task(t['id'])['status'], 'queued')
+
+    def test_billing_block_pins_deep_without_downgrade(self):
+        quota.trip('kimi-for-coding', 'Insufficient Balance', 'm1')
+        t = self.new(profile='auto', complexity='deep')
+        profile, why = quota.route(t, self.c, self.q)
+        self.assertIsNone(profile)
+        self.assertEqual(why, 'provider_billing_blocked')
+        rec = quota.recovery(t, self.c, self.q)
+        self.assertEqual([a['profile'] for a in rec['alternatives']], ['fast-code'])
+
+    def test_topup_recovers_and_old_errors_never_relatch(self):
+        quota.trip('deepseek', 'Insufficient Balance', 'm1', occurred_at=time.time() - 100)
+        self.assertFalse(quota.allowed('deepseek', self.q, 'normal')[0])
+        fresh = {'state': 'ok', 'available': True, 'windows': [], 'balances': [], 'sampled_at': time.time()}
+        with patch.object(quota, 'fetch_one', return_value=dict(fresh)):
+            quota.refresh(force=True)
+        self.assertIsNone(quota.billing_block('deepseek'))
+        self.assertTrue(quota.allowed('deepseek', self.q, 'normal')[0])
+        # Historical errors predating the recovery watermark never reopen the circuit.
+        quota.trip('deepseek', 'Insufficient Balance', 'm1', occurred_at=time.time() - 100)
+        quota.trip('deepseek', 'Insufficient Balance', 'm-unseen-old', occurred_at=time.time() - 90)
+        self.assertIsNone(quota.billing_block('deepseek'))
+        # A genuinely new billing failure re-arms it.
+        quota.trip('deepseek', 'Insufficient Balance', 'm2')
+        self.assertIsNotNone(quota.billing_block('deepseek'))
+
+    def test_inflight_refresh_never_clears_newer_circuit(self):
+        def fake_fetch(p):
+            if p == 'deepseek':
+                quota.trip('deepseek', 'Insufficient Balance', 'm-race')
+            return {'state': 'ok', 'available': True, 'windows': [], 'balances': [],
+                    'sampled_at': time.time()}
+        with patch.object(quota, 'fetch_one', side_effect=fake_fetch):
+            quota.refresh(force=True)
+        self.assertIsNotNone(quota.billing_block('deepseek'))
+        fresh = {'state': 'ok', 'available': True, 'windows': [], 'balances': [], 'sampled_at': time.time()}
+        with patch.object(quota, 'fetch_one', return_value=dict(fresh)):
+            quota.refresh(force=True)
+        self.assertIsNone(quota.billing_block('deepseek'))
+
+    def test_credential_rotation_releases_billing_circuit(self):
+        quota.trip('deepseek', 'Insufficient Balance', 'm1')
+        self.assertIsNotNone(quota.billing_block('deepseek'))
+        self.identities['deepseek'] = 'cred-b'
+        self.assertIsNone(quota.billing_block('deepseek'))
+        self.assertTrue(quota.allowed('deepseek', self.q, 'normal')[0])
+        # A recovery sample bound to the old credential must not clear the new circuit.
+        quota.trip('deepseek', 'Insufficient Balance', 'm2')  # binds cred-b
+        self.assertFalse(quota.clear('deepseek', sampled_since=time.time(), identity='cred-a'))
+        self.assertIsNotNone(quota.billing_block('deepseek'))
+
+    def test_view_overlays_billing_block_without_credential(self):
+        quota.trip('deepseek', 'Insufficient Balance', 'm1')
+        v = quota.view({'deepseek': {'state': 'ok', 'available': True, 'sampled_at': time.time()}})
+        self.assertFalse(v['deepseek']['available'])
+        self.assertEqual(v['deepseek']['state'], 'billing_blocked')
+        self.assertIn('opened_at', v['deepseek']['billing'])
+        self.assertNotIn('cred-a', json.dumps(v))
+
+    def test_guidance_reads_historical_402_without_rearming(self):
+        t = self.new()
+        t = common.update(t['id'], status='failed', reason='APIError', errors=[
+            {'source': 'model', 'http_status': 402, 'message': 'Insufficient Balance'}])
+        g = quota.guidance(t, self.c, self.q)
+        self.assertEqual(g['blocked_reason'], 'provider_billing_error')
+        self.assertEqual(g['suggested_action'], 'inspect_partial_work_and_reselect_profile')
+        self.assertIsNone(quota.billing_block('deepseek'))  # read-only, never re-arms
+        # Completed or running jobs are never marked blocked by unrelated quota state.
+        self.assertIsNone(quota.guidance(dict(t, status='completed', errors=[]), self.c, self.q))
+        self.assertIsNone(quota.guidance(dict(t, status='running', errors=[]), self.c, self.q))
+
+    def test_wait_on_blocked_queue_requests_reselection(self):
+        t = self.new()
+        quota.trip('deepseek', 'Insufficient Balance', 'm1')
+        common.update(t['id'], recovery=quota.recovery(t, self.c, self.q))
+        result = delegate.wait_result(common.task(t['id']), 1)
+        self.assertFalse(result['terminal'])
+        self.assertFalse(result['continue_waiting'])
+        self.assertEqual(result['next_action'], 'reselect_profile_and_resubmit')
+        self.assertTrue(result['attention'])
+        self.assertEqual(result['recovery']['blocked_reason'], 'provider_billing_blocked')
+        self.assertEqual([a['profile'] for a in result['recovery']['alternatives']],
+                         ['senior-code', 'deep-research'])
+        # Plain quota exhaustion with no viable alternative asks for top-up, not waiting.
+        quota.clear('deepseek')
+        q = {p: dict(v) for p, v in self.q.items()}
+        q['deepseek']['available'] = False
+        q['kimi-for-coding']['available'] = False
+        self.assertEqual(quota.recovery(t, self.c, q)['suggested_action'],
+                         'top_up_provider_account_or_wait_for_quota')
+
+    def running(self, owner, scope, profile='fast-code', group=None):
+        t = self.new(scopes=[scope], profile=profile)
+        t.update(status='running', profile=profile, owner_thread_id=owner,
+                 group_id=group if group is not None else t['group_id'])
+        return t
+
+    def test_plain_exhaustion_and_recovery_reach_all_coordinator_views(self):
+        import diagnostics
+        t = self.new(profile='senior-code', mode='read', scopes=[])
+        q = {p: dict(v) for p, v in self.q.items()}
+        q['kimi-for-coding']['available'] = False
+        common.write_json(self.state / 'quota.json', q)
+        blocked = delegate.wait_result(t, 0)
+        self.assertFalse(blocked['continue_waiting'])
+        self.assertEqual(blocked['next_action'], 'reselect_profile_and_resubmit')
+        self.assertEqual([p['profile'] for p in blocked['recovery']['alternatives']], ['fast-code'])
+        t = common.update(t['id'], recovery=blocked['recovery'])
+        common.write_json(self.state / 'quota.json', self.q)
+        self.assertNotIn('recovery', delegate.task_status(t))
+        healthy = delegate.wait_result(t, 0)
+        self.assertTrue(healthy['continue_waiting'])
+        self.assertNotIn('recovery', healthy)
+        collected = diagnostics.collect(t['id'])
+        self.assertNotIn('recovery', collected)
+        self.assertNotIn('recovery', collected['task'])
+
+    def test_owner_cap_blocks_fifth_same_conversation(self):
+        acts = [self.running('thread-a', 'f%d.txt' % i) for i in range(4)]
+        fifth = self.new(scopes=['f5.txt'])
+        fifth['owner_thread_id'] = 'thread-a'
+        self.assertEqual(delegate.choose_ready(acts + [fifth], self.c, self.q)[0][2],
+                         'owner_at_capacity')
+
+    def test_independent_conversations_have_no_shared_cap(self):
+        acts = [self.running('thread-a', 'a%d.txt' % i) for i in range(4)]
+        acts += [self.running('thread-b', 'b%d.txt' % i) for i in range(4)]
+        # Eight actives far exceed the legacy max_parallel=3 fixture; no global cap applies.
+        queued = self.new(scopes=['c.txt'])
+        queued['owner_thread_id'] = 'thread-c'
+        self.assertEqual(delegate.choose_ready(acts + [queued], self.c, self.q)[0][1], 'fast-code')
+        blocked = self.new(scopes=['a5.txt'])
+        blocked['owner_thread_id'] = 'thread-a'
+        self.assertEqual(delegate.choose_ready(acts + [blocked], self.c, self.q)[0][2],
+                         'owner_at_capacity')
+
+    def test_legacy_provider_limits_do_not_constrain_owners(self):
+        acts = [self.running('t%d' % i, 'k%d.txt' % i, profile='senior-code') for i in range(3)]
+        queued = self.new(profile='senior-code', scopes=['k9.txt'])
+        queued['owner_thread_id'] = 't9'
+        # Legacy max_kimi_parallel=1 must not constrain separate owners.
+        self.assertEqual(delegate.choose_ready(acts + [queued], self.c, self.q)[0][1],
+                         'senior-code')
+
+    def test_group_id_never_overrides_owner_thread(self):
+        acts = [self.running('thread-a', 'g%d.txt' % i, group='shared') for i in range(4)]
+        other = self.new(scopes=['g9.txt'])
+        other.update(owner_thread_id='thread-b', group_id='shared')
+        self.assertEqual(delegate.choose_ready(acts + [other], self.c, self.q)[0][1], 'fast-code')
+
+    def test_legacy_owner_fallback_group_then_source(self):
+        acts = []
+        for i in range(4):
+            t = self.new(scopes=['h%d.txt' % i])
+            t.update(status='running', profile='fast-code', owner_thread_id=None, group_id='legacy-group')
+            acts.append(t)
+        fifth = self.new(scopes=['h5.txt'])
+        fifth.update(owner_thread_id=None, group_id='legacy-group')
+        self.assertEqual(delegate.choose_ready(acts + [fifth], self.c, self.q)[0][2],
+                         'owner_at_capacity')
+        bare = []
+        for i in range(4):
+            t = self.new(scopes=['s%d.txt' % i])
+            t.update(status='running', profile='fast-code', owner_thread_id=None, group_id=None)
+            bare.append(t)
+        sixth = self.new(scopes=['s5.txt'])
+        sixth.update(owner_thread_id=None, group_id=None)
+        self.assertEqual(delegate.choose_ready(bare + [sixth], self.c, self.q)[0][2],
+                         'owner_at_capacity')
+
+    def test_per_owner_cap_validation_defaults_four(self):
+        self.assertEqual(delegate.per_owner_cap({}), 4)
+        for bad in (True, 'junk', 0, 17, 2.5):
+            self.assertEqual(delegate.per_owner_cap(dict(self.c, max_parallel_per_owner=bad)), 4)
+        c = dict(self.c, max_parallel_per_owner=1)
+        a = self.new(scopes=['x1.txt'])
+        a.update(status='running', profile='fast-code')
+        b = self.new(scopes=['x2.txt'])
+        self.assertEqual(delegate.choose_ready([a, b], c, self.q)[0][2], 'owner_at_capacity')
 
     def test_recovery_never_replays_prompt(self):
         t = self.new(mode='read', scopes=[])

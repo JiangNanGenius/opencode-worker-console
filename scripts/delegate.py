@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """CLI and durable queue daemon for the general-purpose OpenCode worker pool."""
 import argparse
-from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import json
 import os
@@ -20,21 +19,67 @@ from workspace import conflicts, git_root, integrate, relative_scope
 from worker import run_task
 
 
+def owner_key(t):
+    """Immutable scheduling owner: the Codex conversation, with legacy fallbacks."""
+    return t.get('owner_thread_id') or t.get('group_id') or t.get('source_dir')
+
+
+def per_owner_cap(c):
+    cap = c.get('max_parallel_per_owner', 4)
+    if isinstance(cap, bool) or not isinstance(cap, int) or not 1 <= cap <= 16:
+        return 4
+    return cap
+
+
+def live_recovery(t):
+    """Fresh guidance for queued blockages and billing-failed tasks.
+
+    Live derivation replaces the persisted snapshot; when routing is healthy again the
+    result is None so stale recovery never lingers. The snapshot is kept only when live
+    derivation itself is unavailable.
+    """
+    if t.get('status') not in ('queued', 'failed', 'needs_attention'):
+        return None
+    try:
+        return quota.guidance(t, config(), quota.view(read_json(STATE / 'quota.json', {})))
+    except Exception:
+        return t.get('recovery') if isinstance(t.get('recovery'), dict) else None
+
+
 def wait_result(t, waited_seconds):
     """Make a bounded wait unambiguous to an agent coordinator."""
-    result = public_task(t)
+    result = task_status(t)
     terminal = t['status'] in TERMINAL
+    recovery = result.get('recovery')
+    # A blocked queued task needs coordinator re-selection, not another blind wait.
+    blocked = t['status'] == 'queued' and isinstance(recovery, dict)
     result.update(
         terminal=terminal,
-        continue_waiting=not terminal,
+        continue_waiting=not terminal and not blocked,
         waited_seconds=max(0, round(waited_seconds, 3)),
         next_action=(
+            'reselect_profile_and_resubmit' if blocked and recovery.get('alternatives') else
+            'top_up_provider_account_then_wait' if blocked else
             'call_wait_again' if not terminal else
             'collect_and_review' if t['status'] == 'completed' else
             'collect_and_inspect_errors' if t['status'] != 'cancelled' else
             'stop'
         ),
     )
+    if recovery:
+        result['recovery'] = recovery
+    if blocked:
+        result['attention'] = True
+    return result
+
+
+def task_status(t):
+    """Expose current recovery options without retaining an obsolete snapshot."""
+    result = public_task(t)
+    result.pop('recovery', None)
+    recovery = live_recovery(t) if t.get('id') else None
+    if recovery:
+        result['recovery'] = recovery
     return result
 
 
@@ -101,29 +146,29 @@ def submit(spec):
 
 
 def choose_ready(all_tasks, c, q):
+    """Select dispatchable queued tasks.
+
+    No global or per-provider concurrency caps: independent Codex conversations run
+    freely. Only the per-owner cap, true quota/billing blocks, and scope/resource
+    overlap locks constrain dispatch. Profiles are pinned; billing/quota blockages are
+    reported, never silently re-routed.
+    """
     if (STATE / 'maintenance.json').exists():
         return []
     active = [t for t in all_tasks if t['status'] in ACTIVE]
     choices = []
     waiting = [t for t in all_tasks if t['status'] == 'queued']
+    cap = per_owner_cap(c)
     for t in waiting:
         if t.get('cancel_requested'):
             choices.append((t, None, 'cancelled'))
             continue
-        if len(active) >= c['max_parallel']:
-            choices.append((t, None, 'pool_at_capacity'))
+        if sum(1 for a in active if owner_key(a) == owner_key(t)) >= cap:
+            choices.append((t, None, 'owner_at_capacity'))
             continue
         profile, why = quota.route(t, c, q)
         if profile is None:
             choices.append((t, None, why))
-            continue
-        provider = c['profiles'][profile]['model'].split('/', 1)[0]
-        count = sum(c['profiles'][a['profile']]['model'].split('/', 1)[0] == provider for a in active)
-        limit = c.get('provider_limits', {}).get(provider, c.get('max_kimi_parallel', 1) if provider == 'kimi-for-coding' else c['max_parallel'])
-        if provider in quota.ENDPOINTS and (q.get(provider, {}).get('stale', True) or q.get(provider, {}).get('available') is None):
-            limit = min(limit, 1)
-        if count >= limit:
-            choices.append((t, None, 'provider_at_capacity'))
             continue
         if any(conflicts(t, a) for a in active):
             choices.append((t, None, 'scope_or_resource_in_use'))
@@ -144,45 +189,56 @@ def daemon():
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     signal.signal(signal.SIGINT, lambda *_: stop.set())
-    futures = {}
+    # Per-job threads: no hidden executor cap across independent owners.
+    threads = {}
+    cleanup_thread = None
     last_refresh = 0
     last_cleanup = 0
-    cleanup_future = None
     q = quota.view(read_json(STATE / 'quota.json', {}))
-    with ThreadPoolExecutor(max_workers=config()['max_parallel']) as pool:
-        while not stop.is_set():
-            try:
-                c = config()
-                import cleanup
-                cp = cleanup.policy()
-                if cp['enabled'] and time.time() - last_cleanup >= cp['interval_seconds'] and (cleanup_future is None or cleanup_future.done()):
-                    last_cleanup = time.time()
-                    cleanup_future = pool.submit(cleanup.run, apply=True)
-                all_tasks = tasks()
-                just_finished = any(f.done() for f in futures.values())
-                needs_poll = any(t['status'] in ACTIVE | {'queued'} for t in all_tasks)
-                has_queue = any(t['status'] == 'queued' for t in all_tasks)
-                if just_finished or (needs_poll and time.time() - last_refresh >= (60 if has_queue else 300)):
-                    q, last_refresh = quota.refresh(), time.time()
-                futures = {k: f for k, f in futures.items() if not f.done()}
-                with locked():
-                    for t, profile, reason in choose_ready(tasks(), c, q):
-                        if reason == 'cancelled':
-                            t.update(status='cancelled', finished_at=time.time())
-                        elif profile:
-                            t.update(profile=profile, status='starting', route_reason=reason,
-                                     started_at=time.time(), queue_reason=None)
-                        else:
-                            t['queue_reason'] = reason
-                        write_json(task_path(t['id']), t)
-                for t in tasks():
-                    if t['status'] in ACTIVE and t['id'] not in futures:
-                        futures[t['id']] = pool.submit(run_task, t['id'], stop)
-                write_json(STATE / 'heartbeat.json', {'pid': os.getpid(), 'time': time.time(),
-                           'active': list(futures), 'version': 1})
-            except Exception as e:
-                write_json(STATE / 'daemon-error.json', {'time': time.time(), 'error': diagnostics.exception(e, 'schedule')})
-            stop.wait(2)
+    while not stop.is_set():
+        try:
+            c = config()
+            import cleanup
+            cp = cleanup.policy()
+            if cp['enabled'] and time.time() - last_cleanup >= cp['interval_seconds'] and \
+                    (cleanup_thread is None or not cleanup_thread.is_alive()):
+                last_cleanup = time.time()
+                cleanup_thread = threading.Thread(target=cleanup.run, kwargs={'apply': True},
+                                                  daemon=True, name='cleanup')
+                cleanup_thread.start()
+            all_tasks = tasks()
+            just_finished = any(not th.is_alive() for th in threads.values())
+            needs_poll = any(t['status'] in ACTIVE | {'queued'} for t in all_tasks)
+            has_queue = any(t['status'] == 'queued' for t in all_tasks)
+            if just_finished or (needs_poll and time.time() - last_refresh >= (60 if has_queue else 300)):
+                q, last_refresh = quota.refresh(), time.time()
+            threads = {k: th for k, th in threads.items() if th.is_alive()}
+            with locked():
+                for t, profile, reason in choose_ready(tasks(), c, q):
+                    if reason == 'cancelled':
+                        t.update(status='cancelled', finished_at=time.time())
+                    elif profile:
+                        t.update(profile=profile, status='starting', route_reason=reason,
+                                 started_at=time.time(), queue_reason=None, recovery=None)
+                    else:
+                        t['queue_reason'] = reason
+                        t['recovery'] = quota.guidance(t, c, q)
+                    write_json(task_path(t['id']), t)
+            for t in tasks():
+                if t['status'] in ACTIVE and t['id'] not in threads:
+                    th = threading.Thread(target=run_task, args=(t['id'], stop),
+                                          daemon=True, name='task-' + t['id'])
+                    th.start()
+                    threads[t['id']] = th
+            write_json(STATE / 'heartbeat.json', {'pid': os.getpid(), 'time': time.time(),
+                       'active': list(threads), 'version': 1})
+        except Exception as e:
+            write_json(STATE / 'daemon-error.json', {'time': time.time(), 'error': diagnostics.exception(e, 'schedule')})
+        stop.wait(2)
+    # Daemon threads exit on the shared stop event; one shared deadline bounds settling.
+    deadline = time.time() + 10
+    for th in threads.values():
+        th.join(timeout=max(0, deadline - time.time()))
 
 
 def doctor():
@@ -297,7 +353,10 @@ def main():
             spec.update(scopes=args.scope, commands=args.command, resources=args.resource)
         result = submit(spec)
     elif args.cmd == 'status':
-        result = public_task(task(args.id)) if args.id else [public_task(t) for t in tasks()]
+        if args.id:
+            result = task_status(task(args.id))
+        else:
+            result = [task_status(t) for t in tasks()]
     elif args.cmd == 'transcript':
         import transcript
         result = transcript.read(args.id, args.limit, args.before, args.full, args.saved)

@@ -10,11 +10,13 @@ Manage task ownership, parent/child tasks, worker profiles, automatic routing, s
 - **Sessions:** browse across projects, search, create, rename, archive/restore, fork, permanently delete and open the native OpenCode conversation. Forking does not send a prompt.
 - **Models:** add, remove and disable profiles; choose provider/model and optional reasoning variant; configure routing and concurrency. Settings apply only when workers and native sessions are idle.
 - **Profile routing:** coordinators can select a profile from task semantics or use coarse automatic routing based on urgency and complexity. All tiers can own complete tasks.
+- **Conversation concurrency:** each owning Codex conversation can run four workers by default. Other conversations have independent slots, with no shared global or provider cap. Shared-file/resource conflicts and account availability still govern dispatch.
 - **Usage:** DeepSeek balance and Kimi Coding plan windows, sample age and reset time. Other OpenCode providers can run tasks without a usage adapter.
 - **Workspace coordination:** disjoint shared write scopes, resource locks, or isolated Git worktrees based on the current working tree. Review a patch before applying it.
 - **Agent controls:** guide a running worker, bind sessions to workspaces, perform user-authorized deletion, and optionally clean old owned data when disk space is low.
 - **On-demand transcripts:** inspect a worker task or native session with messages, tool inputs, outputs and errors; page through history or explicitly export the full conversation. Regular reports stay concise.
 - **Error bridge:** model/API errors, tool failures, command exit codes, retry state and connection failures reach the coordinator through `status`, `wait` and `collect`, with credential redaction. Pending questions are included in collected results.
+- **Billing recovery:** confirmed model billing errors block further provider dispatch despite a cached positive balance. The coordinator receives recovery guidance and candidate profiles, and chooses what happens next. Quota failures never silently switch profiles or replay dispatched work; replenishment is checked through fresh account telemetry.
 - **Durability:** persistent tasks, observed session recovery without blindly replaying a prompt, and cancellation confirmation before releasing ownership.
 
 No Node build step, database service or paid framework is required. The runtime uses Python's standard library and vanilla HTML/CSS/JavaScript.

@@ -53,7 +53,7 @@ def state():
     return redact({'tasks': entries, 'quota': quota.view(read_json(STATE / 'quota.json', {})),
                    'pool_healthy': all(health.values()), 'services': health,
                    'profiles': {k: {'label': v.get('label', v['model']), 'model': v['model']} for k, v in config()['profiles'].items()},
-                   'updated_at': time.time(), 'max_parallel': config()['max_parallel']})
+                   'updated_at': time.time(), 'max_parallel_per_owner': management.settings()['max_parallel_per_owner']})
 
 
 class Handler(BaseHTTPRequestHandler):

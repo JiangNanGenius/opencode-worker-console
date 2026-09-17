@@ -3,6 +3,7 @@ import collections
 import hashlib
 import json
 from pathlib import Path
+import re
 import shlex
 import threading
 import time
@@ -11,6 +12,7 @@ from common import (STATE, HttpFailure, api, artifact_dir, config, read_json, re
                     task, update, write_json, locked, message_id as next_message_id)
 from workspace import collect_changes, prepare
 import diagnostics
+import quota
 
 RESULT_SCHEMA = {
     'type': 'object', 'additionalProperties': False,
@@ -36,8 +38,10 @@ You may make ordinary implementation decisions within the task. Surface importan
 Only modify the declared writable scopes. Other agents or the user may be working concurrently.
 Do not undo unrelated changes. Do not run Git state-changing commands.
 Read-only tasks must not modify source files. Do not hide modifications in shell commands.
-For permission/scope gaps, return blocked with the exact need. After two unsuccessful attempts
-at the same failure, return partial with evidence so Astra can redirect the task.
+Own the normal test-and-fix cycle: run relevant builds/tests/terminal or existing headless UI
+checks, investigate failures and repair them within scope before reporting. Do not repeat an
+identical failing tool call; change approach. Return blocked for a genuine permission/scope
+gap or complex real UI/Computer Use requirement, with passed checks and the exact next action.
 Your final structured report should fit roughly 2,000 tokens. Cite file paths and line numbers,
 separate observed facts from inference, list actual test commands/results and remaining unknowns.
 Never claim a test, device result or production outcome you have not observed.
@@ -112,6 +116,49 @@ def stop(t):
     return False
 
 
+def valid_report(candidate):
+    return isinstance(candidate, dict) and candidate.get('outcome') in ('done', 'blocked', 'partial') and \
+        isinstance(candidate.get('summary'), str) and all(isinstance(candidate.get(k), list) and
+            all(isinstance(x, str) for x in candidate[k]) for k in ('evidence', 'tests', 'unresolved'))
+
+
+def parse_report(text):
+    """Accept exactly one valid JSON report: bare, or a single fenced block amid prose.
+
+    Multiple valid reports are ambiguous and rejected; invalid candidates are ignored.
+    """
+    probes = [b.strip() for b in re.findall(r'```[^\n]*\n(.*?)```', text, re.S)]
+    probes.append(text)
+    valid = []
+    for probe in probes:
+        try:
+            candidate = json.loads(probe)
+        except (ValueError, TypeError):
+            continue
+        if valid_report(candidate):
+            valid.append(candidate)
+    return valid[0] if len(valid) == 1 else None
+
+
+def record_billing_errors(t, errors):
+    """Trip the durable provider billing circuit on unequivocal model billing errors.
+
+    Tool text and transport failures never reach this; diagnostics marks only model
+    error payloads. Dedup by message ID means a historical error cannot relatch a
+    recovered circuit. Returns True when a billing error was recorded.
+    """
+    hits = [e for e in errors if isinstance(e, dict) and e.get('billing')]
+    if not hits:
+        return False
+    profile = t.get('profile')
+    if not profile or profile not in config()['profiles']:
+        return False
+    provider = config()['profiles'][profile]['model'].split('/', 1)[0]
+    for e in hits:
+        quota.trip(provider, e.get('message', ''), e.get('message_id'), e.get('occurred_at'))
+    return True
+
+
 def summarize_messages(messages):
     assistants = [m for m in messages if m.get('info', {}).get('role') == 'assistant']
     models = sorted(set(m['info'].get('providerID', '') + '/' + m['info'].get('modelID', '') for m in assistants))
@@ -142,17 +189,7 @@ def summarize_messages(messages):
     structured = last.get('info', {}).get('structured')
     texts = [p.get('text', '') for p in last.get('parts', []) if p.get('type') == 'text']
     if not structured:
-        raw = '\n'.join(texts).strip()
-        if raw.startswith('```'):
-            raw = raw.partition('\n')[2].rsplit('```', 1)[0].strip()
-        try:
-            candidate = json.loads(raw)
-            if isinstance(candidate, dict) and candidate.get('outcome') in ('done', 'blocked', 'partial') and \
-               isinstance(candidate.get('summary'), str) and all(isinstance(candidate.get(k), list) and
-                    all(isinstance(x, str) for x in candidate[k]) for k in ('evidence', 'tests', 'unresolved')):
-                structured = candidate
-        except (ValueError, TypeError):
-            pass
+        structured = parse_report('\n'.join(texts).strip())
     return {'actual_models': models, 'tokens': dict(tokens), 'commands': commands, 'edits': edits,
             'tool_errors': errors, 'structured': structured, 'text': '\n'.join(texts),
             'last_info': last.get('info', {})}
@@ -189,8 +226,12 @@ def _finish(t, messages, forced_status=None, reason=None):
     if flags and status == 'completed':
         status = 'needs_attention'
     info = evidence.pop('last_info')
+    billing = record_billing_errors(t, diagnostics.from_messages(messages))
     if info.get('error') and not forced_status:
-        status, reason = 'failed', info['error'].get('name', 'provider_or_model_error')
+        status = 'failed'
+        reason = 'provider_billing_insufficient_balance' if diagnostics.is_billing(info['error']) \
+            else info['error'].get('name', 'provider_or_model_error')
+        billing = billing or reason == 'provider_billing_insufficient_balance'
     if not report and not forced_status:
         reason = reason or 'missing_structured_report'
     errors = t.get('errors', []) + diagnostics.from_messages(messages)
@@ -206,10 +247,18 @@ def _finish(t, messages, forced_status=None, reason=None):
     write_json(art / 'result.json', result)
     summary = (report.get('summary', '') if isinstance(report, dict) else evidence['text'])[:8000]
     (art / 'summary.md').write_text(summary + '\n')
+    extra = {'recovery': None}
+    if billing and status in ('failed', 'needs_attention'):
+        # Billing failure never replays or re-profiles this task; persist coordinator options.
+        try:
+            extra['recovery'] = quota.billing_failure_recovery(
+                t, config(), quota.view(read_json(STATE / 'quota.json', {})))
+        except Exception as e:
+            errors.append(diagnostics.exception(e, 'billing_recovery'))
     return update(t['id'], status=status, reason=reason, finished_at=time.time(),
                   elapsed_seconds=round(time.time() - t['started_at'], 2),
                   artifact_dir=str(art), summary=summary[:1600], actual_models=evidence['actual_models'],
-                  review_required=flags, errors=errors)
+                  review_required=flags, errors=errors, **extra)
 
 
 def run_task(task_id, shutdown):
@@ -268,6 +317,7 @@ def run_task(task_id, shutdown):
                 native_status = api('/session/status', t['directory']).get(t['session_id'], {'type': 'idle'})
                 is_idle = native_status.get('type') == 'idle'
                 observed_errors = diagnostics.from_messages(messages)
+                record_billing_errors(t, observed_errors)
                 if native_status.get('type') == 'retry':
                     observed_errors.append(diagnostics.error('model', 'retrying', native_status.get('message', 'OpenCode is retrying'),
                                             retryable=True, action='wait', attempt=native_status.get('attempt'),

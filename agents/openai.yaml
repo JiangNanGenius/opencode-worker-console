@@ -1,6 +1,6 @@
 interface:
   display_name: "OpenCode Worker Pool"
-  short_description: "Delegate coherent work across fast, senior and deep tiers"
-  default_prompt: "Use $delegate-opencode to hand off coherent end-to-end work, select the profile from task semantics, keep long workers running to a terminal result in the same turn, and use deep-research for large-repository or cross-module understanding."
+  short_description: "Delegate complete outcomes with plan-first model selection"
+  default_prompt: "Use $delegate-opencode to delegate complete outcomes including investigation, implementation and self-verification; avoid microtasks and batch feedback. Prefer available subscription allowance through senior-code or deep-research; reserve fast-code for tiny or latency-critical work. Keep long workers alive and wait in the same turn. On billing or quota errors, review partial work, autonomously reselect an available model and continue without asking the user to switch. Each Codex conversation has independent worker slots."
 policy:
   allow_implicit_invocation: true
