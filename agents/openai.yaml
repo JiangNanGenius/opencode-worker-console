@@ -1,6 +1,6 @@
 interface:
   display_name: "OpenCode Worker Pool"
-  short_description: "Proactively delegate research, implementation and review"
-  default_prompt: "Use $delegate-opencode to proactively hand off substantial investigation, implementation or verification before bulk reading or serial work. Keep UI aesthetics, key decisions and final acceptance with the main agent; review the worker's evidence."
+  short_description: "Delegate coherent work across fast, senior and deep tiers"
+  default_prompt: "Use $delegate-opencode to hand off coherent end-to-end work, select the profile from task semantics, keep long workers running to a terminal result in the same turn, and use deep-research for large-repository or cross-module understanding."
 policy:
   allow_implicit_invocation: true

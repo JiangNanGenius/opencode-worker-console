@@ -248,6 +248,18 @@ class PoolTests(unittest.TestCase):
         with patch.object(worker, 'call'), patch.object(worker, 'idle', return_value=True):
             self.assertTrue(worker.stop(t))
 
+    def test_wait_result_requires_continuation_until_terminal(self):
+        running = delegate.wait_result({'id': 'job-test', 'status': 'running'}, 30)
+        self.assertFalse(running['terminal'])
+        self.assertTrue(running['continue_waiting'])
+        self.assertEqual(running['next_action'], 'call_wait_again')
+        completed = delegate.wait_result({'id': 'job-test', 'status': 'completed'}, 2)
+        self.assertTrue(completed['terminal'])
+        self.assertFalse(completed['continue_waiting'])
+        self.assertEqual(completed['next_action'], 'collect_and_review')
+        attention = delegate.wait_result({'id': 'job-test', 'status': 'needs_attention'}, 2)
+        self.assertEqual(attention['next_action'], 'collect_and_inspect_errors')
+
     def test_console_local_auth_and_cross_origin_guards(self):
         server = ThreadingHTTPServer(('127.0.0.1', 0), console_server.Handler)
         server.daemon_threads = True

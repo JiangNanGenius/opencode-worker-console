@@ -16,7 +16,7 @@ delegate-opencode submit --directory /absolute/repo --mode write --scope src/par
   --acceptance 'Preserve all existing behavior except the specified empty-input fix.' \
   'Fix the already-identified empty-input parser failure and run the authorized tests.'
 delegate-opencode status
-delegate-opencode wait JOB_ID --seconds 30
+delegate-opencode wait JOB_ID --seconds 20
 delegate-opencode collect JOB_ID
 delegate-opencode cancel JOB_ID
 delegate-opencode stats
@@ -31,6 +31,25 @@ path array), `commands` (suggested checks; exact allowlist when Auto Approve is 
 Do not put API keys or other secrets in tasks. Web fetching is opt-in with `web: true`.
 Use `group_title` for a readable main-task name, `group_id` to override the current Codex
 task ID, and `parent_task_id` for a child of an existing delegated task in the same group.
+
+Prefer one coherent assignment that owns an outcome, such as investigation, bounded
+implementation, checks and a concise report. Use `steer` for refinements to that outcome
+instead of creating a sequence of microtasks. Split tasks when deliverables or writable
+scopes are genuinely independent.
+
+Select `profile` deliberately when the coordinator can judge the task's semantic fit.
+Use `fast-code` for urgent, clearly bounded work; `senior-code` for longer independent
+implementation and second opinions; and `deep-research` for large-repository mapping,
+cross-module or ambiguous root causes, architecture/dependency synthesis and consequential
+independent review. Every tier may investigate, edit and test a complete bounded task; the
+profile names do not restrict job roles. `auto` is a coarse convenience based only on
+`urgency` and `complexity`; it does not infer those semantic properties from task text.
+Deep criteria take precedence over a small final edit surface: broad repository reading,
+multiple subsystems, architecture/dependency mapping, an ambiguous root cause or a
+consequential challenge review should use `deep-research --complexity deep`. Do not split a
+coherent deep investigation into several fast lookups to avoid waiting. Periodically use
+`stats` to detect a persistently unused tier when qualifying work exists, then correct future
+profile choices without manufacturing tasks to meet a quota.
 
 ## Local console
 
@@ -167,6 +186,16 @@ Errors from earlier failed tool attempts can coexist with a successfully complet
 A transport error after dispatch means the prompt may have been accepted: observe the
 existing session, never blindly resubmit. The bridge reports information when queried;
 Codex should use bounded `wait` calls while awaiting a delegated result.
+
+`wait --seconds N` is a bounded observation call and does not define how long the worker
+should take. Fifteen to thirty minutes is normal for coherent implementation, compilation,
+tests or deep investigation; configured deep tasks may run longer. A nonterminal response
+contains `terminal: false`, `continue_waiting: true` and `next_action: call_wait_again`.
+When the requested result depends on that worker, the coordinator must call `wait` again in
+the same turn rather than ending with a progress-only response or asking the user to send
+“continue”. Provider capacity, several quiet waits or the coordinator's desire to finish its
+turn are not cancellation reasons. Cancel only when the user requests it, the scope is
+confirmed wrong or unsafe, the objective is superseded, or a terminal condition requires it.
 
 
 ## Read complete conversations on demand

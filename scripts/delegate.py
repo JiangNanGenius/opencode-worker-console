@@ -20,6 +20,24 @@ from workspace import conflicts, git_root, integrate, relative_scope
 from worker import run_task
 
 
+def wait_result(t, waited_seconds):
+    """Make a bounded wait unambiguous to an agent coordinator."""
+    result = public_task(t)
+    terminal = t['status'] in TERMINAL
+    result.update(
+        terminal=terminal,
+        continue_waiting=not terminal,
+        waited_seconds=max(0, round(waited_seconds, 3)),
+        next_action=(
+            'call_wait_again' if not terminal else
+            'collect_and_review' if t['status'] == 'completed' else
+            'collect_and_inspect_errors' if t['status'] != 'cancelled' else
+            'stop'
+        ),
+    )
+    return result
+
+
 def submit(spec):
     c = config()
     root = Path(spec['directory']).expanduser().resolve()
@@ -235,7 +253,7 @@ def main():
     s.add_argument('--saved', action='store_true', help='Read retained worker evidence instead of live OpenCode')
     s.add_argument('--output', help='Export to a new private JSON file and return only its location')
     s = sub.add_parser('cancel'); s.add_argument('id')
-    s = sub.add_parser('wait'); s.add_argument('id'); s.add_argument('--seconds', type=int, default=30)
+    s = sub.add_parser('wait'); s.add_argument('id'); s.add_argument('--seconds', type=int, default=20)
     s = sub.add_parser('quota'); s.add_argument('--refresh', action='store_true')
     s = sub.add_parser('integrate'); s.add_argument('id'); s.add_argument('--apply', action='store_true')
     for name in ('doctor', 'daemon', 'stats'):
@@ -291,10 +309,11 @@ def main():
         t = task(args.id)
         result = public_task(t if t['status'] in TERMINAL else update(args.id, cancel_requested=True))
     elif args.cmd == 'wait':
+        began = time.time()
         end = time.time() + max(0, min(args.seconds, 60))
         while task(args.id)['status'] not in TERMINAL and time.time() < end:
             time.sleep(1)
-        result = public_task(task(args.id))
+        result = wait_result(task(args.id), time.time() - began)
     elif args.cmd == 'quota':
         result = quota.refresh(force=args.refresh)
     elif args.cmd == 'integrate':
