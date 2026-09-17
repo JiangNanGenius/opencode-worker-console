@@ -291,6 +291,39 @@ class PoolTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_console_asset_allowlist_serves_i18n_and_rejects_unknown(self):
+        server = ThreadingHTTPServer(('127.0.0.1', 0), console_server.Handler)
+        server.daemon_threads = True
+        server.cookie = 'test-local-capability'
+        url = 'http://127.0.0.1:' + str(server.server_port)
+        self.c['console_url'] = url
+        self.config.write_text(json.dumps(self.c))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with urllib.request.urlopen(url + '/console') as r:
+                cookie = r.headers.get('Set-Cookie').split(';')[0]
+            # The i18n bundle is an explicit allowlisted asset and is served as JavaScript.
+            req = urllib.request.Request(url + '/console-assets/i18n.js', headers={'Cookie': cookie})
+            with urllib.request.urlopen(req) as r:
+                body = r.read()
+                self.assertEqual(r.status, 200)
+                self.assertTrue(r.headers.get('Content-Type').startswith('text/javascript'))
+                self.assertIn(b'worker-desk-locale', body)
+                self.assertIn(b'global.I18n', body)
+            # Asset requests still require the bootstrapped capability cookie.
+            with self.assertRaises(urllib.error.HTTPError) as unauthenticated:
+                urllib.request.urlopen(url + '/console-assets/i18n.js')
+            self.assertEqual(unauthenticated.exception.code, 401)
+            # Unknown or traversal asset paths are rejected without reaching the desktop allowlist.
+            for path in ('/console-assets/unknown.js', '/console-assets/../i18n.js', '/console-assets/'):
+                with self.assertRaises(urllib.error.HTTPError) as error:
+                    urllib.request.urlopen(urllib.request.Request(url + path, headers={'Cookie': cookie}))
+                self.assertEqual(error.exception.code, 404)
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def test_session_link_handles_non_ascii_directory(self):
         import base64
         url = console_server.session_url({'directory': '/repo/中文 空格', 'session_id': 'ses_test'})

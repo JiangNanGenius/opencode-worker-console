@@ -2,7 +2,7 @@
 
 A local console for OpenCode sessions and a durable, multi-model worker queue.
 
-Manage task ownership, parent/child tasks, worker profiles, automatic routing, sessions and account usage in one place. Use it with Codex through the included `delegate-opencode` skill, or with any coordinator through the CLI and JSON task specs. The interface currently uses Chinese; the CLI and API use English.
+Manage task ownership, parent/child tasks, worker profiles, automatic routing, sessions and account usage in one place. Use it with Codex through the included `delegate-opencode` skill, or with any coordinator through the CLI and JSON task specs. The console UI supports English, Simplified Chinese (`zh-CN`), Traditional Chinese (`zh-TW`), Japanese (`ja`) and Korean (`ko`); pick one from the language selector in the header. The browser locale is detected on first visit, unsupported locales fall back to English, and a manual choice is remembered in local storage. The CLI and API use English.
 
 ## What it does
 
@@ -111,9 +111,12 @@ See [operations](references/operations.md), [security](SECURITY.md), and [contri
 
 ```sh
 python3 -m unittest discover -s tests -v
+node --check web/i18n.js
 node --check web/app.js
 node --check web/manage.js
 ```
+
+Console strings live in `web/i18n.js`; interface text is tagged with `data-i18n` attributes or looked up through the `tr()` helper. Adding a locale means adding one entry to the `MESSAGES` table.
 
 Unit tests use temporary files and mocked provider APIs; they need no credentials and make no paid model requests. CI runs the tests on macOS and Linux. Local live verification uses isolated fixtures; do not point verification at a production repository.
 

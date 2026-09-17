@@ -1,6 +1,6 @@
 ---
 name: delegate-opencode
-description: Proactively delegate substantial, bounded and coherent work to OpenCode workers. Prefer complete outcomes such as repository mapping, root-cause analysis, implementation plus tests, documentation or independent review; avoid fragmenting one outcome into many microtasks. Choose the profile deliberately from task semantics, and use deep-research for large-repository understanding, cross-module causes, architecture mapping and challenge reviews even when Astra could do the work itself. Every profile can own a complete task when its scope and acceptance criteria are clear. Delegate before bulk reading or serial independent work. Keep trivial edits local; Astra owns UI aesthetics, product and architecture decisions, and final acceptance. Also use for worker status, guidance, transcripts and session management.
+description: Proactively delegate substantial, bounded and coherent work to OpenCode workers. Prefer complete outcomes such as repository mapping, root-cause analysis, implementation plus tests, documentation, routine UI verification or independent review; avoid fragmenting one outcome into many microtasks. Choose the profile deliberately from task semantics, and use deep-research for large-repository understanding, cross-module causes, architecture mapping and challenge reviews even when Astra could do the work itself. Every profile can own a complete task when its scope and acceptance criteria are clear. Delegate before bulk reading or serial independent work. Astra owns nuanced UI aesthetics, complex interaction judgment, product and architecture decisions, and final acceptance. Also use for worker status, guidance, transcripts and session management.
 ---
 
 # Delegate OpenCode work
@@ -60,8 +60,13 @@ misclassification and correct subsequent choices. Do not create artificial work 
 a utilization target.
 - Delegate bulk reading before loading a repository into Astra's context. Request concise,
   evidence-backed findings and retrieve only the relevant original files or detailed results.
-- Keep UI aesthetics, key interaction implementation, product meaning, difficult decisions,
-  and final acceptance with Astra. Workers can implement specified components and data wiring.
+- Keep visual direction, nuanced aesthetic and interaction judgment, complex browser/device
+  operation, product meaning, difficult decisions and final acceptance with Astra. Workers
+  can implement specified UI and perform routine validation through source/DOM inspection,
+  build/lint checks and an existing headless browser test command. OpenCode has no Computer
+  Use capability: do not make it assemble AppleScript, screenshot commands or other terminal
+  workarounds to operate macOS GUI applications. Astra performs real clicks, visual comparison
+  and complex interface operation. Worker evidence does not replace final rendered-UI review.
 - Supply a concrete objective, context, acceptance conditions, literal writable file/directory
   scopes, and useful test/build commands. Read-only is the default. Workers can investigate,
   reason and implement independently within the task, but cannot expand scope or spawn workers.

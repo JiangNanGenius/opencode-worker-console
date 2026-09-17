@@ -51,6 +51,14 @@ coherent deep investigation into several fast lookups to avoid waiting. Periodic
 `stats` to detect a persistently unused tier when qualifying work exists, then correct future
 profile choices without manufacturing tasks to meet a quota.
 
+Routine UI work is eligible for delegation. Workers may implement a specified interface and
+verify source/DOM structure, localization coverage, build/lint output and an existing headless
+browser test command. OpenCode does not have Computer Use; do not ask it to improvise macOS
+GUI control with AppleScript, screenshot utilities or similar terminal workarounds. Astra
+retains real browser/device operation, visual direction, subtle aesthetic and interaction
+judgment, and final rendered acceptance. Worker static evidence is supporting evidence, not
+final UI proof.
+
 ## Local console
 
 `console --open` opens the URL saved in `console_url` in the pool configuration. The page

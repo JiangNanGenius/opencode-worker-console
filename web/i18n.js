@@ -1,0 +1,851 @@
+/* Worker Desk i18n: dependency-free translation, locale detection and formatting.
+   Loaded before app.js and manage.js. Translates interface chrome only; user,
+   task, workspace, provider and model data are never translated. */
+(function (global) {
+  'use strict';
+
+  var FALLBACK = 'en';
+  var STORAGE_KEY = 'worker-desk-locale';
+
+  var LOCALES = [
+    { code: 'en', name: 'English' },
+    { code: 'zh-CN', name: '简体中文' },
+    { code: 'zh-TW', name: '繁體中文' },
+    { code: 'ja', name: '日本語' },
+    { code: 'ko', name: '한국어' }
+  ];
+
+  var MESSAGES = {
+    en: {
+      'status.queued': 'Queued', 'status.starting': 'Starting', 'status.running': 'Running', 'status.stopping': 'Stopping',
+      'status.uncertain': 'Unconfirmed', 'status.completed': 'Completed', 'status.failed': 'Failed', 'status.cancelled': 'Cancelled',
+      'status.timed_out': 'Timed out', 'status.needs_attention': 'Needs attention', 'status.idle': 'Idle',
+      'profile.fast.generic': 'Fast general', 'profile.generic': 'General tasks', 'profile.deep': 'Deep tasks',
+      'profile.awaiting': 'Awaiting scheduling', 'profile.auto': 'Auto select', 'profile.new': 'New Profile',
+      'reset.unknown': 'Reset time unknown', 'reset.suffix': 'reset',
+      'duration.waiting': 'Waiting for dispatch', 'duration.seconds': '{n} sec', 'duration.minutes': '{m} min {s} sec',
+      'duration.hours': '{h} h {m} min',
+      'nav.allTasks': 'All tasks', 'nav.tasks': 'Task scheduling', 'nav.sessions': 'OpenCode sessions',
+      'nav.models': 'Models & routing', 'nav.groups': 'Task groups', 'nav.aria': 'Workspace navigation',
+      'nav.filterByGroup': 'Filter by parent task',
+      'counts.summary': '{active} running · {queued} queued',
+      'mode.write': 'Write', 'mode.read': 'Investigate / analyze', 'mode.isolated': ' · Isolated worktree',
+      'common.subtask': ' · Subtask', 'common.primaryTask': 'Parent task',
+      'task.viewDetails': 'View details for {title}',
+      'tasks.emptyFiltered': 'No tasks match the current filters.',
+      'tasks.emptyNone': 'No tasks yet. Dispatched tasks appear here automatically.',
+      'tasks.visibleCount': 'Showing {visible} / {total} tasks', 'tasks.loading': 'Loading tasks…',
+      'tasks.loadingRows': 'Loading tasks…', 'tasks.searchPlaceholder': 'Search tasks or models',
+      'tasks.new': 'New task', 'tasks.filterAria': 'Filter by task status',
+      'tasks.tableHint': 'Click a task name to open it in OpenCode',
+      'tasks.footer': 'Auto refresh · Completion still requires coordinator sign-off',
+      'filter.all': 'All', 'filter.active': 'Running', 'filter.attention': 'Needs attention', 'filter.completed': 'Completed',
+      'error.connectionUpdated': 'The connection was updated. Refresh the page to reconnect.',
+      'error.unavailable': 'Unable to read the local service right now. Try again shortly.',
+      'health.online': 'Local service online', 'health.offline': 'Local service recovering',
+      'health.disconnected': 'Connection lost', 'health.connecting': 'Connecting',
+      'updated.at': 'Updated at {time}', 'pool.limit': 'Parallel limit {n} · local time',
+      'detail.loading': 'Loading details…', 'detail.title': 'Task details', 'detail.close': 'Close details',
+      'detail.objective': 'Objective', 'detail.acceptance': 'Acceptance criteria',
+      'detail.noAcceptance': 'No additional acceptance criteria specified',
+      'detail.statusOwnership': 'Status & ownership', 'detail.steer': 'Send guidance', 'detail.stop': 'Stop task',
+      'detail.errors': 'Error reports', 'detail.command': 'Command: ', 'detail.exitCode': 'Exit code: ',
+      'detail.suggestedAction': 'Action: ', 'detail.pending': 'Pending information',
+      'detail.guidance': 'Guidance history', 'detail.openTask': 'Open task in OpenCode ↗',
+      'detail.noSession': 'No OpenCode session has been created for this task yet.',
+      'detail.workerSummary': 'Worker summary', 'detail.summaryPlaceholder': 'Results will appear after the task completes.',
+      'detail.evidence': 'Evidence', 'detail.noEvidence': 'No evidence reported',
+      'detail.tests': 'Tests & verification', 'detail.noTests': 'No test records',
+      'detail.unresolved': 'Open questions', 'detail.unresolvedDefault': 'Subject to final coordinator review',
+      'detail.unreadable': 'Unable to load',
+      'page.title': 'Worker Desk · OpenCode Console',
+      'page.tasks.desc': 'See task ownership, progress and available quota at a glance.',
+      'page.sessions.desc': 'Browse sessions by project, continue work or tidy up finished conversations.',
+      'page.models.desc': 'Manage model profiles, automatic routing and available concurrency.',
+      'aria.home': 'Task console home',
+      'sidebar.tagline1': 'Investigate, summarize, write and verify',
+      'sidebar.tagline2': 'Runs locally · multi-model collaboration',
+      'quota.aria': 'Account balance and plan quota', 'quota.reading': 'Reading',
+      'quota.balanceLabel': 'Available balance', 'quota.waitingSample': 'Waiting for the latest sample',
+      'quota.kimiPlan': 'Kimi membership plan', 'quota.refresh': 'Refresh quota',
+      'quota.loadingUsage': 'Loading plan usage…', 'quota.kimiShared': 'K2.8 and K3 share this quota pool',
+      'quota.sampledAt': 'Sampled {time}', 'quota.lastSuccess': ' · last successful sample',
+      'quota.noSample': 'No successful sample yet', 'quota.weekly': 'Weekly quota',
+      'quota.hoursWindow': '{h}-hour window', 'quota.limitWindow': 'Limit window', 'quota.remaining': 'Remaining',
+      'quota.remainingAria': 'Remaining quota for {name}',
+      'quota.unknown': 'Quota unknown, waiting for a successful sample',
+      'quota.sampleSuffix': ' · Sampled {time}', 'quota.staleSuffix': ' · data may be stale',
+      'quota.authErrorSuffix': ' · credentials invalid',
+      'quota.state.authError': 'Credentials invalid', 'quota.state.stale': 'Data may be stale',
+      'quota.state.unavailable': 'Unavailable', 'quota.state.available': 'Available', 'quota.state.unknown': 'Status unknown',
+      'table.task': 'Task / parent task', 'table.worker': 'Worker', 'table.status': 'Status', 'table.duration': 'Duration', 'table.details': 'Details',
+      'sessions.heading': 'Session library', 'sessions.addWorkspace': 'Add workspace', 'sessions.new': 'New session',
+      'sessions.searchAria': 'Search sessions', 'sessions.searchPlaceholder': 'Search title or session ID',
+      'sessions.filterProject': 'Filter by project', 'sessions.allProjects': 'All projects',
+      'sessions.archived': 'Archived', 'sessions.refresh': 'Refresh sessions',
+      'sessions.note': 'Archived sessions can be restored anytime. To stop a running delegated task, return to task scheduling.',
+      'sessions.truncated': 'latest 500', 'sessions.untitled': 'Untitled session',
+      'sessions.delegated': 'Delegated task', 'sessions.branched': ' · forked session',
+      'sessions.empty': 'No sessions match the current filters.',
+      'action.rename': 'Rename', 'action.workspace': 'Workspace', 'action.fork': 'Fork', 'action.restore': 'Restore',
+      'action.archive': 'Archive', 'action.delete': 'Delete', 'action.remove': 'Remove', 'action.close': 'Close',
+      'action.cancel': 'Cancel', 'action.confirm': 'Confirm',
+      'dialog.renameSession': 'Rename session', 'dialog.forkSession': 'Fork session',
+      'dialog.archiveSession': 'Archive session', 'dialog.restoreSession': 'Restore session',
+      'dialog.deleteSession': 'Permanently delete session', 'dialog.bindWorkspace': 'Bind workspace',
+      'dialog.newSession': 'New OpenCode session', 'dialog.newTask': 'New delegated task',
+      'dialog.stopTask': 'Stop delegated task', 'dialog.addWorkspace': 'Add workspace',
+      'dialog.steer': 'Guide a running worker', 'dialog.cleanup': 'Clean up using saved rules',
+      'dialog.bindHint': 'The target must be a worktree of the same Git project. Files are not moved; create a new session for another project.',
+      'dialog.deleteWarning': 'This permanently deletes this OpenCode session, its messages and child sessions; it cannot be undone. Worker task records and acceptance evidence are retained.',
+      'dialog.forkHint': 'Create a new session from existing history; no model request is sent automatically.',
+      'dialog.archiveHint': 'Archived sessions can be restored from “Archived”.',
+      'dialog.restoreHint': 'The session will reappear in the session library.',
+      'dialog.stopHint': 'OpenCode will be asked to stop and release the write scope after confirmation.',
+      'dialog.steerHint': 'Sent to the current session and read at a later model step. It does not expand file or command permissions.',
+      'dialog.cleanupHint': 'Runs only when automatic cleanup is enabled and disk is below the threshold; retention rules still apply.',
+      'field.directory': 'Project absolute path', 'field.profileId': 'Profile ID', 'field.confirmTitle': 'Type the full session name to confirm',
+      'field.sessionTitle': 'Session name', 'field.displayName': 'Display name',
+      'field.providerModel': 'Provider / model', 'field.variant': 'Reasoning variant (optional)',
+      'field.variantPlaceholder': 'Supported by the model, e.g. high', 'field.enabled': 'Enabled',
+      'field.taskTitle': 'Task name', 'field.objective': 'Objective', 'field.groupTitle': 'Parent task',
+      'field.manualTask': 'Manual task', 'field.profile': 'Model profile', 'field.mode': 'Work mode',
+      'field.workspace': 'Workspace', 'field.auto': 'Automatic', 'field.urgency': 'Priority',
+      'field.background': 'Background task', 'field.fast': 'Fast feedback',
+      'field.acceptance': 'Acceptance criteria (one per line)',
+      'field.scopes': 'Allowed relative write paths (one per line)',
+      'field.commands': 'Allowed exact commands (one per line)',
+      'field.workspaceName': 'Workspace name', 'field.steerText': 'Additional information or direction',
+      'error.profileId': 'Profile ID may contain only lowercase letters, digits and hyphens, and must start with a letter.',
+      'error.profileDuplicate': 'Profile ID must be unique.',
+      'error.steerStatus': 'Delivery status: {status}. Check the session first; do not resend.',
+      'provider.connected': 'Connected', 'provider.disconnected': 'Not connected', 'provider.models': '{n} models',
+      'provider.limit': 'Concurrency', 'provider.inherit': 'inherit',
+      'provider.none': 'No providers found. Connect one in OpenCode first.',
+      'settings.applying': 'Validating and applying…',
+      'settings.saved': 'Saved. The Worker service applied the new configuration.',
+      'settings.save': 'Save & apply', 'settings.reload': 'Reload',
+      'routing.heading': 'Automatic routing', 'routing.fast': 'Fast tasks', 'routing.background': 'Background tasks',
+      'routing.deep': 'Deep tasks', 'routing.maxParallel': 'Max concurrency', 'routing.maxKimi': 'Kimi max concurrency',
+      'routing.maxSteps': 'Max steps per task', 'routing.kimiReserve': 'Kimi deep-task reserve %',
+      'autoApprove.heading': 'Worker execution permissions',
+      'autoApprove.label': 'Auto Approve · automatically approve tool calls',
+      'autoApprove.note': 'Enabled by default; workers can use tools to complete tasks without prompting each time. Task scope is constrained by instructions and checked afterwards. When disabled, file scopes and a command allowlist apply. Affects only this Worker service.',
+      'cleanup.heading': 'Automatic low-disk cleanup',
+      'cleanup.enable': 'Allow automatic cleanup per retention rules',
+      'cleanup.note': "Only this tool's expired run artifacts and linked archived sessions are touched. Worktrees, patches, reports and recent tasks are retained.",
+      'cleanup.min': 'Trigger threshold GB', 'cleanup.target': 'Target free space GB',
+      'cleanup.age': 'Minimum retention days', 'cleanup.keep': 'Recent tasks retained',
+      'cleanup.preview': 'View cleanup plan', 'cleanup.run': 'Check & clean per rules',
+      'cleanup.previewResult': 'Free space {free} GB · {count} candidates · about {size} MB of files',
+      'cleanup.skipped': 'Cleanup not run: {reason}',
+      'cleanup.done': 'Processed {removed} items · {errors} incomplete',
+      'models.heading': 'Model Profiles', 'models.subtitle': 'Choose models as tasks require; role is not limited by tier',
+      'models.addProfile': 'Add Profile',
+      'models.note': 'Choose models from providers already configured in OpenCode. Connect new providers in OpenCode; it holds the keys. Saving restarts idle Worker services; changes are not applied while tasks are waiting or running.',
+      'providers.heading': 'Providers & available models',
+      'providers.open': 'Open OpenCode provider management ↗',
+      'providers.note': 'Balance adapters currently support DeepSeek and Kimi; other providers can run tasks with usage shown as not connected.',
+      'footer.local': 'Runs locally · API keys are read only by the local service',
+      'lang.label': 'Language',
+      'sessions.count': '{n} sessions', 'field.readOnly': 'Read-only investigation', 'field.write': 'Write',
+      'field.isolated': 'Isolated worktree'
+    },
+    'zh-CN': {
+      'status.queued': '排队中', 'status.starting': '准备中', 'status.running': '运行中', 'status.stopping': '停止中',
+      'status.uncertain': '状态待确认', 'status.completed': '已完成', 'status.failed': '失败', 'status.cancelled': '已取消',
+      'status.timed_out': '已超时', 'status.needs_attention': '需要处理', 'status.idle': '空闲',
+      'profile.fast.generic': '快速通用', 'profile.generic': '通用任务', 'profile.deep': '深度任务',
+      'profile.awaiting': '等待调度', 'profile.auto': '自动选择', 'profile.new': '新档位',
+      'reset.unknown': '重置时间未知', 'reset.suffix': '重置',
+      'duration.waiting': '等待派发', 'duration.seconds': '{n} 秒', 'duration.minutes': '{m} 分 {s} 秒',
+      'duration.hours': '{h} 小时 {m} 分',
+      'nav.allTasks': '全部任务', 'nav.tasks': '任务调度', 'nav.sessions': 'OpenCode 会话',
+      'nav.models': '模型与调度', 'nav.groups': '任务归属', 'nav.aria': '工作台导航',
+      'nav.filterByGroup': '按主任务筛选',
+      'counts.summary': '{active} 执行中 · {queued} 排队中',
+      'mode.write': '编写', 'mode.read': '调查 / 分析', 'mode.isolated': ' · 独立工作树',
+      'common.subtask': ' · 子任务', 'common.primaryTask': '主任务',
+      'task.viewDetails': '查看 {title} 的详情',
+      'tasks.emptyFiltered': '没有符合筛选条件的任务。',
+      'tasks.emptyNone': '还没有任务。Astra 派发后，任务会自动出现在这里。',
+      'tasks.visibleCount': '显示 {visible} / {total} 项任务', 'tasks.loading': '正在读取任务…',
+      'tasks.loadingRows': '正在加载任务…', 'tasks.searchPlaceholder': '搜索任务或模型',
+      'tasks.new': '新建任务', 'tasks.filterAria': '任务状态筛选',
+      'tasks.tableHint': '点击任务名称，在 OpenCode 中打开',
+      'tasks.footer': '自动更新 · 完成状态仍需主 Agent 验收',
+      'filter.all': '全部', 'filter.active': '执行中', 'filter.attention': '待处理', 'filter.completed': '已完成',
+      'error.connectionUpdated': '连接已更新，请刷新页面重新连接。',
+      'error.unavailable': '暂时无法读取本地服务，请稍后重试。',
+      'health.online': '本地服务在线', 'health.offline': '本地服务待恢复',
+      'health.disconnected': '连接中断', 'health.connecting': '正在连接',
+      'updated.at': '更新于 {time}', 'pool.limit': '并行上限 {n} · 本地时间',
+      'detail.loading': '正在读取详情…', 'detail.title': '任务详情', 'detail.close': '收起详情',
+      'detail.objective': '任务目标', 'detail.acceptance': '验收条件',
+      'detail.noAcceptance': '未指定额外验收条件',
+      'detail.statusOwnership': '状态与归属', 'detail.steer': '发送引导', 'detail.stop': '停止任务',
+      'detail.errors': '错误回传', 'detail.command': '命令：', 'detail.exitCode': '退出码：',
+      'detail.suggestedAction': '处理：', 'detail.pending': '等待补充的信息',
+      'detail.guidance': '引导记录', 'detail.openTask': '在 OpenCode 中打开任务 ↗',
+      'detail.noSession': '任务尚未创建 OpenCode 会话。',
+      'detail.workerSummary': 'Worker 摘要', 'detail.summaryPlaceholder': '结果将在任务完成后显示。',
+      'detail.evidence': '证据', 'detail.noEvidence': '暂无回传证据',
+      'detail.tests': '测试与验证', 'detail.noTests': '暂无测试记录',
+      'detail.unresolved': '待确认事项', 'detail.unresolvedDefault': '以主 Agent 最终审查为准',
+      'detail.unreadable': '暂时无法读取',
+      'page.title': 'Worker Desk · OpenCode 控制台',
+      'page.tasks.desc': '看清任务归属、执行进展与可用额度。',
+      'page.sessions.desc': '按项目浏览会话，继续工作或整理已完成的对话。',
+      'page.models.desc': '管理模型档位、自动路由与可用并发。',
+      'aria.home': '任务控制台首页',
+      'sidebar.tagline1': '调查、总结、编写与验证',
+      'sidebar.tagline2': '本地运行 · 多模型协作',
+      'quota.aria': '账户余额与计划额度', 'quota.reading': '读取中',
+      'quota.balanceLabel': '账户可用余额', 'quota.waitingSample': '等待最近一次采样',
+      'quota.kimiPlan': 'Kimi 会员计划', 'quota.refresh': '刷新额度',
+      'quota.loadingUsage': '正在读取计划用量…', 'quota.kimiShared': 'K2.8 与 K3 共用此额度池',
+      'quota.sampledAt': '采样 {time}', 'quota.lastSuccess': ' · 最近成功数据',
+      'quota.noSample': '尚无成功采样', 'quota.weekly': '周额度',
+      'quota.hoursWindow': '{h} 小时窗口', 'quota.limitWindow': '限制窗口', 'quota.remaining': '剩余',
+      'quota.remainingAria': '{name}剩余额度',
+      'quota.unknown': '额度未知，等待成功采样',
+      'quota.sampleSuffix': ' · 采样 {time}', 'quota.staleSuffix': ' · 数据待更新',
+      'quota.authErrorSuffix': ' · 凭据失效',
+      'quota.state.authError': '凭据失效', 'quota.state.stale': '数据待更新',
+      'quota.state.unavailable': '不可用', 'quota.state.available': '可用', 'quota.state.unknown': '状态未知',
+      'table.task': '任务 / 所属主任务', 'table.worker': '执行者', 'table.status': '状态', 'table.duration': '用时', 'table.details': '详情',
+      'sessions.heading': '会话库', 'sessions.addWorkspace': '添加工作区', 'sessions.new': '新建会话',
+      'sessions.searchAria': '搜索会话', 'sessions.searchPlaceholder': '搜索标题或会话 ID',
+      'sessions.filterProject': '筛选项目', 'sessions.allProjects': '所有项目',
+      'sessions.archived': '已归档', 'sessions.refresh': '刷新会话',
+      'sessions.note': '归档可随时恢复。运行中的委派任务请回到任务调度中停止。',
+      'sessions.truncated': '最近 500 项', 'sessions.untitled': '未命名会话',
+      'sessions.delegated': '委派任务', 'sessions.branched': ' · 分支会话',
+      'sessions.empty': '没有符合条件的会话。',
+      'action.rename': '重命名', 'action.workspace': '工作区', 'action.fork': '分支', 'action.restore': '恢复',
+      'action.archive': '归档', 'action.delete': '删除', 'action.remove': '移除', 'action.close': '关闭',
+      'action.cancel': '取消', 'action.confirm': '确认',
+      'dialog.renameSession': '重命名会话', 'dialog.forkSession': '创建会话分支',
+      'dialog.archiveSession': '归档会话', 'dialog.restoreSession': '恢复会话',
+      'dialog.deleteSession': '永久删除会话', 'dialog.bindWorkspace': '绑定工作区',
+      'dialog.newSession': '新建 OpenCode 会话', 'dialog.newTask': '新建委派任务',
+      'dialog.stopTask': '停止委派任务', 'dialog.addWorkspace': '添加工作区',
+      'dialog.steer': '引导运行中的 Worker', 'dialog.cleanup': '按已保存规则清理',
+      'dialog.bindHint': '目标须属于同一 Git 项目的工作树。不搬运文件；跨项目请新建会话。',
+      'dialog.deleteWarning': '将永久删除此 OpenCode 会话、消息及子会话，无法恢复。Worker 任务记录与验收证据会保留。',
+      'dialog.forkHint': '从现有历史创建新会话，不会自动发起模型请求。',
+      'dialog.archiveHint': '归档后仍可在“已归档”中恢复。',
+      'dialog.restoreHint': '会话将重新出现在会话库中。',
+      'dialog.stopHint': '将请求 OpenCode 停止，并在确认后释放任务写入范围。',
+      'dialog.steerHint': '发送到当前会话，在后续模型步骤读取。不会扩大文件或命令权限。',
+      'dialog.cleanupHint': '仅在启用了自动清理且磁盘低于阈值时执行，保留规则仍然有效。',
+      'field.directory': '项目绝对路径', 'field.profileId': '档位 ID', 'field.confirmTitle': '输入完整会话名称确认',
+      'field.sessionTitle': '会话名称', 'field.displayName': '显示名称',
+      'field.providerModel': '服务商 / 模型', 'field.variant': '推理档位（可选）',
+      'field.variantPlaceholder': '由模型支持，例如 high', 'field.enabled': '启用',
+      'field.taskTitle': '任务名称', 'field.objective': '目标', 'field.groupTitle': '所属主任务',
+      'field.manualTask': '手动任务', 'field.profile': '模型档位', 'field.mode': '工作模式',
+      'field.workspace': '工作区', 'field.auto': '自动', 'field.urgency': '优先偏好',
+      'field.background': '后台任务', 'field.fast': '快速反馈',
+      'field.acceptance': '验收条件（每行一项）',
+      'field.scopes': '允许写入的相对路径（每行一个）',
+      'field.commands': '允许执行的精确命令（每行一个）',
+      'field.workspaceName': '工作区名称', 'field.steerText': '补充信息或调整方向',
+      'error.profileId': '档位 ID 只能使用小写字母、数字和连字符，并以字母开头。',
+      'error.profileDuplicate': '档位 ID 不能重复。',
+      'error.steerStatus': '投递状态：{status}。请先检查会话，不要重复发送。',
+      'provider.connected': '已连接', 'provider.disconnected': '未连接', 'provider.models': '{n} 个模型',
+      'provider.limit': '并发', 'provider.inherit': '继承',
+      'provider.none': '未发现可用服务商，请先在 OpenCode 中连接。',
+      'settings.applying': '正在校验并应用…',
+      'settings.saved': '已保存，Worker 服务已应用新配置。',
+      'settings.save': '保存并应用', 'settings.reload': '重新读取',
+      'routing.heading': '自动调度', 'routing.fast': '快速任务', 'routing.background': '后台任务',
+      'routing.deep': '深度任务', 'routing.maxParallel': '最大并发', 'routing.maxKimi': 'Kimi 最大并发',
+      'routing.maxSteps': '每任务最多步骤', 'routing.kimiReserve': 'Kimi 深度任务预留 %',
+      'autoApprove.heading': 'Worker 执行权限',
+      'autoApprove.label': 'Auto Approve · 自动批准工具调用',
+      'autoApprove.note': '默认开启，Worker 可自主使用工具完成任务，无需逐次确认。任务范围由指令约束并在完成后检查；关闭后使用文件范围与命令白名单。仅影响此 Worker 服务。',
+      'cleanup.heading': '低磁盘空间自动清理',
+      'cleanup.enable': '允许按保留规则自动清理',
+      'cleanup.note': '只处理本工具的过期运行产物与关联的已归档会话。保留工作树、补丁、报告及最近任务。',
+      'cleanup.min': '触发阈值 GB', 'cleanup.target': '目标剩余空间 GB',
+      'cleanup.age': '至少保留天数', 'cleanup.keep': '最近任务保留数',
+      'cleanup.preview': '查看清理计划', 'cleanup.run': '按规则检查并清理',
+      'cleanup.previewResult': '可用空间 {free} GB · {count} 项候选 · 文件体积约 {size} MB',
+      'cleanup.skipped': '未执行清理：{reason}',
+      'cleanup.done': '已处理 {removed} 项 · {errors} 项未完成',
+      'models.heading': '模型档位', 'models.subtitle': '按任务需要选择模型，职能不受档位限制',
+      'models.addProfile': '添加档位',
+      'models.note': '从 OpenCode 已配置的服务商选择模型。连接新服务商请在 OpenCode 中操作，密钥由 OpenCode 保管。保存会重启空闲的 Worker 服务；有任务等待或运行时不会应用更改。',
+      'providers.heading': '服务商与可用模型',
+      'providers.open': '打开 OpenCode 管理服务商 ↗',
+      'providers.note': '余额适配目前支持 DeepSeek 和 Kimi；其他服务商可以调度，额度显示为未接入。',
+      'footer.local': '本机运行 · API Key 仅由本地服务读取',
+      'lang.label': '语言',
+      'sessions.count': '{n} 个会话', 'field.readOnly': '只读调查', 'field.write': '编写',
+      'field.isolated': '独立工作树'
+    },
+    'zh-TW': {
+      'status.queued': '排隊中', 'status.starting': '準備中', 'status.running': '執行中', 'status.stopping': '停止中',
+      'status.uncertain': '狀態待確認', 'status.completed': '已完成', 'status.failed': '失敗', 'status.cancelled': '已取消',
+      'status.timed_out': '已逾時', 'status.needs_attention': '需要處理', 'status.idle': '閒置',
+      'profile.fast.generic': '快速通用', 'profile.generic': '一般任務', 'profile.deep': '深度任務',
+      'profile.awaiting': '等待調度', 'profile.auto': '自動選擇', 'profile.new': '新設定檔',
+      'reset.unknown': '重設時間未知', 'reset.suffix': '重設',
+      'duration.waiting': '等待派發', 'duration.seconds': '{n} 秒', 'duration.minutes': '{m} 分 {s} 秒',
+      'duration.hours': '{h} 小時 {m} 分',
+      'nav.allTasks': '全部任務', 'nav.tasks': '任務調度', 'nav.sessions': 'OpenCode 工作階段',
+      'nav.models': '模型與調度', 'nav.groups': '任務歸屬', 'nav.aria': '工作台導覽',
+      'nav.filterByGroup': '依主任務篩選',
+      'counts.summary': '{active} 執行中 · {queued} 排隊中',
+      'mode.write': '編寫', 'mode.read': '調查 / 分析', 'mode.isolated': ' · 獨立工作樹',
+      'common.subtask': ' · 子任務', 'common.primaryTask': '主任務',
+      'task.viewDetails': '檢視 {title} 的詳細資料',
+      'tasks.emptyFiltered': '沒有符合篩選條件的任務。',
+      'tasks.emptyNone': '還沒有任務。Astra 派發後，任務會自動出現在這裡。',
+      'tasks.visibleCount': '顯示 {visible} / {total} 項任務', 'tasks.loading': '正在讀取任務…',
+      'tasks.loadingRows': '正在載入任務…', 'tasks.searchPlaceholder': '搜尋任務或模型',
+      'tasks.new': '新建任務', 'tasks.filterAria': '任務狀態篩選',
+      'tasks.tableHint': '點擊任務名稱，在 OpenCode 中開啟',
+      'tasks.footer': '自動更新 · 完成狀態仍需主 Agent 驗收',
+      'filter.all': '全部', 'filter.active': '執行中', 'filter.attention': '待處理', 'filter.completed': '已完成',
+      'error.connectionUpdated': '連線已更新，請重新整理頁面以重新連線。',
+      'error.unavailable': '暫時無法讀取本機服務，請稍後再試。',
+      'health.online': '本機服務在線', 'health.offline': '本機服務待恢復',
+      'health.disconnected': '連線中斷', 'health.connecting': '正在連線',
+      'updated.at': '更新於 {time}', 'pool.limit': '並行上限 {n} · 本機時間',
+      'detail.loading': '正在讀取詳細資料…', 'detail.title': '任務詳情', 'detail.close': '收起詳情',
+      'detail.objective': '任務目標', 'detail.acceptance': '驗收條件',
+      'detail.noAcceptance': '未指定額外驗收條件',
+      'detail.statusOwnership': '狀態與歸屬', 'detail.steer': '傳送引導', 'detail.stop': '停止任務',
+      'detail.errors': '錯誤回傳', 'detail.command': '命令：', 'detail.exitCode': '結束碼：',
+      'detail.suggestedAction': '處理：', 'detail.pending': '等待補充的資訊',
+      'detail.guidance': '引導記錄', 'detail.openTask': '在 OpenCode 中開啟任務 ↗',
+      'detail.noSession': '任務尚未建立 OpenCode 工作階段。',
+      'detail.workerSummary': 'Worker 摘要', 'detail.summaryPlaceholder': '結果將在任務完成後顯示。',
+      'detail.evidence': '證據', 'detail.noEvidence': '暫無回傳證據',
+      'detail.tests': '測試與驗證', 'detail.noTests': '暫無測試記錄',
+      'detail.unresolved': '待確認事項', 'detail.unresolvedDefault': '以主 Agent 最終審查為準',
+      'detail.unreadable': '暫時無法讀取',
+      'page.title': 'Worker Desk · OpenCode 主控台',
+      'page.tasks.desc': '看清任務歸屬、執行進展與可用額度。',
+      'page.sessions.desc': '依專案瀏覽工作階段，繼續工作或整理已完成的對話。',
+      'page.models.desc': '管理模型檔位、自動路由與可用並行數。',
+      'aria.home': '任務主控台首頁',
+      'sidebar.tagline1': '調查、總結、編寫與驗證',
+      'sidebar.tagline2': '本機執行 · 多模型協作',
+      'quota.aria': '帳戶餘額與方案額度', 'quota.reading': '讀取中',
+      'quota.balanceLabel': '帳戶可用餘額', 'quota.waitingSample': '等待最近一次取樣',
+      'quota.kimiPlan': 'Kimi 會員方案', 'quota.refresh': '重新整理額度',
+      'quota.loadingUsage': '正在讀取方案用量…', 'quota.kimiShared': 'K2.8 與 K3 共用此額度池',
+      'quota.sampledAt': '取樣 {time}', 'quota.lastSuccess': ' · 最近成功資料',
+      'quota.noSample': '尚無成功取樣', 'quota.weekly': '週額度',
+      'quota.hoursWindow': '{h} 小時視窗', 'quota.limitWindow': '限制視窗', 'quota.remaining': '剩餘',
+      'quota.remainingAria': '{name}剩餘額度',
+      'quota.unknown': '額度未知，等待成功取樣',
+      'quota.sampleSuffix': ' · 取樣 {time}', 'quota.staleSuffix': ' · 資料待更新',
+      'quota.authErrorSuffix': ' · 認證失效',
+      'quota.state.authError': '認證失效', 'quota.state.stale': '資料待更新',
+      'quota.state.unavailable': '無法使用', 'quota.state.available': '可用', 'quota.state.unknown': '狀態未知',
+      'table.task': '任務 / 所屬主任務', 'table.worker': '執行者', 'table.status': '狀態', 'table.duration': '耗時', 'table.details': '詳細資料',
+      'sessions.heading': '工作階段庫', 'sessions.addWorkspace': '新增工作區', 'sessions.new': '新增工作階段',
+      'sessions.searchAria': '搜尋工作階段', 'sessions.searchPlaceholder': '搜尋標題或工作階段 ID',
+      'sessions.filterProject': '篩選專案', 'sessions.allProjects': '所有專案',
+      'sessions.archived': '已封存', 'sessions.refresh': '重新整理工作階段',
+      'sessions.note': '封存可隨時還原。執行中的委派任務請回到任務調度中停止。',
+      'sessions.truncated': '最近 500 項', 'sessions.untitled': '未命名工作階段',
+      'sessions.delegated': '委派任務', 'sessions.branched': ' · 分支工作階段',
+      'sessions.empty': '沒有符合條件的工作階段。',
+      'action.rename': '重新命名', 'action.workspace': '工作區', 'action.fork': '分支', 'action.restore': '還原',
+      'action.archive': '封存', 'action.delete': '刪除', 'action.remove': '移除', 'action.close': '關閉',
+      'action.cancel': '取消', 'action.confirm': '確認',
+      'dialog.renameSession': '重新命名工作階段', 'dialog.forkSession': '建立工作階段分支',
+      'dialog.archiveSession': '封存工作階段', 'dialog.restoreSession': '還原工作階段',
+      'dialog.deleteSession': '永久刪除工作階段', 'dialog.bindWorkspace': '綁定工作區',
+      'dialog.newSession': '新增 OpenCode 工作階段', 'dialog.newTask': '新建委派任務',
+      'dialog.stopTask': '停止委派任務', 'dialog.addWorkspace': '新增工作區',
+      'dialog.steer': '引導執行中的 Worker', 'dialog.cleanup': '依已儲存規則清理',
+      'dialog.bindHint': '目標須屬於同一 Git 專案的工作樹。不搬移檔案；跨專案請新建工作階段。',
+      'dialog.deleteWarning': '將永久刪除此 OpenCode 工作階段、訊息及子工作階段，無法復原。Worker 任務記錄與驗收證據會保留。',
+      'dialog.forkHint': '從現有歷史建立新工作階段，不會自動發起模型請求。',
+      'dialog.archiveHint': '封存後仍可在「已封存」中還原。',
+      'dialog.restoreHint': '工作階段將重新出現在工作階段庫中。',
+      'dialog.stopHint': '將請求 OpenCode 停止，並在確認後釋放任務寫入範圍。',
+      'dialog.steerHint': '傳送到目前的工作階段，在後續模型步驟讀取。不會擴大檔案或命令權限。',
+      'dialog.cleanupHint': '僅在啟用自動清理且磁碟低於閾值時執行，保留規則仍然有效。',
+      'field.directory': '專案絕對路徑', 'field.profileId': '設定檔 ID', 'field.confirmTitle': '輸入完整工作階段名稱確認',
+      'field.sessionTitle': '工作階段名稱', 'field.displayName': '顯示名稱',
+      'field.providerModel': '服務商 / 模型', 'field.variant': '推理檔位（選填）',
+      'field.variantPlaceholder': '由模型支援，例如 high', 'field.enabled': '啟用',
+      'field.taskTitle': '任務名稱', 'field.objective': '目標', 'field.groupTitle': '所屬主任務',
+      'field.manualTask': '手動任務', 'field.profile': '模型檔位', 'field.mode': '工作模式',
+      'field.workspace': '工作區', 'field.auto': '自動', 'field.urgency': '優先偏好',
+      'field.background': '背景任務', 'field.fast': '快速回饋',
+      'field.acceptance': '驗收條件（每行一項）',
+      'field.scopes': '允許寫入的相對路徑（每行一個）',
+      'field.commands': '允許執行的精確命令（每行一個）',
+      'field.workspaceName': '工作區名稱', 'field.steerText': '補充資訊或調整方向',
+      'error.profileId': '設定檔 ID 只能使用小寫字母、數字和連字號，並以字母開頭。',
+      'error.profileDuplicate': '設定檔 ID 不能重複。',
+      'error.steerStatus': '投遞狀態：{status}。請先檢查工作階段，不要重複傳送。',
+      'provider.connected': '已連線', 'provider.disconnected': '未連線', 'provider.models': '{n} 個模型',
+      'provider.limit': '並行數', 'provider.inherit': '繼承',
+      'provider.none': '未發現可用服務商，請先在 OpenCode 中連線。',
+      'settings.applying': '正在驗證並套用…',
+      'settings.saved': '已儲存，Worker 服務已套用新設定。',
+      'settings.save': '儲存並套用', 'settings.reload': '重新讀取',
+      'routing.heading': '自動調度', 'routing.fast': '快速任務', 'routing.background': '背景任務',
+      'routing.deep': '深度任務', 'routing.maxParallel': '最大並行數', 'routing.maxKimi': 'Kimi 最大並行數',
+      'routing.maxSteps': '每任務最多步驟', 'routing.kimiReserve': 'Kimi 深度任務保留 %',
+      'autoApprove.heading': 'Worker 執行權限',
+      'autoApprove.label': 'Auto Approve · 自動核准工具呼叫',
+      'autoApprove.note': '預設開啟，Worker 可自主使用工具完成任務，無需逐次確認。任務範圍由指令約束並在完成後檢查；關閉後使用檔案範圍與命令白名單。僅影響此 Worker 服務。',
+      'cleanup.heading': '低磁碟空間自動清理',
+      'cleanup.enable': '允許依保留規則自動清理',
+      'cleanup.note': '只處理本工具的過期執行產物與關聯的已封存工作階段。保留工作樹、補丁、報告及最近任務。',
+      'cleanup.min': '觸發閾值 GB', 'cleanup.target': '目標剩餘空間 GB',
+      'cleanup.age': '至少保留天數', 'cleanup.keep': '最近任務保留數',
+      'cleanup.preview': '檢視清理計畫', 'cleanup.run': '依規則檢查並清理',
+      'cleanup.previewResult': '可用空間 {free} GB · {count} 項候選 · 檔案大小約 {size} MB',
+      'cleanup.skipped': '未執行清理：{reason}',
+      'cleanup.done': '已處理 {removed} 項 · {errors} 項未完成',
+      'models.heading': '模型設定檔', 'models.subtitle': '依任務需要選擇模型，職能不受檔位限制',
+      'models.addProfile': '新增設定檔',
+      'models.note': '從 OpenCode 已設定的服務商選擇模型。連接新服務商請在 OpenCode 中操作，金鑰由 OpenCode 保管。儲存會重新啟動閒置的 Worker 服務；有任務等待或執行時不會套用變更。',
+      'providers.heading': '服務商與可用模型',
+      'providers.open': '開啟 OpenCode 管理服務商 ↗',
+      'providers.note': '餘額介接目前支援 DeepSeek 與 Kimi；其他服務商可調度，額度顯示為未接入。',
+      'footer.local': '本機執行 · API Key 僅由本機服務讀取',
+      'lang.label': '語言',
+      'sessions.count': '{n} 個工作階段', 'field.readOnly': '唯讀調查', 'field.write': '編寫',
+      'field.isolated': '獨立工作樹'
+    },
+    ja: {
+      'status.queued': '待機中', 'status.starting': '準備中', 'status.running': '実行中', 'status.stopping': '停止中',
+      'status.uncertain': '状態未確認', 'status.completed': '完了', 'status.failed': '失敗', 'status.cancelled': 'キャンセル済み',
+      'status.timed_out': 'タイムアウト', 'status.needs_attention': '要対応', 'status.idle': '待機',
+      'profile.fast.generic': '高速汎用', 'profile.generic': '汎用タスク', 'profile.deep': '深掘りタスク',
+      'profile.awaiting': 'スケジュール待ち', 'profile.auto': '自動選択', 'profile.new': '新規プロファイル',
+      'reset.unknown': 'リセット時刻不明', 'reset.suffix': 'にリセット',
+      'duration.waiting': '配布待ち', 'duration.seconds': '{n} 秒', 'duration.minutes': '{m}分{s}秒',
+      'duration.hours': '{h}時間{m}分',
+      'nav.allTasks': 'すべてのタスク', 'nav.tasks': 'タスク管理', 'nav.sessions': 'OpenCode セッション',
+      'nav.models': 'モデルとルーティング', 'nav.groups': 'タスクの所属', 'nav.aria': 'ワークスペースナビ',
+      'nav.filterByGroup': '親タスクで絞り込み',
+      'counts.summary': '実行中 {active} · 待機 {queued}',
+      'mode.write': '書き込み', 'mode.read': '調査・分析', 'mode.isolated': ' · 分離ワークツリー',
+      'common.subtask': ' · サブタスク', 'common.primaryTask': '親タスク',
+      'task.viewDetails': '{title} の詳細を表示',
+      'tasks.emptyFiltered': '条件に一致するタスクはありません。',
+      'tasks.emptyNone': 'タスクはまだありません。ディスパッチ後に自動で表示されます。',
+      'tasks.visibleCount': '{visible} / {total} 件のタスクを表示', 'tasks.loading': 'タスクを読み込み中…',
+      'tasks.loadingRows': 'タスクを読み込み中…', 'tasks.searchPlaceholder': 'タスクやモデルを検索',
+      'tasks.new': '新規タスク', 'tasks.filterAria': 'タスク状態で絞り込み',
+      'tasks.tableHint': 'タスク名をクリックすると OpenCode で開きます',
+      'tasks.footer': '自動更新 · 完了にはコーディネーターの確認が必要',
+      'filter.all': 'すべて', 'filter.active': '実行中', 'filter.attention': '要対応', 'filter.completed': '完了',
+      'error.connectionUpdated': '接続が更新されました。ページを再読み込みしてください。',
+      'error.unavailable': 'ローカルサービスを読み取れません。しばらくして再試行してください。',
+      'health.online': 'ローカルサービスはオンライン', 'health.offline': 'ローカルサービスは復旧待ち',
+      'health.disconnected': '接続が切断されました', 'health.connecting': '接続中',
+      'updated.at': '{time} に更新', 'pool.limit': '並列上限 {n} · ローカル時刻',
+      'detail.loading': '詳細を読み込み中…', 'detail.title': 'タスク詳細', 'detail.close': '詳細を閉じる',
+      'detail.objective': '目的', 'detail.acceptance': '受け入れ条件',
+      'detail.noAcceptance': '追加の受け入れ条件はありません',
+      'detail.statusOwnership': '状態と所属', 'detail.steer': 'ガイダンスを送信', 'detail.stop': 'タスクを停止',
+      'detail.errors': 'エラー報告', 'detail.command': 'コマンド: ', 'detail.exitCode': '終了コード: ',
+      'detail.suggestedAction': '対処: ', 'detail.pending': '追加情報待ち',
+      'detail.guidance': 'ガイダンス履歴', 'detail.openTask': 'OpenCode でタスクを開く ↗',
+      'detail.noSession': 'このタスクの OpenCode セッションはまだ作成されていません。',
+      'detail.workerSummary': 'Worker 概要', 'detail.summaryPlaceholder': '結果はタスク完了後に表示されます。',
+      'detail.evidence': '証拠', 'detail.noEvidence': '報告された証拠はありません',
+      'detail.tests': 'テストと検証', 'detail.noTests': 'テスト記録はありません',
+      'detail.unresolved': '未確認事項', 'detail.unresolvedDefault': 'コーディネーターの最終確認によります',
+      'detail.unreadable': '読み込めません',
+      'page.title': 'Worker Desk · OpenCode コンソール',
+      'page.tasks.desc': 'タスクの所属・進捗・利用可能な残量を把握します。',
+      'page.sessions.desc': 'プロジェクト別にセッションを閲覧し、作業を続けるか完了した会話を整理します。',
+      'page.models.desc': 'モデルプロファイル、自動ルーティング、並列数を管理します。',
+      'aria.home': 'タスクコンソールのホーム',
+      'sidebar.tagline1': '調査・要約・作成・検証',
+      'sidebar.tagline2': 'ローカル実行 · マルチモデル協調',
+      'quota.aria': 'アカウント残高とプラン割当', 'quota.reading': '読み取り中',
+      'quota.balanceLabel': '利用可能残高', 'quota.waitingSample': '最新のサンプルを待機中',
+      'quota.kimiPlan': 'Kimi メンバープラン', 'quota.refresh': '割当を更新',
+      'quota.loadingUsage': 'プラン使用量を読み込み中…', 'quota.kimiShared': 'K2.8 と K3 はこの割当を共有します',
+      'quota.sampledAt': 'サンプル {time}', 'quota.lastSuccess': ' · 直近の成功データ',
+      'quota.noSample': '成功したサンプルはまだありません', 'quota.weekly': '週間割当',
+      'quota.hoursWindow': '{h} 時間枠', 'quota.limitWindow': '制限枠', 'quota.remaining': '残り',
+      'quota.remainingAria': '{name}の残り割当',
+      'quota.unknown': '割当が不明です。成功したサンプルを待機中',
+      'quota.sampleSuffix': ' · サンプル {time}', 'quota.staleSuffix': ' · データ未更新',
+      'quota.authErrorSuffix': ' · 認証情報が無効',
+      'quota.state.authError': '認証情報が無効', 'quota.state.stale': 'データ未更新',
+      'quota.state.unavailable': '利用不可', 'quota.state.available': '利用可能', 'quota.state.unknown': '状態不明',
+      'table.task': 'タスク / 親タスク', 'table.worker': 'ワーカー', 'table.status': '状態', 'table.duration': '所要時間', 'table.details': '詳細',
+      'sessions.heading': 'セッションライブラリ', 'sessions.addWorkspace': 'ワークスペースを追加', 'sessions.new': '新規セッション',
+      'sessions.searchAria': 'セッションを検索', 'sessions.searchPlaceholder': 'タイトルまたはセッション ID を検索',
+      'sessions.filterProject': 'プロジェクトで絞り込み', 'sessions.allProjects': 'すべてのプロジェクト',
+      'sessions.archived': 'アーカイブ済み', 'sessions.refresh': 'セッションを更新',
+      'sessions.note': 'アーカイブはいつでも復元できます。実行中の委任タスクを停止するにはタスク管理に戻ってください。',
+      'sessions.truncated': '最新 500 件', 'sessions.untitled': '無題のセッション',
+      'sessions.delegated': '委任タスク', 'sessions.branched': ' · 分岐セッション',
+      'sessions.empty': '条件に一致するセッションはありません。',
+      'action.rename': '名前を変更', 'action.workspace': 'ワークスペース', 'action.fork': '分岐', 'action.restore': '復元',
+      'action.archive': 'アーカイブ', 'action.delete': '削除', 'action.remove': '削除', 'action.close': '閉じる',
+      'action.cancel': 'キャンセル', 'action.confirm': '確認',
+      'dialog.renameSession': 'セッション名を変更', 'dialog.forkSession': 'セッションを分岐',
+      'dialog.archiveSession': 'セッションをアーカイブ', 'dialog.restoreSession': 'セッションを復元',
+      'dialog.deleteSession': 'セッションを完全に削除', 'dialog.bindWorkspace': 'ワークスペースを紐付け',
+      'dialog.newSession': '新規 OpenCode セッション', 'dialog.newTask': '新規委任タスク',
+      'dialog.stopTask': '委任タスクを停止', 'dialog.addWorkspace': 'ワークスペースを追加',
+      'dialog.steer': '実行中の Worker をガイド', 'dialog.cleanup': '保存済みルールでクリーンアップ',
+      'dialog.bindHint': '対象は同じ Git プロジェクトのワークツリーである必要があります。ファイルは移動しません。別プロジェクトには新規セッションを作成してください。',
+      'dialog.deleteWarning': 'この OpenCode セッション、メッセージ、子セッションを完全に削除します。元に戻せません。Worker のタスク記録と受け入れ証拠は保持されます。',
+      'dialog.forkHint': '既存の履歴から新しいセッションを作成します。モデルリクエストは自動送信されません。',
+      'dialog.archiveHint': 'アーカイブ後も「アーカイブ済み」から復元できます。',
+      'dialog.restoreHint': 'セッションはセッションライブラリに再表示されます。',
+      'dialog.stopHint': 'OpenCode に停止を要求し、確認後にタスクの書き込み範囲を解放します。',
+      'dialog.steerHint': '現在のセッションに送信され、以降のモデルステップで読み取られます。ファイルやコマンドの権限は拡大しません。',
+      'dialog.cleanupHint': '自動クリーンアップが有効でディスクがしきい値を下回る場合のみ実行されます。保持ルールは引き続き有効です。',
+      'field.directory': 'プロジェクトの絶対パス', 'field.profileId': 'プロファイル ID', 'field.confirmTitle': '確認のため完全なセッション名を入力',
+      'field.sessionTitle': 'セッション名', 'field.displayName': '表示名',
+      'field.providerModel': 'プロバイダー / モデル', 'field.variant': '推論バリアント（任意）',
+      'field.variantPlaceholder': 'モデルが対応する場合、例: high', 'field.enabled': '有効',
+      'field.taskTitle': 'タスク名', 'field.objective': '目的', 'field.groupTitle': '親タスク',
+      'field.manualTask': '手動タスク', 'field.profile': 'モデルプロファイル', 'field.mode': '作業モード',
+      'field.workspace': 'ワークスペース', 'field.auto': '自動', 'field.urgency': '優先度',
+      'field.background': 'バックグラウンドタスク', 'field.fast': '迅速なフィードバック',
+      'field.acceptance': '受け入れ条件（1 行に 1 件）',
+      'field.scopes': '書き込みを許可する相対パス（1 行に 1 件）',
+      'field.commands': '実行を許可する正確なコマンド（1 行に 1 件）',
+      'field.workspaceName': 'ワークスペース名', 'field.steerText': '追加情報または方向修正',
+      'error.profileId': 'プロファイル ID は小文字英字・数字・ハイフンのみ使用でき、英字で始まる必要があります。',
+      'error.profileDuplicate': 'プロファイル ID は重複できません。',
+      'error.steerStatus': '配信状態: {status}。先にセッションを確認し、再送しないでください。',
+      'provider.connected': '接続済み', 'provider.disconnected': '未接続', 'provider.models': 'モデル {n} 件',
+      'provider.limit': '並列数', 'provider.inherit': '継承',
+      'provider.none': '利用可能なプロバイダーがありません。先に OpenCode で接続してください。',
+      'settings.applying': '検証して適用中…',
+      'settings.saved': '保存しました。Worker サービスが新しい設定を適用しました。',
+      'settings.save': '保存して適用', 'settings.reload': '再読み込み',
+      'routing.heading': '自動ルーティング', 'routing.fast': '高速タスク', 'routing.background': 'バックグラウンドタスク',
+      'routing.deep': '深掘りタスク', 'routing.maxParallel': '最大並列数', 'routing.maxKimi': 'Kimi 最大並列数',
+      'routing.maxSteps': 'タスクあたりの最大ステップ', 'routing.kimiReserve': 'Kimi 深掘りタスク予約 %',
+      'autoApprove.heading': 'Worker 実行権限',
+      'autoApprove.label': 'Auto Approve · ツール呼び出しを自動承認',
+      'autoApprove.note': '既定で有効。Worker は毎回の確認なしにツールを使ってタスクを完了できます。タスク範囲は指示で制約され、完了後に検査されます。無効にするとファイル範囲とコマンド許可リストが適用されます。この Worker サービスにのみ影響します。',
+      'cleanup.heading': 'ディスク不足時の自動クリーンアップ',
+      'cleanup.enable': '保持ルールに従った自動クリーンアップを許可',
+      'cleanup.note': 'このツールの期限切れ実行成果物と関連するアーカイブ済みセッションのみを対象とします。ワークツリー、パッチ、レポート、最近のタスクは保持されます。',
+      'cleanup.min': 'トリガーしきい値 GB', 'cleanup.target': '目標空き容量 GB',
+      'cleanup.age': '最低保持日数', 'cleanup.keep': '保持する最近タスク数',
+      'cleanup.preview': 'クリーンアップ計画を表示', 'cleanup.run': 'ルールに従って確認・クリーンアップ',
+      'cleanup.previewResult': '空き容量 {free} GB · 候補 {count} 件 · ファイル約 {size} MB',
+      'cleanup.skipped': 'クリーンアップ未実行: {reason}',
+      'cleanup.done': '{removed} 件を処理 · {errors} 件未完了',
+      'models.heading': 'モデルプロファイル', 'models.subtitle': 'タスクに応じてモデルを選択。役割は階層に縛られません',
+      'models.addProfile': 'プロファイルを追加',
+      'models.note': 'OpenCode で設定済みのプロバイダーからモデルを選択します。新しいプロバイダーの接続は OpenCode で行い、キーは OpenCode が保持します。保存するとアイドル状態の Worker サービスが再起動します。タスクの待機中・実行中は変更が適用されません。',
+      'providers.heading': 'プロバイダーと利用可能なモデル',
+      'providers.open': 'OpenCode のプロバイダー管理を開く ↗',
+      'providers.note': '残高アダプターは現在 DeepSeek と Kimi に対応しています。他のプロバイダーでもタスクは実行できますが、使用量は未接続と表示されます。',
+      'footer.local': 'ローカル実行 · API キーはローカルサービスのみが読み取ります',
+      'lang.label': '言語',
+      'sessions.count': '{n} 件のセッション', 'field.readOnly': '読み取り専用調査', 'field.write': '書き込み',
+      'field.isolated': '分離ワークツリー'
+    },
+    ko: {
+      'status.queued': '대기 중', 'status.starting': '준비 중', 'status.running': '실행 중', 'status.stopping': '중지 중',
+      'status.uncertain': '상태 확인 중', 'status.completed': '완료됨', 'status.failed': '실패', 'status.cancelled': '취소됨',
+      'status.timed_out': '시간 초과', 'status.needs_attention': '확인 필요', 'status.idle': '유휴',
+      'profile.fast.generic': '빠른 범용', 'profile.generic': '범용 작업', 'profile.deep': '심층 작업',
+      'profile.awaiting': '배정 대기', 'profile.auto': '자동 선택', 'profile.new': '새 프로필',
+      'reset.unknown': '재설정 시간 알 수 없음', 'reset.suffix': '재설정',
+      'duration.waiting': '배포 대기', 'duration.seconds': '{n}초', 'duration.minutes': '{m}분 {s}초',
+      'duration.hours': '{h}시간 {m}분',
+      'nav.allTasks': '모든 작업', 'nav.tasks': '작업 스케줄', 'nav.sessions': 'OpenCode 세션',
+      'nav.models': '모델 및 라우팅', 'nav.groups': '작업 그룹', 'nav.aria': '워크스페이스 탐색',
+      'nav.filterByGroup': '상위 작업으로 필터',
+      'counts.summary': '실행 중 {active} · 대기 {queued}',
+      'mode.write': '작성', 'mode.read': '조사·분석', 'mode.isolated': ' · 격리된 워크트리',
+      'common.subtask': ' · 하위 작업', 'common.primaryTask': '상위 작업',
+      'task.viewDetails': '{title} 상세 보기',
+      'tasks.emptyFiltered': '필터 조건에 맞는 작업이 없습니다.',
+      'tasks.emptyNone': '아직 작업이 없습니다. 작업이 배포되면 자동으로 표시됩니다.',
+      'tasks.visibleCount': '{visible} / {total}개 작업 표시', 'tasks.loading': '작업을 불러오는 중…',
+      'tasks.loadingRows': '작업을 불러오는 중…', 'tasks.searchPlaceholder': '작업 또는 모델 검색',
+      'tasks.new': '새 작업', 'tasks.filterAria': '작업 상태 필터',
+      'tasks.tableHint': '작업 이름을 클릭하면 OpenCode에서 열립니다',
+      'tasks.footer': '자동 업데이트 · 완료 여부는 코디네이터 확인 필요',
+      'filter.all': '전체', 'filter.active': '실행 중', 'filter.attention': '확인 필요', 'filter.completed': '완료',
+      'error.connectionUpdated': '연결이 갱신되었습니다. 페이지를 새로고침해 다시 연결하세요.',
+      'error.unavailable': '지금은 로컬 서비스를 읽을 수 없습니다. 잠시 후 다시 시도하세요.',
+      'health.online': '로컬 서비스 온라인', 'health.offline': '로컬 서비스 복구 대기',
+      'health.disconnected': '연결 끊김', 'health.connecting': '연결 중',
+      'updated.at': '{time}에 업데이트', 'pool.limit': '병렬 한도 {n} · 현지 시간',
+      'detail.loading': '상세 정보 불러오는 중…', 'detail.title': '작업 상세', 'detail.close': '상세 닫기',
+      'detail.objective': '목표', 'detail.acceptance': '승인 조건',
+      'detail.noAcceptance': '추가 승인 조건 없음',
+      'detail.statusOwnership': '상태 및 소유', 'detail.steer': '안내 전송', 'detail.stop': '작업 중지',
+      'detail.errors': '오류 보고', 'detail.command': '명령: ', 'detail.exitCode': '종료 코드: ',
+      'detail.suggestedAction': '조치: ', 'detail.pending': '추가 정보 대기',
+      'detail.guidance': '안내 기록', 'detail.openTask': 'OpenCode에서 작업 열기 ↗',
+      'detail.noSession': '이 작업에는 아직 OpenCode 세션이 없습니다.',
+      'detail.workerSummary': 'Worker 요약', 'detail.summaryPlaceholder': '결과는 작업 완료 후 표시됩니다.',
+      'detail.evidence': '증거', 'detail.noEvidence': '보고된 증거 없음',
+      'detail.tests': '테스트 및 검증', 'detail.noTests': '테스트 기록 없음',
+      'detail.unresolved': '확인 필요 사항', 'detail.unresolvedDefault': '코디네이터 최종 검토 기준',
+      'detail.unreadable': '불러올 수 없음',
+      'page.title': 'Worker Desk · OpenCode 콘솔',
+      'page.tasks.desc': '작업 소유, 진행 상황, 사용 가능 한도를 한눈에 확인합니다.',
+      'page.sessions.desc': '프로젝트별로 세션을 보고 작업을 이어가거나 완료된 대화를 정리합니다.',
+      'page.models.desc': '모델 프로필, 자동 라우팅, 사용 가능한 동시성을 관리합니다.',
+      'aria.home': '작업 콘솔 홈',
+      'sidebar.tagline1': '조사, 요약, 작성 및 검증',
+      'sidebar.tagline2': '로컬 실행 · 다중 모델 협업',
+      'quota.aria': '계정 잔액 및 플랜 한도', 'quota.reading': '읽는 중',
+      'quota.balanceLabel': '사용 가능 잔액', 'quota.waitingSample': '최신 샘플 대기 중',
+      'quota.kimiPlan': 'Kimi 멤버십 플랜', 'quota.refresh': '할당량 새로고침',
+      'quota.loadingUsage': '플랜 사용량 불러오는 중…', 'quota.kimiShared': 'K2.8과 K3는 이 할당량 풀을 공유합니다',
+      'quota.sampledAt': '샘플 {time}', 'quota.lastSuccess': ' · 최근 성공 데이터',
+      'quota.noSample': '성공한 샘플 없음', 'quota.weekly': '주간 할당량',
+      'quota.hoursWindow': '{h}시간 창', 'quota.limitWindow': '제한 창', 'quota.remaining': '남은',
+      'quota.remainingAria': '{name} 남은 할당량',
+      'quota.unknown': '할당량을 알 수 없음, 성공한 샘플 대기 중',
+      'quota.sampleSuffix': ' · 샘플 {time}', 'quota.staleSuffix': ' · 데이터 갱신 필요',
+      'quota.authErrorSuffix': ' · 자격 증명 무효',
+      'quota.state.authError': '자격 증명 무효', 'quota.state.stale': '데이터 갱신 필요',
+      'quota.state.unavailable': '사용 불가', 'quota.state.available': '사용 가능', 'quota.state.unknown': '상태 알 수 없음',
+      'table.task': '작업 / 상위 작업', 'table.worker': '워커', 'table.status': '상태', 'table.duration': '소요 시간', 'table.details': '상세',
+      'sessions.heading': '세션 라이브러리', 'sessions.addWorkspace': '워크스페이스 추가', 'sessions.new': '새 세션',
+      'sessions.searchAria': '세션 검색', 'sessions.searchPlaceholder': '제목 또는 세션 ID 검색',
+      'sessions.filterProject': '프로젝트 필터', 'sessions.allProjects': '모든 프로젝트',
+      'sessions.archived': '보관됨', 'sessions.refresh': '세션 새로고침',
+      'sessions.note': '보관된 세션은 언제든 복원할 수 있습니다. 실행 중인 위임 작업을 중지하려면 작업 스케줄로 돌아가세요.',
+      'sessions.truncated': '최근 500개', 'sessions.untitled': '제목 없는 세션',
+      'sessions.delegated': '위임된 작업', 'sessions.branched': ' · 분기 세션',
+      'sessions.empty': '조건에 맞는 세션이 없습니다.',
+      'action.rename': '이름 변경', 'action.workspace': '워크스페이스', 'action.fork': '분기', 'action.restore': '복원',
+      'action.archive': '보관', 'action.delete': '삭제', 'action.remove': '제거', 'action.close': '닫기',
+      'action.cancel': '취소', 'action.confirm': '확인',
+      'dialog.renameSession': '세션 이름 변경', 'dialog.forkSession': '세션 분기 생성',
+      'dialog.archiveSession': '세션 보관', 'dialog.restoreSession': '세션 복원',
+      'dialog.deleteSession': '세션 영구 삭제', 'dialog.bindWorkspace': '워크스페이스 연결',
+      'dialog.newSession': '새 OpenCode 세션', 'dialog.newTask': '새 위임 작업',
+      'dialog.stopTask': '위임 작업 중지', 'dialog.addWorkspace': '워크스페이스 추가',
+      'dialog.steer': '실행 중인 Worker 안내', 'dialog.cleanup': '저장된 규칙으로 정리',
+      'dialog.bindHint': '대상은 같은 Git 프로젝트의 워크트리여야 합니다. 파일은 이동하지 않으며, 다른 프로젝트는 새 세션을 만드세요.',
+      'dialog.deleteWarning': '이 OpenCode 세션, 메시지 및 하위 세션을 영구 삭제하며 되돌릴 수 없습니다. Worker 작업 기록과 승인 증거는 유지됩니다.',
+      'dialog.forkHint': '기존 기록에서 새 세션을 만들며 모델 요청은 자동으로 보내지 않습니다.',
+      'dialog.archiveHint': '보관 후에도 "보관됨"에서 복원할 수 있습니다.',
+      'dialog.restoreHint': '세션이 세션 라이브러리에 다시 나타납니다.',
+      'dialog.stopHint': 'OpenCode에 중지를 요청하고 확인 후 작업 쓰기 범위를 해제합니다.',
+      'dialog.steerHint': '현재 세션으로 전송되어 이후 모델 단계에서 읽힙니다. 파일이나 명령 권한은 확대되지 않습니다.',
+      'dialog.cleanupHint': '자동 정리가 활성화되고 디스크가 임계값 미만일 때만 실행되며 보존 규칙은 그대로 적용됩니다.',
+      'field.directory': '프로젝트 절대 경로', 'field.profileId': '프로필 ID', 'field.confirmTitle': '확인을 위해 전체 세션 이름 입력',
+      'field.sessionTitle': '세션 이름', 'field.displayName': '표시 이름',
+      'field.providerModel': '제공자 / 모델', 'field.variant': '추론 변형(선택)',
+      'field.variantPlaceholder': '모델이 지원하는 경우 예: high', 'field.enabled': '사용',
+      'field.taskTitle': '작업 이름', 'field.objective': '목표', 'field.groupTitle': '상위 작업',
+      'field.manualTask': '수동 작업', 'field.profile': '모델 프로필', 'field.mode': '작업 모드',
+      'field.workspace': '워크스페이스', 'field.auto': '자동', 'field.urgency': '우선순위',
+      'field.background': '백그라운드 작업', 'field.fast': '빠른 피드백',
+      'field.acceptance': '승인 조건(줄마다 하나)',
+      'field.scopes': '허용된 상대 쓰기 경로(줄마다 하나)',
+      'field.commands': '허용된 정확한 명령(줄마다 하나)',
+      'field.workspaceName': '워크스페이스 이름', 'field.steerText': '추가 정보 또는 방향 조정',
+      'error.profileId': '프로필 ID는 소문자, 숫자, 하이픈만 사용할 수 있으며 문자로 시작해야 합니다.',
+      'error.profileDuplicate': '프로필 ID는 중복될 수 없습니다.',
+      'error.steerStatus': '전달 상태: {status}. 먼저 세션을 확인하고 다시 보내지 마세요.',
+      'provider.connected': '연결됨', 'provider.disconnected': '연결 안 됨', 'provider.models': '모델 {n}개',
+      'provider.limit': '동시성', 'provider.inherit': '상속',
+      'provider.none': '사용 가능한 제공자가 없습니다. 먼저 OpenCode에서 연결하세요.',
+      'settings.applying': '검증 및 적용 중…',
+      'settings.saved': '저장되었습니다. Worker 서비스가 새 구성을 적용했습니다.',
+      'settings.save': '저장 및 적용', 'settings.reload': '다시 읽기',
+      'routing.heading': '자동 라우팅', 'routing.fast': '빠른 작업', 'routing.background': '백그라운드 작업',
+      'routing.deep': '심층 작업', 'routing.maxParallel': '최대 동시성', 'routing.maxKimi': 'Kimi 최대 동시성',
+      'routing.maxSteps': '작업당 최대 단계', 'routing.kimiReserve': 'Kimi 심층 작업 예약 %',
+      'autoApprove.heading': 'Worker 실행 권한',
+      'autoApprove.label': 'Auto Approve · 도구 호출 자동 승인',
+      'autoApprove.note': '기본 활성화. Worker가 매번 확인 없이 도구로 작업을 완료할 수 있습니다. 작업 범위는 지침으로 제한되고 완료 후 검사됩니다. 비활성화하면 파일 범위와 명령 허용 목록이 적용됩니다. 이 Worker 서비스에만 영향을 줍니다.',
+      'cleanup.heading': '디스크 부족 자동 정리',
+      'cleanup.enable': '보존 규칙에 따른 자동 정리 허용',
+      'cleanup.note': '이 도구의 만료된 실행 산출물과 연결된 보관 세션만 처리합니다. 워크트리, 패치, 보고서, 최근 작업은 유지됩니다.',
+      'cleanup.min': '트리거 임계값 GB', 'cleanup.target': '목표 여유 공간 GB',
+      'cleanup.age': '최소 보존 일수', 'cleanup.keep': '유지할 최근 작업 수',
+      'cleanup.preview': '정리 계획 보기', 'cleanup.run': '규칙에 따라 확인 및 정리',
+      'cleanup.previewResult': '여유 공간 {free} GB · 후보 {count}개 · 파일 약 {size} MB',
+      'cleanup.skipped': '정리 미실행: {reason}',
+      'cleanup.done': '{removed}개 처리 · {errors}개 미완료',
+      'models.heading': '모델 프로필', 'models.subtitle': '작업에 맞게 모델을 선택하며 역할은 등급에 제한되지 않습니다',
+      'models.addProfile': '프로필 추가',
+      'models.note': 'OpenCode에 구성된 제공자에서 모델을 선택합니다. 새 제공자 연결은 OpenCode에서 하며 키는 OpenCode가 보관합니다. 저장하면 유휴 Worker 서비스가 재시작되며, 작업이 대기 또는 실행 중이면 변경이 적용되지 않습니다.',
+      'providers.heading': '제공자 및 사용 가능한 모델',
+      'providers.open': 'OpenCode 제공자 관리 열기 ↗',
+      'providers.note': '잔액 어댑터는 현재 DeepSeek와 Kimi를 지원합니다. 다른 제공자도 작업을 실행할 수 있지만 사용량은 미연결로 표시됩니다.',
+      'footer.local': '로컬 실행 · API 키는 로컬 서비스만 읽습니다',
+      'lang.label': '언어',
+      'sessions.count': '세션 {n}개', 'field.readOnly': '읽기 전용 조사', 'field.write': '작성',
+      'field.isolated': '격리된 워크트리'
+    }
+  };
+
+  function normalize(tag) {
+    if (!tag) return null;
+    var value = String(tag).toLowerCase().replace('_', '-');
+    if (value.indexOf('zh') === 0) return /(hant|tw|hk|mo)/.test(value) ? 'zh-TW' : 'zh-CN';
+    if (value.indexOf('ja') === 0) return 'ja';
+    if (value.indexOf('ko') === 0) return 'ko';
+    if (value.indexOf('en') === 0) return 'en';
+    return null;
+  }
+
+  function detect() {
+    try {
+      var saved = global.localStorage && global.localStorage.getItem(STORAGE_KEY);
+      var stored = normalize(saved);
+      if (stored) return stored;
+    } catch (e) {}
+    var list = (global.navigator && (global.navigator.languages || [global.navigator.language])) || [];
+    for (var i = 0; i < list.length; i++) {
+      var match = normalize(list[i]);
+      if (match) return match;
+    }
+    return FALLBACK;
+  }
+
+  var current = detect();
+
+  function lookup(key, locale) {
+    var table = MESSAGES[locale];
+    return table && Object.prototype.hasOwnProperty.call(table, key) ? table[key] : null;
+  }
+
+  function has(key) {
+    return lookup(key, current) != null || lookup(key, FALLBACK) != null;
+  }
+
+  function t(key, vars) {
+    var value = lookup(key, current);
+    if (value == null) value = lookup(key, FALLBACK);
+    if (value == null) return key;
+    if (vars) {
+      value = value.replace(/\{(\w+)\}/g, function (match, name) {
+        return Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : match;
+      });
+    }
+    return value;
+  }
+
+  function toDate(value) {
+    if (value == null || value === '') return null;
+    var parsed = value instanceof Date ? value : new Date(value);
+    return isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  function number(value, options) {
+    try {
+      return new Intl.NumberFormat(current, options || {}).format(value);
+    } catch (e) {
+      return String(value);
+    }
+  }
+
+  function date(value, options) {
+    var parsed = toDate(value);
+    if (!parsed) return '';
+    try {
+      return new Intl.DateTimeFormat(current, options || {}).format(parsed);
+    } catch (e) {
+      return parsed.toISOString();
+    }
+  }
+
+  function time(seconds, options) {
+    if (!seconds) return '—';
+    return date(seconds * 1000, options || { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  }
+
+  function dateTime(value, options) {
+    return date(value, options || { dateStyle: 'short', timeStyle: 'short' });
+  }
+
+  function setAttr(scope, selector, attr, dataAttr) {
+    var nodes = scope.querySelectorAll(selector);
+    for (var i = 0; i < nodes.length; i++) nodes[i].setAttribute(attr, t(nodes[i].getAttribute(dataAttr)));
+  }
+
+  function apply(root) {
+    var scope = root || global.document;
+    if (!scope || !scope.querySelectorAll) return;
+    var nodes = scope.querySelectorAll('[data-i18n]');
+    for (var i = 0; i < nodes.length; i++) nodes[i].textContent = t(nodes[i].getAttribute('data-i18n'));
+    setAttr(scope, '[data-i18n-placeholder]', 'placeholder', 'data-i18n-placeholder');
+    setAttr(scope, '[data-i18n-aria-label]', 'aria-label', 'data-i18n-aria-label');
+    setAttr(scope, '[data-i18n-title]', 'title', 'data-i18n-title');
+  }
+
+  function buildSelectors() {
+    var selects = global.document.querySelectorAll('[data-language-select]');
+    for (var i = 0; i < selects.length; i++) {
+      var select = selects[i];
+      select.innerHTML = '';
+      for (var j = 0; j < LOCALES.length; j++) {
+        var option = global.document.createElement('option');
+        option.value = LOCALES[j].code;
+        option.textContent = LOCALES[j].name;
+        select.appendChild(option);
+      }
+      select.value = current;
+      select.addEventListener('change', function (event) { setLocale(event.target.value); });
+    }
+  }
+
+  function syncSelectors() {
+    var selects = global.document.querySelectorAll('[data-language-select]');
+    for (var i = 0; i < selects.length; i++) selects[i].value = current;
+  }
+
+  function setLocale(code) {
+    current = normalize(code) || FALLBACK;
+    try {
+      global.localStorage && global.localStorage.setItem(STORAGE_KEY, current);
+    } catch (e) {}
+    if (global.document && global.document.documentElement) global.document.documentElement.lang = current;
+    apply();
+    syncSelectors();
+    try {
+      global.document.dispatchEvent(new CustomEvent('i18n:change', { detail: { locale: current } }));
+    } catch (e) {}
+  }
+
+  function init() {
+    if (global.document && global.document.documentElement) global.document.documentElement.lang = current;
+    buildSelectors();
+    apply();
+  }
+
+  global.I18n = {
+    fallback: FALLBACK,
+    supported: LOCALES,
+    normalize: normalize,
+    detect: detect,
+    getLocale: function () { return current; },
+    has: has,
+    t: t,
+    number: number,
+    date: date,
+    time: time,
+    dateTime: dateTime,
+    apply: apply,
+    setLocale: setLocale
+  };
+
+  if (global.document) {
+    if (global.document.readyState === 'loading') global.document.addEventListener('DOMContentLoaded', init);
+    else init();
+  }
+})(window);

@@ -106,9 +106,11 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, (WEB / 'index.html').read_bytes(), 'text/html; charset=utf-8',
                        {'Set-Cookie': getattr(self.server, 'cookie_name', 'delegate_console') + '=' + self.server.cookie + '; HttpOnly; SameSite=Strict; Path=/',
                         'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"})
-        elif path in ('/console-assets/app.js', '/console-assets/style.css', '/console-assets/manage.js'):
+        elif path in ('/console-assets/app.js', '/console-assets/style.css', '/console-assets/manage.js', '/console-assets/i18n.js'):
             name = path.rsplit('/', 1)[1]
             self.reply(200, (WEB / name).read_bytes(), 'text/javascript' if name.endswith('.js') else 'text/css')
+        elif path.startswith('/console-assets/'):
+            self.reply(404, {'error': 'Unknown console asset'})
         elif path in ('/console-api/models', '/console-api/settings', '/console-api/sessions', '/console-api/workspaces', '/console-api/cleanup'):
             try:
                 fn = {'/console-api/models': management.catalog, '/console-api/settings': management.settings, '/console-api/sessions': management.sessions, '/console-api/workspaces': management.workspaces, '/console-api/cleanup': __import__('cleanup').preview}[path]
