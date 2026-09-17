@@ -283,7 +283,7 @@ def run_task(task_id, shutdown):
                 elif seen:
                     assistants = [m for m in messages if m.get('info', {}).get('role') == 'assistant']
                     last = assistants[-1].get('info', {}) if assistants else {}
-                    if is_idle and last.get('time', {}).get('completed'):
+                    if is_idle and (last.get('time', {}).get('completed') or last.get('error')):
                         return finish(t, messages)
                     if is_idle and time.time() - t['dispatch_attempted_at'] > 45 and not assistants:
                         return finish(t, messages, 'needs_attention', 'prompt_present_but_no_response')

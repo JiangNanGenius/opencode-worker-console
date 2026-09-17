@@ -60,6 +60,17 @@ class ErrorBridgeTests(unittest.TestCase):
         self.assertEqual(result['result']['errors'][0]['exit_code'], 7)
         self.assertEqual(result['result']['errors'][0]['command'], 'example-test')
 
+    def test_idle_model_error_finishes_without_completion_timestamp(self):
+        messages = [{'info': {'id': 'msg_test', 'role': 'user'}, 'parts': []},
+                    {'info': {'id': 'msg_reply', 'role': 'assistant',
+                              'error': {'name': 'APIError', 'data': {'message': 'Provider unavailable'}}},
+                     'parts': []}]
+        with patch.object(worker, 'call', return_value=messages), patch.object(worker, 'api', return_value={}):
+            worker.run_task('job-error', threading.Event())
+        result = diagnostics.collect('job-error')
+        self.assertEqual(result['task']['status'], 'failed')
+        self.assertEqual(result['task']['errors'][0]['message'], 'Provider unavailable')
+
     def test_http_error_keeps_safe_message_and_redacts_key(self):
         body = json.dumps({'error': {'message': 'Invalid sk-abcdefghijklmnop'},
                            'headers': {'Authorization': 'must-not-appear'}}).encode()
