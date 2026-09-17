@@ -1,6 +1,6 @@
 ---
 name: delegate-opencode
-description: Proactively delegate substantial, coherent work to OpenCode workers before bulk reading or serial implementation. Prefer available subscription allowance for ordinary work (senior-code) and deep understanding (deep-research); use fast-code for genuinely tiny tasks or urgent work needing the fastest response. Delegate complete outcomes such as investigation, implementation with tests, documentation and review. All profiles are general-purpose. Astra owns UI aesthetics, product and architecture decisions, complex interaction and final acceptance. Also use for worker status, errors, guidance, transcripts and session management.
+description: Proactively delegate substantial, coherent work to OpenCode workers before bulk reading or serial implementation. Prefer available subscription allowance for ordinary work (senior-code) and deep understanding (deep-research); use fast-code for genuinely tiny tasks or urgent work needing the fastest response. Delegate complete outcomes such as investigation, implementation with tests, deployment with verification, documentation and review. All profiles are general-purpose. Astra owns UI aesthetics, product and architecture decisions, complex interaction and final acceptance. Also use for worker status, errors, guidance, transcripts and session management.
 ---
 
 # Delegate OpenCode work
@@ -76,7 +76,7 @@ Use this decision rule before submitting:
 | Task shape | Profile |
 | --- | --- |
 | Genuinely tiny specified task, or urgent work where fastest response matters | `fast-code` |
-| Ordinary coherent investigation, implementation, testing, documentation or second opinion while plan allowance is available | `senior-code` |
+| Ordinary coherent investigation, implementation, testing, deployment, documentation or second opinion while plan allowance is available | `senior-code` |
 | Broad repository reading, multiple subsystems, architecture/dependency mapping, ambiguous root cause or consequential challenge review | `deep-research` with `--complexity deep` |
 
 The deep conditions take precedence over a small writable scope: a cross-module cause may
@@ -100,6 +100,15 @@ a utilization target.
   Return the interface portion when it genuinely requires complex real UI operation,
   visual judgment or Computer Use. State what already passed, the exact blocked step and
   the remaining action so Astra can continue without repeating the whole investigation.
+- Delegate authorized deployment as part of the complete outcome, including build, rollout
+  and verification. For routine deployments, let the worker discover and follow existing
+  project scripts, CI workflows and runbooks; Astra need not dictate commands. Supply the
+  method only for a special process or missing project knowledge. Identify the intended
+  environment and expected result, include necessary write scopes, and use a shared
+  `--resource` for the deployment target. Workers verify the running version and service
+  health, handle routine failures within scope, and report evidence. A successful command
+  alone is not a verified deployment. Return only genuinely blocked portions, such as
+  unavailable authentication, ambiguous targets or complex real UI operation, to Astra.
 - Supply a concrete objective, context, acceptance conditions, literal writable file/directory
   scopes, and useful test/build commands. Read-only is the default. Workers can investigate,
   reason and implement independently within the task, but cannot expand scope or spawn workers.
@@ -107,7 +116,9 @@ a utilization target.
   automatically as its group; use `--parent-task-id` when a delegated task follows another.
   This keeps main-task ownership and parent/child relationships visible in the console.
 - Normal reversible work already authorized by the user needs no additional confirmation.
-  Delegation does not expand authorization for publishing, deployment, account changes or devices.
+  Deployment within the user's task needs no separate approval merely because a worker
+  performs it. Delegation does not expand authorization to unrelated publishing, environments,
+  account changes or devices.
 
 Start with the CLI; `submit` starts missing services automatically. Do not inspect the
 bridge implementation or run setup checks on every invocation. For example, adapt this

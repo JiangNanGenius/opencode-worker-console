@@ -145,9 +145,19 @@ prompt and validates it itself. Missing or invalid reports become `needs_attenti
 
 ## Deployment and service control
 
+Deployment is a normal worker responsibility when included in the user's authorized outcome.
+Give the worker the workspace, intended environment, expected result and necessary writable
+scopes; use the same `--resource` for jobs deploying to the same target. Let it discover routine
+commands from project scripts, CI workflows and runbooks. Provide a method for special processes
+only when needed. The worker owns build, deployment, routine troubleshooting and verification
+of the running version and health, and returns concise evidence for Astra's final review.
+Existing authenticated tooling can be used without reading or exposing credential values.
+
 `python3 scripts/install.py` installs or updates the global skill, launcher and three local
 background services. Existing deployment is backed up under `state/releases`; credentials,
 settings and results are preserved. Update only when no tasks are active.
+For an existing installation with active tasks, use `python3 scripts/install.py --live` to
+update the skill, pool observer and console while retaining the OpenCode process and sessions.
 
 The server binds only to 127.0.0.1 with a generated password in an owner-only file; the
 password is injected into the process environment. Services are launched by the calling
