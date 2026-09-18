@@ -30,9 +30,9 @@ PACKAGE_ITEMS = ['SKILL.md', 'agents', 'scripts', 'references', 'web']
 PROFILE_NAMES = ['fast-code', 'senior-code', 'deep-research']
 PRESETS = {
     'deepseek-kimi': {
-        'fast-code': {'model': 'deepseek/deepseek-flash', 'variant': 'high', 'label': 'DeepSeek V4.1 Flash'},
-        'senior-code': {'model': 'kimi-for-coding/kimi-for-coding', 'variant': 'high', 'label': 'Kimi K2.8 Preview'},
-        'deep-research': {'model': 'kimi-for-coding/k3', 'variant': 'high', 'label': 'Kimi K3'},
+        'fast-code': {'model': 'deepseek/deepseek-flash', 'variant': 'max', 'label': 'DeepSeek V4.1 Flash'},
+        'senior-code': {'model': 'kimi-for-coding/kimi-for-coding', 'variant': 'max', 'label': 'Kimi K2.8 Preview'},
+        'deep-research': {'model': 'kimi-for-coding/k3', 'variant': 'max', 'label': 'Kimi K3'},
     }
 }
 # Concurrency is capped per owning Codex conversation (owner_thread_id), never

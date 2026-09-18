@@ -112,7 +112,7 @@ class InstallTests(unittest.TestCase):
         c = json.loads(self.config.read_text())
         self.assertEqual(c['profiles'], install.PRESETS['deepseek-kimi'])
         for spec in c['profiles'].values():
-            self.assertEqual(spec['variant'], 'high')
+            self.assertEqual(spec['variant'], 'max')
             self.assertTrue(spec['label'])
         self.assertEqual(c['max_parallel_per_owner'], 4)
         self.assertEqual(c['kimi_reserve_percent'], 0)

@@ -16,6 +16,10 @@ task prompts and command arguments; use the local helper's hidden prompt or stdi
 
 ## Decide and delegate
 
+- Use each worker model's highest supported reasoning variant. All three models in the
+  DeepSeek/Kimi preset support `max`. Verify the actual OpenCode provider variants when
+  adding or changing a model; do not assume every provider uses the same name. Preserve
+  maximum reasoning when selecting profiles unless the user explicitly requests otherwise.
 - Treat OpenCode workers as capable general-purpose execution agents, not coding-only
   assistants or a fixed list of specialist roles. Any part of the user's authorized outcome
   is eligible when the worker has suitable tools and access. Examples in this skill illustrate

@@ -45,6 +45,10 @@ The first command maps the three default profiles to your chosen model. You can 
 python3 scripts/install.py --preset deepseek-kimi
 ```
 
+This preset uses the `max` reasoning variant for all three models. Existing installations
+retain their saved settings; select the highest supported variant in **Models & routing**
+when updating a profile or choosing another model.
+
 Existing installations retain their model configuration. Updating the checked-out source and running `python3 scripts/install.py` replaces runtime code after an idle-state check. Use `--no-start` for installation without launching services.
 
 The installer prints the local addresses and installs:
