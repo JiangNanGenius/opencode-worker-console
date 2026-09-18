@@ -337,8 +337,8 @@ def run_task(task_id, shutdown):
         while not shutdown.is_set():
             t = task(task_id)
             try:
-                if t.get('cancel_requested') or time.time() >= t['started_at'] + t['timeout_seconds']:
-                    forced = 'cancelled' if t.get('cancel_requested') else 'timed_out'
+                if t.get('cancel_requested'):
+                    forced = 'cancelled'
                     update(task_id, status='stopping', reason=forced)
                     if stop(t):
                         try:
@@ -360,14 +360,7 @@ def run_task(task_id, shutdown):
                                             retryable=True, action='wait', attempt=native_status.get('attempt'),
                                             next_retry=native_status.get('next')))
                 update(task_id, errors=observed_errors)
-                deadline = t['started_at'] + t['timeout_seconds']
-                forced = 'cancelled' if t.get('cancel_requested') else 'timed_out' if time.time() >= deadline else None
-                if forced:
-                    update(task_id, status='stopping', reason=forced)
-                    if stop(t):
-                        return finish(t, call(t, '/message'), forced, forced)
-                    update(task_id, status='uncertain', reason='abort_not_confirmed')
-                elif seen:
+                if seen:
                     assistants = [m for m in messages if m.get('info', {}).get('role') == 'assistant']
                     last = assistants[-1].get('info', {}) if assistants else {}
                     if is_idle and (last.get('time', {}).get('completed') or last.get('error')):
@@ -382,10 +375,6 @@ def run_task(task_id, shutdown):
                     if pending and stop(t):
                         write_json(artifact_dir(task_id) / 'pending.json', redact(pending))
                         return finish(t, call(t, '/message'), 'needs_attention', 'permission_or_question_pending')
-                    errors = summarize_messages(messages)['tool_errors']
-                    counts = collections.Counter((e['tool'], e['error'], json.dumps(e.get('input', {}), sort_keys=True)) for e in errors)
-                    if any(n >= 2 for n in counts.values()) and stop(t):
-                        return finish(t, call(t, '/message'), 'needs_attention', 'same_tool_failure_repeated')
                 elif is_idle and time.time() - t['dispatch_attempted_at'] > 45:
                     # Confirmed idle: safe to release ownership, but never resubmit automatically.
                     return finish(t, messages, 'needs_attention', 'prompt_acceptance_unconfirmed_no_replay')

@@ -118,9 +118,6 @@ def submit(spec):
         raise ValueError('Urgency must be fast or background')
     if spec.get('complexity', 'normal') not in ('normal', 'deep'):
         raise ValueError('Complexity must be normal or deep')
-    timeout = spec.get('timeout_seconds') or (3600 if spec.get('complexity') == 'deep' else 1800)
-    if not isinstance(timeout, (int, float)) or not 10 <= timeout <= 14400:
-        raise ValueError('Timeout must be 10 to 14400 seconds')
     for command in spec.get('commands', []):
         if not isinstance(command, str) or not command.strip() or any(x in command for x in '*?[]'):
             raise ValueError('Allowed commands must be literal non-empty commands without permission wildcards')
@@ -131,7 +128,7 @@ def submit(spec):
         'urgency': spec.get('urgency', 'background'), 'complexity': spec.get('complexity', 'normal'),
         'workspace': workspace, 'source_dir': str(root), 'scopes': scopes,
         'commands': spec.get('commands', []), 'resources': spec.get('resources', []),
-        'web': bool(spec.get('web', False)), 'timeout_seconds': timeout,
+        'web': bool(spec.get('web', False)),
         'status': 'queued', 'created_at': time.time(), 'updated_at': time.time(),
         'owner_thread_id': os.environ.get('CODEX_THREAD_ID'),
         'group_id': spec.get('group_id') or os.environ.get('CODEX_THREAD_ID') or str(root),
@@ -299,7 +296,8 @@ def main():
     s.add_argument('--command', action='append', default=[])
     s.add_argument('--resource', action='append', default=[])
     s.add_argument('--acceptance', action='append', default=[])
-    s.add_argument('--timeout-seconds', type=int)
+    # Accept old callers without reintroducing an execution deadline.
+    s.add_argument('--timeout-seconds', type=int, help=argparse.SUPPRESS)
     s.add_argument('--web', action='store_true')
     s.add_argument('--title')
     s.add_argument('--group-id')

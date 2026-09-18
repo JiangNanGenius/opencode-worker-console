@@ -85,6 +85,7 @@ class InstallTests(unittest.TestCase):
             self.assertEqual(c['profiles'][name], {'model': 'acme/worker-1', 'label': 'worker-1'})
         self.assertEqual(c['max_parallel_per_owner'], 4)
         self.assertEqual(c['kimi_reserve_percent'], 0)
+        self.assertNotIn('max_steps', c)
         for legacy in ('max_parallel', 'max_kimi_parallel', 'provider_limits'):
             self.assertNotIn(legacy, c)
         self.assertEqual(c['opencode_binary'], '/usr/bin/opencode')
@@ -135,9 +136,21 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(c['max_parallel_per_owner'], 4)
         self.assertEqual(c['kimi_reserve_percent'], 10)
         self.assertEqual(c['opencode_binary'], '/old/opencode')
-        self.assertEqual(c['max_steps'], 80)
+        self.assertNotIn('max_steps', c)
         self.assertTrue(c['console_url'].startswith('http://127.0.0.1:'))
         self.assertNotEqual(c['console_url'], c['server_url'])
+
+    def test_legacy_max_steps_is_dropped_on_update(self):
+        existing = {'version': 1, 'server_url': 'http://127.0.0.1:41234',
+                    'console_url': 'http://127.0.0.1:41235', 'opencode_binary': '/old/opencode',
+                    'max_steps': 80, 'profiles': {'fast-code': {'model': 'acme/one', 'label': 'Mine'}}}
+        self.config.parent.mkdir(parents=True)
+        self.config.write_text(json.dumps(existing))
+        self.run_install()
+        c = json.loads(self.config.read_text())
+        self.assertNotIn('max_steps', c)
+        self.assertEqual(c['profiles'], existing['profiles'])
+        self.assertEqual(c['max_parallel_per_owner'], 4)
 
     def test_legacy_provider_limits_remained_inert_on_upgrade(self):
         existing = {'version': 1, 'server_url': 'http://127.0.0.1:41234',

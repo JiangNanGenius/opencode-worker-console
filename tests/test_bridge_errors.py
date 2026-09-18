@@ -81,6 +81,57 @@ class ErrorBridgeTests(unittest.TestCase):
         self.assertEqual(result['task']['status'], 'failed')
         self.assertEqual(result['task']['errors'][0]['message'], 'Provider unavailable')
 
+    def test_long_running_worker_repairs_repeated_errors_without_forced_stop(self):
+        # Recover an old persisted job far beyond its former deadline. Observe more
+        # than 80 busy iterations, including repeated failures, then a real completion.
+        common.update('job-error', started_at=time.time() - 86400, timeout_seconds=1)
+        report = {'outcome': 'done', 'summary': 'Recovered after long execution',
+                  'evidence': [], 'tests': [], 'unresolved': []}
+        failures = [{'type': 'tool', 'tool': 'bash', 'callID': 'retry-' + str(i),
+                     'state': {'status': 'error', 'input': {'command': 'example-test'},
+                               'error': 'Temporary failure'}} for i in range(2)]
+        rounds = [0]
+        shutdown = threading.Event()
+
+        def pause(_seconds):
+            rounds[0] += 1
+            if rounds[0] > 86:
+                raise AssertionError('Worker failed to recognize completion')
+
+        def messages(*args):
+            info = {'id': 'msg_reply', 'role': 'assistant', 'providerID': 'test', 'modelID': 'model'}
+            parts = list(failures)
+            if rounds[0] >= 85:
+                info['time'] = {'completed': time.time() * 1000}
+                parts.append({'type': 'text', 'text': json.dumps(report)})
+            return [{'info': {'id': 'msg_test', 'role': 'user'}, 'parts': []},
+                    {'info': info, 'parts': parts}]
+
+        def native(path, *_args, **_kwargs):
+            if path == '/session/status':
+                return {'ses_error': {'type': 'busy' if rounds[0] < 85 else 'idle'}}
+            return []
+
+        with patch.object(shutdown, 'wait', side_effect=pause), \
+                patch.object(worker, 'call', side_effect=messages), \
+                patch.object(worker, 'api', side_effect=native), \
+                patch.object(worker, 'stop') as abort:
+            worker.run_task('job-error', shutdown)
+        abort.assert_not_called()
+        self.assertEqual(rounds[0], 85)
+        result = diagnostics.collect('job-error')
+        self.assertEqual(result['task']['status'], 'completed')
+        self.assertEqual(result['result']['worker_report']['summary'], report['summary'])
+        self.assertEqual(len([e for e in result['result']['errors'] if e['source'] == 'tool']), 2)
+
+    def test_explicit_cancellation_still_aborts_unlimited_worker(self):
+        common.update('job-error', cancel_requested=True)
+        with patch.object(worker, 'stop', return_value=True) as abort, \
+                patch.object(worker, 'call', return_value=[]):
+            worker.run_task('job-error', threading.Event())
+        abort.assert_called_once()
+        self.assertEqual(common.task('job-error')['status'], 'cancelled')
+
     def test_http_error_keeps_safe_message_and_redacts_key(self):
         body = json.dumps({'error': {'message': 'Invalid sk-abcdefghijklmnop'},
                            'headers': {'Authorization': 'must-not-appear'}}).encode()

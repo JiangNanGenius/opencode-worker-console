@@ -85,3 +85,29 @@ class ConsoleOwnerTests(unittest.TestCase):
             for secret in ('console_bind', 'console_allowed_origins', 'desk.example.test',
                            'synthetic-secret', 'console-auth', 'pbkdf2', 'salt', 'hash'):
                 self.assertNotIn(secret, blob)
+
+    def test_console_settings_and_ui_have_no_step_or_time_limits(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            config_path = root / 'config.json'
+            config_path.write_text(json.dumps({
+                'profiles': {'senior-code': {'model': 'example/model'}},
+                'max_parallel_per_owner': 4, 'kimi_reserve_percent': 0, 'max_steps': 80,
+            }))
+            with patch.object(common, 'CONFIG', config_path):
+                result = management.settings()
+        # A legacy max_steps: 80 on disk is neither exported nor defaulted back.
+        self.assertNotIn('max_steps', result)
+        self.assertNotIn('max_steps', json.dumps(result))
+        project = Path(__file__).resolve().parents[1]
+        index = (project / 'web' / 'index.html').read_text()
+        manage = (project / 'web' / 'manage.js').read_text()
+        i18n = (project / 'web' / 'i18n.js').read_text()
+        for source in (index, manage):
+            self.assertNotIn('max-steps', source)
+            self.assertNotIn('max_steps', source)
+            self.assertNotIn('maxSteps', source)
+            self.assertNotIn('timeout', source.lower())
+            self.assertNotIn('deadline', source.lower())
+        self.assertNotIn('routing.maxSteps', i18n)
+        self.assertNotIn('timeout', i18n.lower())

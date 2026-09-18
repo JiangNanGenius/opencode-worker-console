@@ -11,9 +11,11 @@ def runtime_overlay(c):
     auto = c.get('auto_approve', True)
     agents = {}
     for name, profile in c['profiles'].items():
+        # `steps` is deliberately never sent: OpenCode then iterates until the
+        # model stops or the user interrupts. Any legacy max_steps is inert.
         agents[name] = {'description': 'General-purpose delegated worker: investigate, summarize, implement, analyze and verify.',
                         'mode': 'primary', 'model': profile['model'], **({'variant': profile['variant']} if profile.get('variant') else {}),
-                        'steps': c.get('max_steps', 80), 'prompt': instructions(auto),
+                        'prompt': instructions(auto),
                         'permission': 'allow' if auto else {'*': 'deny', 'read': 'allow', 'glob': 'allow', 'grep': 'allow',
                                        'list': 'allow', 'lsp': 'allow', 'todowrite': 'allow'}}
     return {'$schema': 'https://opencode.ai/config.json', 'agent': agents,

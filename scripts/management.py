@@ -145,7 +145,7 @@ def settings():
         profiles[name] = {'model': profile.get('model'), 'label': profile.get('label'),
                           'variant': profile.get('variant'), 'enabled': profile.get('enabled', True)}
     out = {'profiles': profiles, 'max_parallel_per_owner': _per_owner_limit(c.get('max_parallel_per_owner')),
-           'max_steps': c.get('max_steps'), 'kimi_reserve_percent': c.get('kimi_reserve_percent'),
+           'kimi_reserve_percent': c.get('kimi_reserve_percent'),
            'revision': c.get('revision', 0), 'auto_approve': c.get('auto_approve', True)}
     if isinstance(c.get('routing'), dict):
         out['routing'] = c['routing']
@@ -192,7 +192,7 @@ def _clean_profile(name, value):
 def _validate_settings(body):
     if not isinstance(body, dict):
         raise ValueError('Settings must be an object')
-    for key in ('profiles', 'max_parallel_per_owner', 'max_steps', 'kimi_reserve_percent'):
+    for key in ('profiles', 'max_parallel_per_owner', 'kimi_reserve_percent'):
         if key not in body:
             raise ValueError('Missing required setting: ' + key)
     raw_profiles = body.get('profiles')
@@ -202,7 +202,6 @@ def _validate_settings(body):
         raise ValueError('At most 32 profiles are supported')
     profiles = {name: _clean_profile(name, value) for name, value in raw_profiles.items()}
     result = {'profiles': profiles, 'max_parallel_per_owner': _int_setting(body, 'max_parallel_per_owner', 1, 16),
-              'max_steps': _int_setting(body, 'max_steps', 1, 200),
               'kimi_reserve_percent': _int_setting(body, 'kimi_reserve_percent', 0, 100)}
     if 'auto_approve' in body:
         if not isinstance(body['auto_approve'], bool):
@@ -217,6 +216,8 @@ def _validate_settings(body):
             if not isinstance(name, str) or name not in profiles or not profiles[name]['enabled']:
                 raise ValueError('routing.' + key + ' must reference an enabled profile')
         result['routing'] = {key: routing[key] for key in _ROUTING_KEYS}
+    # Legacy per-task iteration caps in the body are ignored, never validated
+    # and never re-persisted; workers have no default step or time cap.
     # Legacy global/provider cap fields sent by old clients are ignored, never
     # validated as owner limits, and never re-persisted as active settings.
     if 'cleanup' in body:
@@ -321,6 +322,8 @@ def save_settings(body):
         revision = existing.get('revision', 0)
         if isinstance(revision, bool) or not isinstance(revision, int):
             revision = 0
+        # Drop any legacy per-task iteration cap so an old max_steps cannot reappear.
+        existing.pop('max_steps', None)
         existing.update(candidate)
         existing['revision'] = revision + 1
         existing['restart_required'] = True

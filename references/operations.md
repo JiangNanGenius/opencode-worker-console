@@ -27,7 +27,7 @@ object on stdin. Fields: `directory`, `objective`, `title`, `acceptance` (string
 `profile` (`auto` or a configured profile), `mode` (`read`/`write`), `scopes` (literal relative
 path array), `commands` (suggested checks; exact allowlist when Auto Approve is off), `resources` (shared lock-name array),
 `urgency` (`fast`/`background`), `complexity` (`normal`/`deep`), `workspace`
-(`auto`/`shared`/`isolated`), `large`, `web`, and `timeout_seconds`.
+(`auto`/`shared`/`isolated`), `large`, and `web`.
 Do not put API keys or other secrets in tasks. Web fetching is opt-in with `web: true`.
 Use `group_title` for a readable main-task name, `group_id` to override the current Codex
 task ID, and `parent_task_id` for a child of an existing delegated task in the same group.
@@ -80,12 +80,14 @@ ownership and state tracking must remain coordinated.
 
 Global settings: `~/.config/opencode/delegate-pool.json`. This is separate from the
 user's interactive OpenCode configuration. The default is four running workers per owning
-Codex conversation (`max_parallel_per_owner`), 80 agent steps, and 30-minute tasks or
-60 minutes for deep tasks. Different conversations have independent slots: there is no shared
+Codex conversation (`max_parallel_per_owner`). There is no per-task step or time cap:
+a worker iterates until its model stops or the task is cancelled. Different conversations
+have independent slots: there is no shared
 global or provider concurrency ceiling. Child tasks count against the same owner. Non-Codex
 callers fall back to their group/workspace identity. Scope/resource conflicts still queue.
 Model/variant changes saved in the console restart idle execution services; owner limits
-are read at runtime. Legacy global/provider concurrency settings no longer govern dispatch.
+are read at runtime. Legacy global/provider concurrency and per-task step/time settings no
+longer govern dispatch.
 
 ## Quota and routing
 
@@ -161,10 +163,11 @@ Do not run untrusted repositories/scripts with valuable credentials; choose a se
 execution environment for that situation. External edits outside this scheduler are not locked.
 
 An accepted prompt's identity is saved before sending. Recovery observes that session;
-it never blindly sends the prompt again. Cancel/timeout retains ownership until abort is
+it never blindly sends the prompt again. Cancellation retains ownership until abort is
 confirmed. `uncertain` means the service cannot confirm state; restore service connectivity.
-The queue can report and stop on repeated tool failures, but test failures inside otherwise
-successful shell commands are additionally the worker's and Astra's responsibility.
+The queue reports tool failures without a repeated-failure or iteration cutoff; test failures
+inside otherwise successful shell commands are additionally the worker's and Astra's
+responsibility.
 
 For isolated integration, the source must still match the task's original baseline for every
 changed file. `integrate JOB_ID` performs both hash checks and `git apply --check`;

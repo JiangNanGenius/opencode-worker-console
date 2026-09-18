@@ -203,13 +203,36 @@ class ManagementTests(unittest.TestCase):
     # -- settings --------------------------------------------------------
     def test_settings_returns_only_editable_fields(self):
         result = management.settings()
-        self.assertEqual(set(result.keys()), {'profiles', 'max_parallel_per_owner', 'max_steps',
+        self.assertEqual(set(result.keys()), {'profiles', 'max_parallel_per_owner',
                                               'kimi_reserve_percent', 'revision', 'cleanup', 'auto_approve'})
         self.assertEqual(result['max_parallel_per_owner'], 4)
         self.assertEqual(result['profiles']['fast-code'],
                          {'model': 'deepseek/deepseek-flash', 'label': 'Flash', 'variant': 'high', 'enabled': True})
+        self.assertNotIn('max_steps', result)
         for leaked in ('server_url', 'console_url', 'opencode_binary'):
             self.assertNotIn(leaked, result)
+
+    def test_legacy_max_steps_is_ignored_dropped_and_never_exported(self):
+        # The fixture config still carries an old max_steps: 80.
+        self.assertNotIn('max_steps', management.settings())
+        for legacy in (80, 200, 0, 'junk', True, None):
+            with self.subTest(max_steps=legacy):
+                body = self.valid_body()
+                body['max_steps'] = legacy
+                with patch.object(common, 'api', return_value={}):
+                    result = management.save_settings(body)
+                self.assertNotIn('max_steps', result)
+                stored = self.read_config()
+                self.assertNotIn('max_steps', stored)
+                self.assertEqual(stored['max_parallel_per_owner'], 6)
+
+    def test_save_settings_accepts_body_without_max_steps(self):
+        body = self.valid_body()
+        del body['max_steps']
+        with patch.object(common, 'api', return_value={}):
+            result = management.save_settings(body)
+        self.assertNotIn('max_steps', result)
+        self.assertNotIn('max_steps', self.read_config())
 
     def test_save_settings_preserves_other_config_and_sets_revision(self):
         with patch.object(common, 'api', return_value={}) as api:
@@ -221,6 +244,7 @@ class ManagementTests(unittest.TestCase):
         self.assertEqual(stored['opencode_binary'], '/opt/opencode')
         self.assertEqual(stored['console_url'], 'http://127.0.0.1:1235')
         self.assertEqual(stored['max_parallel_per_owner'], 6)
+        self.assertNotIn('max_steps', stored)
         self.assertEqual(stored['routing']['deep'], 'senior-code')
         self.assertEqual(stored['revision'], 1)
         self.assertTrue(stored['restart_required'])
@@ -237,7 +261,7 @@ class ManagementTests(unittest.TestCase):
     def test_save_settings_rejects_invalid_without_writing(self):
         original = self.config.read_text()
         cases = []
-        bad = self.valid_body(); del bad['max_steps']; cases.append(('missing field', bad))
+        bad = self.valid_body(); del bad['kimi_reserve_percent']; cases.append(('missing field', bad))
         bad = self.valid_body(); bad['profiles'] = {}; cases.append(('empty profiles', bad))
         bad = self.valid_body(); bad['profiles']['Bad'] = {'model': 'deepseek/x'}; cases.append(('uppercase id', bad))
         bad = self.valid_body(); bad['profiles']['../evil'] = {'model': 'deepseek/x'}; cases.append(('path id', bad))
@@ -247,7 +271,6 @@ class ManagementTests(unittest.TestCase):
         bad = self.valid_body(); bad['max_parallel_per_owner'] = 17; cases.append(('per-owner high', bad))
         bad = self.valid_body(); bad['max_parallel_per_owner'] = True; cases.append(('bool per-owner', bad))
         bad = self.valid_body(); del bad['max_parallel_per_owner']; cases.append(('per-owner missing', bad))
-        bad = self.valid_body(); bad['max_steps'] = 201; cases.append(('steps high', bad))
         bad = self.valid_body(); bad['kimi_reserve_percent'] = 101; cases.append(('reserve high', bad))
         bad = self.valid_body(); del bad['routing']['deep']; cases.append(('routing incomplete', bad))
         bad = self.valid_body(); bad['routing']['fast'] = 'ghost'; cases.append(('routing unknown', bad))

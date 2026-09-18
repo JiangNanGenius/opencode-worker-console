@@ -11,7 +11,7 @@ Manage task ownership, parent/child tasks, worker profiles, automatic routing, s
 - **Sessions:** browse across projects, search, create, rename, archive/restore, fork, permanently delete and open the native OpenCode conversation. Forking does not send a prompt.
 - **Models:** add, remove and disable profiles; choose provider/model and optional reasoning variant; configure routing and concurrency. Settings apply only when workers and native sessions are idle.
 - **Profile routing:** coordinators can select a profile from task semantics or use coarse automatic routing based on urgency and complexity. All tiers can own complete tasks.
-- **Conversation concurrency:** each owning Codex conversation can run four workers by default. Other conversations have independent slots, with no shared global or provider cap. Shared-file/resource conflicts and account availability still govern dispatch.
+- **Conversation concurrency:** each owning Codex conversation can run four workers by default. Other conversations have independent slots, with no shared global or provider cap. Shared-file/resource conflicts and account availability still govern dispatch. There is no per-task step or time cap: a worker iterates until its model stops or the task is cancelled.
 - **Usage:** DeepSeek balance and Kimi Coding plan windows, sample age and reset time. Other OpenCode providers can run tasks without a usage adapter.
 - **Workspace coordination:** disjoint shared write scopes, resource locks, or isolated Git worktrees based on the current working tree. Review a patch before applying it.
 - **Agent controls:** guide a running worker, bind sessions to workspaces, perform user-authorized deletion, and optionally clean old owned data when disk space is low.

@@ -173,7 +173,9 @@ routing is desired.
   Full outputs stay in protected task artifacts (`collect --full` only when needed).
 - Treat `wait --seconds 20` as one observation interval, not as the expected task duration.
   A coherent implementation, build, test run or deep investigation commonly takes 15–30
-  minutes; deep tasks may use their full configured timeout. While a task is `queued`,
+  minutes or longer. Workers have no imposed iteration, tool-call-count or total runtime
+  limit. Do not introduce a deadline or stop a worker merely because of elapsed time or
+  repeated tool failures; inspect its progress and let it repair its approach. While a task is `queued`,
   `starting` or `running`, keep it alive and monitor in bounded intervals. Continue useful
   non-overlapping work, or keep waiting when the main decision depends on the result.
 - When the requested result depends on an active worker, remain in the same Codex turn until

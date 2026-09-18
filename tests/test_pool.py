@@ -73,6 +73,13 @@ class PoolTests(unittest.TestCase):
     def new(self, **kw):
         return common.task(delegate.submit(self.spec(**kw))['id'])
 
+    def test_new_tasks_have_no_deadline_even_from_legacy_callers(self):
+        for spec in ({}, {'complexity': 'deep'}, {'timeout_seconds': 1},
+                     {'timeout_seconds': 30000}):
+            with self.subTest(spec=spec):
+                t = self.new(**spec)
+                self.assertNotIn('timeout_seconds', t)
+
     def test_console_health_requires_live_pool_and_server(self):
         with patch.object(console_server, 'read_json', side_effect=lambda path, default: {'time': time.time()} if path.name == 'heartbeat.json' else {'pool': {}}), patch.object(console_server.service, 'alive', return_value=True), patch.object(console_server, 'api', return_value={'healthy': True}):
             self.assertEqual(console_server.service_health(), {'pool': True, 'server': True})

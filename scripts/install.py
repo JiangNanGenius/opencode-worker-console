@@ -39,7 +39,7 @@ PRESETS = {
 # globally or per provider; the scheduler reads max_parallel_per_owner (default 4).
 # kimi_reserve_percent is optional (0 = no reservation); plan-backed Kimi is
 # already preferred whenever subscription allowance exists.
-TOP_LEVEL_DEFAULTS = {'max_parallel_per_owner': 4, 'max_steps': 80, 'kimi_reserve_percent': 0, 'auto_approve': True}
+TOP_LEVEL_DEFAULTS = {'max_parallel_per_owner': 4, 'kimi_reserve_percent': 0, 'auto_approve': True}
 ACTIVE_STATUSES = {'queued', 'starting', 'running', 'stopping', 'uncertain'}
 ENV_VARS = ('DELEGATE_INSTALL', 'DELEGATE_STATE', 'DELEGATE_CONFIG', 'DELEGATE_BIN_DIR')
 
@@ -211,6 +211,9 @@ def load_or_build_config(args, opencode):
     ensure_urls(c)
     for key, value in TOP_LEVEL_DEFAULTS.items():
         c.setdefault(key, value)
+    # Per-task iteration caps were removed; drop any legacy max_steps so an
+    # old 80 cannot reappear in the configuration or console.
+    c.pop('max_steps', None)
     c.setdefault('opencode_binary', opencode)
     if args.opencode:
         c['opencode_binary'] = opencode
