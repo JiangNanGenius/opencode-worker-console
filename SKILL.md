@@ -196,6 +196,11 @@ routing is desired.
   The bridge reports the blockage and candidate profiles; it does not switch models or
   replay work. Codex autonomously makes the next choice within any explicit user model
   constraints, without another user confirmation for ordinary continuation.
+  Kimi may return HTTP 403 with "monthly usage limit" even while its usage endpoint
+  reports remaining allowance. Treat this explicit model error as authoritative: skip
+  every profile sharing that provider, autonomously choose DeepSeek or another available
+  provider, and retain its highest supported reasoning variant. Do not wait for a top-up
+  or treat a positive five-hour/weekly usage sample as proof that the monthly block cleared.
   Review the failed task's diff and evidence, include its partial work and remaining writable
   files in the handoff, then choose a suitable profile and submit a bounded continuation
   with `--parent-task-id`. If replacing a queued task, cancel it first and confirm it never

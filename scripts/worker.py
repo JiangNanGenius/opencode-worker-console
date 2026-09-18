@@ -160,19 +160,38 @@ def record_billing_errors(t, errors):
     """Trip the durable provider billing circuit on unequivocal model billing errors.
 
     Tool text and transport failures never reach this; diagnostics marks only model
-    error payloads. Dedup by message ID means a historical error cannot relatch a
-    recovered circuit. Returns True when a billing error was recorded.
+    error payloads and carries the reason kind. Dedup by message ID means a historical
+    error cannot relatch a recovered circuit. Returns True when a billing error was
+    recorded.
     """
-    hits = [e for e in errors if isinstance(e, dict) and e.get('billing')]
+    c = config()
+    hits = [e for e in errors if isinstance(e, dict) and e.get('source') == 'model' and
+            (e.get('billing') or e.get('billing_reason'))]
     if not hits:
         return False
     profile = t.get('profile')
-    if not profile or profile not in config()['profiles']:
+    if not profile or profile not in c['profiles']:
         return False
-    provider = config()['profiles'][profile]['model'].split('/', 1)[0]
+    default_provider = c['profiles'][profile]['model'].split('/', 1)[0]
+    known = {str(p.get('model', '')).split('/', 1)[0] for p in c['profiles'].values()
+             if '/' in str(p.get('model', ''))}
     for e in hits:
-        quota.trip(provider, e.get('message', ''), e.get('message_id'), e.get('occurred_at'))
+        # Actual provider attribution wins when it names a configured provider. An
+        # explicitly different, unconfigured provider is never silently charged to the
+        # pinned one; absent attribution falls back to the task's pinned provider.
+        actual = e.get('provider')
+        if actual and actual not in known:
+            continue
+        quota.trip(actual or default_provider, e.get('message', ''), e.get('message_id'),
+                   e.get('occurred_at'), e.get('billing_reason'))
     return True
+
+
+# Automatic success-based circuit clearing is intentionally absent. A session reply
+# does not carry verifiable request credential provenance, and a completion timestamp
+# alone cannot distinguish an aborted or empty reply from a real successful response.
+# Recovery from a billing block is explicit only: fresh positive quota for a
+# replenishable balance block, credential rotation, or the local manual retry release.
 
 
 def summarize_messages(messages):
@@ -242,15 +261,16 @@ def _finish(t, messages, forced_status=None, reason=None):
     if flags and status == 'completed':
         status = 'needs_attention'
     info = evidence.pop('last_info')
-    billing = record_billing_errors(t, diagnostics.from_messages(messages))
+    observed = diagnostics.from_messages(messages)
+    billing = record_billing_errors(t, observed)
+    kind = diagnostics.billing_kind(info.get('error')) if info.get('error') else None
     if info.get('error') and not forced_status:
         status = 'failed'
-        reason = 'provider_billing_insufficient_balance' if diagnostics.is_billing(info['error']) \
-            else info['error'].get('name', 'provider_or_model_error')
-        billing = billing or reason == 'provider_billing_insufficient_balance'
+        reason = 'provider_billing_' + kind if kind else info['error'].get('name', 'provider_or_model_error')
+        billing = billing or bool(kind)
     if not report and not forced_status:
         reason = reason or 'missing_structured_report'
-    errors = t.get('errors', []) + diagnostics.from_messages(messages)
+    errors = t.get('errors', []) + observed
     # Preserve distinct transport/model/tool errors without repeating observer samples.
     errors = list({json.dumps(e, sort_keys=True): e for e in errors}.values())[-20:]
     pending = read_json(art / 'pending.json', [])
@@ -268,7 +288,8 @@ def _finish(t, messages, forced_status=None, reason=None):
         # Billing failure never replays or re-profiles this task; persist coordinator options.
         try:
             extra['recovery'] = quota.billing_failure_recovery(
-                t, config(), quota.view(read_json(STATE / 'quota.json', {})))
+                dict(t, status=status, reason=reason, errors=errors), config(),
+                quota.view(read_json(STATE / 'quota.json', {})))
         except Exception as e:
             errors.append(diagnostics.exception(e, 'billing_recovery'))
     return update(t['id'], status=status, reason=reason, finished_at=time.time(),

@@ -110,10 +110,39 @@ Fresh telemetry also permits later use of a replenished account. Queue status re
 the reason. Unknown quota is not a promise of availability.
 
 An unequivocal model billing error blocks further provider dispatch even if the cached balance
-was positive. A fresh successful account check can clear the block after replenishment.
+was positive. Two reasons are distinguished. `insufficient_balance` (HTTP 402 or an explicit
+balance message) is replenishable: a fresh successful account check clears it after top-up, as
+before. `monthly_usage_limit` is Kimi's hidden monthly plan exhaustion: an HTTP 403 model error
+whose message says the monthly usage limit was reached and the quota refreshes next cycle.
+That error is authoritative even while `/coding/v1/usages` reports available windows
+(`available: true`, remaining 5-hour/overall percentages), because neither window proves the
+monthly cycle was restored. A fresh positive query therefore never clears it, the plan usage
+endpoint is never parsed as a monthly reset, and `quota.view` presents the provider as
+`billing_blocked` with `billing.reason` and `monthly_plan_exhausted: true` without hiding the
+authentic window telemetry. The block is provider-wide, so Kimi K2.8 and K3 share it and can
+never be alternatives to each other while it is open. Session replies do not automatically
+clear this block: they do not establish which credential served the request. No model probe
+loop is started. Credential rotation or an explicit local retry release permits new attempts.
+
 `status`, `wait` and `collect` expose recovery guidance; no dispatched task is automatically
-replayed. Inspect partial work before creating a deliberate continuation linked by
-`--parent-task-id`. Keep healthy capacity waits alive, but act on a quota blockage.
+replayed. Recovery separates two facts: `automatic_fallback: false` means the bridge itself
+never switches models or replays work, while `autonomous_reselection: true` plus
+`autonomous_next_action` is the explicit coordinator instruction to choose a candidate
+profile and continue without asking the user or waiting for quota. Candidates carry the
+configured `variant`, so a continuation keeps maximum reasoning. Inspect partial work before
+creating a deliberate continuation linked by `--parent-task-id`; submit a new task rather
+than replaying the failed one. Keep healthy capacity waits alive, but act on a quota blockage.
+
+For a future actual recovery, the narrow manual path is
+`delegate-opencode quota --retry-provider PROVIDER`. It is labeled as a manual retry
+authorization, not proof of recovery: it releases the block so new attempts may run until
+a further billing error re-opens it, preserves seen message IDs and the `cleared_at`
+watermark, and rejects unknown providers. It does not enforce a single attempt and does not
+reinterpret telemetry or reset timestamps. Monthly classification requires exhaustion
+wording (`reached`/`exhausted`/`refreshed in the next cycle`, and similar), so a 403 such as
+"you do not have permission to view monthly quota" or a stated monthly allowance never
+trips the circuit. Pending, failed, older or apparently successful session replies never clear
+a monthly block.
 
 No automatic recharge or booster setting changes. Account-wide before/after quota is not
 attributed as an exact task charge. `stats` reports observed mixed task latency, not a benchmark.
@@ -220,6 +249,11 @@ Existing sessions can switch between worktrees of the same Git project. OpenCode
 `collect JOB_ID` includes errors and pending questions without requiring `--full`.
 Each error carries `source`, `code`, `message`, `retryable` (null when unknown), and
 `suggested_action`, with tool/command/exit-code or HTTP metadata where available.
+A model billing error also carries `billing: true` and `billing_reason`
+(`insufficient_balance` or `monthly_usage_limit`). Only a model origin qualifies: transport
+text, tool output containing the same phrase, ordinary HTTP 403 authorization failures and
+429 rate limits never trip the billing circuit. Historical compact billing errors inform
+`recovery` read-only and never re-arm or clear a circuit by themselves.
 Errors from earlier failed tool attempts can coexist with a successfully completed report.
 A transport error after dispatch means the prompt may have been accepted: observe the
 existing session, never blindly resubmit. The bridge reports information when queried;

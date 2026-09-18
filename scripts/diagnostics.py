@@ -2,25 +2,61 @@
 import common
 import quota
 
+# Exact monthly-plan exhaustion is distinct from a replenishable balance failure.
+MONTHLY_REASON = 'monthly_usage_limit'
+BALANCE_REASON = 'insufficient_balance'
+GENERIC_REASON = 'billing_error'
+# The monthly wording alone is not exhaustion: "permission to view monthly quota" or a
+# stated monthly allowance must never classify. Both a monthly reference and explicit
+# exhaustion/next-cycle wording are required.
+EXHAUSTION_MARKERS = ('reached', 'exhaust', 'exceed', 'used up', 'will be refreshed',
+                      'refreshed in the next cycle', 'purchase extra usage',
+                      'upgrade your plan', 'no remaining', 'out of quota')
+
 
 def error(source, code, message, retryable=None, action='inspect', **details):
     return common.redact({'source': source, 'code': str(code), 'message': str(message)[:4000],
                           'retryable': retryable, 'suggested_action': action, **details})
 
 
-def is_billing(raw):
-    """True only for unequivocal provider billing failures on a model error payload.
+def _monthly_limit(text):
+    return 'monthly' in text and any(marker in text for marker in EXHAUSTION_MARKERS)
 
-    Tool output text and transport failures never qualify; the signal is the model
-    error's HTTP 402 status or an explicit insufficient-balance message.
+
+def billing_kind_message(status, message):
+    """Reason kind for an unequivocal model billing failure, else None.
+
+    Model-origin only: callers pass one model error's HTTP status and message.
+    Auth (401) and rate-limit (429) responses are never billing; the monthly
+    phrase only counts when it arrives in the model error itself, never in tool
+    output or transport text.
     """
+    try:
+        status = int(status) if status is not None else None
+    except (TypeError, ValueError):
+        status = None
+    if status in (401, 429):
+        return None
+    text = str(message or '').lower()
+    if _monthly_limit(text):
+        return MONTHLY_REASON
+    if status == 402 or 'insufficient balance' in text or 'insufficient_balance' in text:
+        return BALANCE_REASON
+    return None
+
+
+def billing_kind(raw):
+    """Classify a raw OpenCode model error payload; tool text never reaches here."""
     if not isinstance(raw, dict):
-        return False
+        return None
     data = raw.get('data') if isinstance(raw.get('data'), dict) else {}
-    if data.get('statusCode') == 402:
-        return True
-    message = str(data.get('message') or raw.get('message') or '').lower()
-    return 'insufficient balance' in message or 'insufficient_balance' in message
+    return billing_kind_message(data.get('statusCode', raw.get('statusCode')),
+                                data.get('message') or raw.get('message') or '')
+
+
+def is_billing(raw):
+    """True only for unequivocal provider billing failures on a model error payload."""
+    return billing_kind(raw) is not None
 
 
 def exception(exc, phase, dispatched=False):
@@ -32,13 +68,16 @@ def exception(exc, phase, dispatched=False):
                  phase=phase, http_status=http, prompt_may_have_been_accepted=dispatched)
 
 
-def _occurred(info):
+def occurred_at(info):
     """Occurrence time (seconds) of a session message, for recovery watermarks."""
     t = info.get('time') if isinstance(info.get('time'), dict) else {}
     ts = t.get('completed') or t.get('created')
     if isinstance(ts, (int, float)) and ts > 0:
         return ts / 1000 if ts >= 1e12 else ts
     return None
+
+
+_occurred = occurred_at  # Backward-compatible private alias.
 
 
 def from_messages(messages):
@@ -48,14 +87,16 @@ def from_messages(messages):
         raw = info.get('error')
         if isinstance(raw, dict):
             data = raw.get('data') if isinstance(raw.get('data'), dict) else {}
-            billing = is_billing(raw)
+            kind = billing_kind(raw)
             errors.append(error('model', raw.get('name', 'model_error'),
                                 data.get('message') or raw.get('message') or raw.get('name', 'Model error'),
-                                retryable=False if billing else data.get('isRetryable'),
-                                action='inspect_partial_work_and_reselect_profile' if billing
+                                retryable=False if kind else data.get('isRetryable'),
+                                action='inspect_partial_work_and_reselect_profile' if kind
                                 else 'inspect_model_error',
-                                http_status=data.get('statusCode'), message_id=info.get('id'),
-                                **({'billing': True, 'occurred_at': _occurred(info)} if billing else {})))
+                                http_status=data.get('statusCode', raw.get('statusCode')),
+                                message_id=info.get('id'), provider=info.get('providerID'),
+                                **({'billing': True, 'billing_reason': kind,
+                                    'occurred_at': occurred_at(info)} if kind else {})))
         for part in message.get('parts', []):
             if part.get('type') != 'tool': continue
             state = part.get('state') or {}

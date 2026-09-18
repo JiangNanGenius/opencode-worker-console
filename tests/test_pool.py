@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import common
+import diagnostics
 import quota
 import workspace
 import worker
@@ -367,6 +368,257 @@ class PoolTests(unittest.TestCase):
         q['kimi-for-coding']['available'] = False
         self.assertEqual(quota.recovery(t, self.c, q)['suggested_action'],
                          'top_up_provider_account_or_wait_for_quota')
+
+    MONTHLY = ("You've reached your monthly usage limit for this billing cycle. "
+               "Your quota will be refreshed in the next cycle. To continue now, purchase extra "
+               "usage or upgrade your plan: "
+               "https://www.kimi.com/membership/subscription?tab=quota")
+
+    def monthly_message(self, message_id='msg_monthly', completed=None):
+        completed = completed or time.time()
+        return {'info': {'id': message_id, 'role': 'assistant', 'providerID': 'kimi-for-coding',
+                         'modelID': 'kimi-for-coding',
+                         'time': {'created': int(completed * 1000) - 1000,
+                                  'completed': int(completed * 1000)},
+                         'error': {'name': 'APIError', 'data': {
+                             'message': self.MONTHLY, 'statusCode': 403, 'isRetryable': False}}},
+                'parts': []}
+
+    def fail_monthly(self):
+        t = self.new(profile='senior-code', mode='read', scopes=[])
+        t = common.update(t['id'], status='running', profile='senior-code', started_at=time.time(),
+                          timeout_seconds=60, directory=str(self.repo))
+        result = worker.finish(common.task(t['id']), [self.monthly_message()])
+        return common.task(t['id']), result
+
+    def fresh(self, provider):
+        if provider == 'kimi-for-coding':
+            return {'state': 'ok', 'available': True, 'balances': [],
+                    'windows': [{'name': 'window_0', 'remaining_percent': 100.0},
+                                {'name': 'overall', 'remaining_percent': 60.0}],
+                    'sampled_at': time.time()}
+        return {'state': 'ok', 'available': True, 'balances': [{'currency': 'USD', 'remaining': 5.0}],
+                'windows': [], 'sampled_at': time.time()}
+
+    def test_hidden_monthly_limit_blocks_kimi_and_offers_deepseek_max_variant(self):
+        self.c['profiles']['fast-code']['variant'] = 'max'
+        self.config.write_text(json.dumps(self.c))
+        t, result = self.fail_monthly()
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['reason'], 'provider_billing_monthly_usage_limit')
+        self.assertEqual(quota.billing_block('kimi-for-coding')['reason'], 'monthly_usage_limit')
+
+        # Fresh positive usage telemetry for both providers never releases the hidden block.
+        with patch.object(quota, 'fetch_one', side_effect=self.fresh):
+            v = quota.refresh(force=True)
+        self.assertIsNotNone(quota.billing_block('kimi-for-coding'))
+        kimi = v['kimi-for-coding']
+        self.assertFalse(kimi['available'])
+        self.assertEqual(kimi['state'], 'billing_blocked')
+        self.assertTrue(kimi['monthly_plan_exhausted'])
+        self.assertEqual(kimi['billing']['reason'], 'monthly_usage_limit')
+        self.assertTrue(kimi['billing']['telemetry_available'])
+        self.assertIn('do not mean', kimi['billing']['warning'])
+        self.assertTrue(v['deepseek']['available'])
+
+        # K2.8 and K3 share the provider block and cannot be each other's alternative.
+        auto = self.new(profile='auto')
+        self.assertEqual(quota.route(auto, self.c, self.q)[1], 'provider_billing_blocked')
+        rec = quota.recovery(auto, self.c, self.q)
+        self.assertEqual(rec['blocked_reason'], 'provider_billing_blocked')
+        self.assertEqual(rec['billing_reason'], 'monthly_usage_limit')
+        self.assertEqual([a['profile'] for a in rec['alternatives']], ['fast-code'])
+        self.assertEqual(rec['alternatives'][0]['variant'], 'max')
+        self.assertFalse(rec['automatic_fallback'])
+        self.assertTrue(rec['autonomous_reselection'])
+        action = rec['autonomous_next_action']
+        self.assertEqual(action['action'], 'reselect_profile_and_resubmit')
+        self.assertEqual(action['preferred_variant'], 'max')
+        self.assertFalse(action['requires_user_approval'])
+        self.assertFalse(action['wait_for_quota'])
+        self.assertIn('do not ask the user', action['instruction'])
+        self.assertIn('do not wait for quota', action['instruction'])
+        deep = self.new(profile='deep-research', complexity='deep')
+        self.assertIsNone(quota.route(deep, self.c, self.q)[0])
+        self.assertEqual([a['profile'] for a in quota.alternatives(deep, self.c, self.q)], ['fast-code'])
+
+    def test_monthly_recovery_reaches_status_wait_collect_read_only(self):
+        t, result = self.fail_monthly()
+        self.assertEqual(result['reason'], 'provider_billing_monthly_usage_limit')
+        self.assertEqual(result['recovery']['billing_reason'], 'monthly_usage_limit')
+        billing_path = self.state / 'billing.json'
+        before = billing_path.read_bytes()
+        status = delegate.task_status(common.task(t['id']))
+        self.assertEqual(status['recovery']['billing_reason'], 'monthly_usage_limit')
+        self.assertEqual([a['profile'] for a in status['recovery']['alternatives']], ['fast-code'])
+        waited = delegate.wait_result(common.task(t['id']), 1)
+        self.assertTrue(waited['terminal'])
+        self.assertFalse(waited['continue_waiting'])
+        self.assertEqual(waited['next_action'], 'reselect_profile_and_resubmit')
+        self.assertTrue(waited['attention'])
+        self.assertTrue(waited['recovery']['autonomous_reselection'])
+        collected = diagnostics.collect(t['id'])
+        self.assertEqual(collected['recovery']['billing_reason'], 'monthly_usage_limit')
+        self.assertEqual(collected['task']['recovery']['billing_reason'], 'monthly_usage_limit')
+        self.assertEqual(collected['result']['reason'], 'provider_billing_monthly_usage_limit')
+        # Guidance views are read-only: no circuit mutation and no historical replay.
+        self.assertEqual(billing_path.read_bytes(), before)
+        self.assertEqual(common.task(t['id'])['status'], 'failed')
+        self.assertIsNotNone(quota.billing_block('kimi-for-coding'))
+
+    def test_positive_refresh_cannot_clear_monthly_but_clears_balance(self):
+        quota.trip('kimi-for-coding', 'monthly', 'm-k', occurred_at=time.time() - 60,
+                   reason='monthly_usage_limit')
+        quota.trip('deepseek', 'Insufficient Balance', 'm-d', occurred_at=time.time() - 60,
+                   reason='insufficient_balance')
+        with patch.object(quota, 'fetch_one', side_effect=self.fresh):
+            quota.refresh(force=True)
+        self.assertEqual(quota.billing_block('kimi-for-coding')['reason'], 'monthly_usage_limit')
+        self.assertIsNone(quota.billing_block('deepseek'))
+        # The Kimi view still refuses to advertise the positive window snapshot.
+        v = quota.view(common.read_json(self.state / 'quota.json', {}))
+        self.assertFalse(v['kimi-for-coding']['available'])
+        self.assertNotIn('monthly_plan_exhausted', v['deepseek'])
+
+    def test_manual_retry_release_is_authorization_not_proof(self):
+        opened = time.time() - 120
+        quota.trip('kimi-for-coding', self.MONTHLY, 'm-seen', occurred_at=opened,
+                   reason='monthly_usage_limit')
+        with self.assertRaises(ValueError):
+            quota.retry_provider('unknown-provider')
+        released = quota.retry_provider('kimi-for-coding')
+        self.assertTrue(released['released'])
+        self.assertEqual(released['action'], 'manual_retry_authorized')
+        self.assertFalse(released['proven_recovery'])
+        self.assertEqual(released['reason'], 'monthly_usage_limit')
+        self.assertIn('not proof', released['note'])
+        self.assertIn('new attempts', released['note'])
+        self.assertIn('re-opens', released['note'])
+        self.assertNotIn('one new attempt', released['note'])
+        self.assertIsNone(quota.billing_block('kimi-for-coding'))
+        # Seen IDs and the cleared_at watermark keep historical errors from relatching.
+        quota.trip('kimi-for-coding', self.MONTHLY, 'm-seen', occurred_at=time.time(),
+                   reason='monthly_usage_limit')
+        quota.trip('kimi-for-coding', self.MONTHLY, 'm-old', occurred_at=opened,
+                   reason='monthly_usage_limit')
+        self.assertIsNone(quota.billing_block('kimi-for-coding'))
+        # A genuinely new failure after the release re-opens the block; retry is permitted.
+        quota.trip('kimi-for-coding', self.MONTHLY, 'm-new', occurred_at=time.time() + 1,
+                   reason='monthly_usage_limit')
+        self.assertEqual(quota.billing_block('kimi-for-coding')['reason'], 'monthly_usage_limit')
+
+    def test_successful_reply_never_auto_clears_monthly_block(self):
+        # Request credential provenance for a session reply is not verifiable here, so
+        # automatic success-based clearing is intentionally absent. A completed,
+        # attributed, error-free reply must leave the monthly block in place; only the
+        # explicit local retry release, credential rotation or a balance replenishment
+        # can clear a circuit.
+        t = self.new(profile='senior-code', mode='read', scopes=[])
+        t = common.update(t['id'], status='running', profile='senior-code', started_at=time.time(),
+                          timeout_seconds=60, directory=str(self.repo))
+        now = time.time()
+        messages = [self.monthly_message('msg_err', completed=now - 50),
+                    {'info': {'id': 'msg_ok', 'role': 'assistant', 'providerID': 'kimi-for-coding',
+                              'modelID': 'kimi-for-coding',
+                              'time': {'completed': int(now * 1000)}}, 'parts': []}]
+        worker.finish(common.task(t['id']), messages)
+        block = quota.billing_block('kimi-for-coding')
+        self.assertIsNotNone(block)
+        self.assertEqual(block['reason'], 'monthly_usage_limit')
+        # A historical error ID already seen cannot relatch or clear anything.
+        quota.trip('kimi-for-coding', self.MONTHLY, 'msg_err', occurred_at=now - 50,
+                   reason='monthly_usage_limit')
+        self.assertIsNotNone(quota.billing_block('kimi-for-coding'))
+        # Explicit local retry release remains the only monthly path.
+        self.assertTrue(quota.retry_provider('kimi-for-coding')['released'])
+        self.assertIsNone(quota.billing_block('kimi-for-coding'))
+
+    def test_billing_ingestion_requires_model_source_and_actual_provider(self):
+        t = {'profile': 'senior-code'}
+        now = time.time()
+        # Tool-sourced text never trips a circuit even with billing-looking fields.
+        worker.record_billing_errors(t, [{'source': 'tool', 'billing': True,
+                                          'billing_reason': 'monthly_usage_limit'}])
+        self.assertIsNone(quota.billing_block('kimi-for-coding'))
+        self.assertIsNone(quota.billing_block('deepseek'))
+        # Actual provider attribution wins over the pinned profile provider.
+        worker.record_billing_errors(t, [{'source': 'model', 'provider': 'deepseek',
+                                          'billing': True, 'billing_reason': 'monthly_usage_limit',
+                                          'message': self.MONTHLY, 'message_id': 'm-actual',
+                                          'occurred_at': now}])
+        self.assertIsNotNone(quota.billing_block('deepseek'))
+        self.assertIsNone(quota.billing_block('kimi-for-coding'))
+        # An explicitly different, unconfigured provider is never charged to the pinned one.
+        worker.record_billing_errors(t, [{'source': 'model', 'provider': 'unconfigured-x',
+                                          'billing': True, 'billing_reason': 'monthly_usage_limit',
+                                          'message': self.MONTHLY, 'message_id': 'm-other',
+                                          'occurred_at': now}])
+        self.assertIsNone(quota.billing_block('kimi-for-coding'))
+        # Missing attribution falls back to the pinned provider.
+        worker.record_billing_errors(t, [{'source': 'model', 'billing': True,
+                                          'billing_reason': 'monthly_usage_limit',
+                                          'message': self.MONTHLY, 'message_id': 'm-fallback',
+                                          'occurred_at': now}])
+        self.assertIsNotNone(quota.billing_block('kimi-for-coding'))
+
+    def test_historical_balance_failure_excludes_provider_until_release(self):
+        t = self.new(profile='fast-code', mode='read', scopes=[])
+        t = common.update(t['id'], status='failed', reason='APIError', errors=[
+            {'source': 'model', 'http_status': 402, 'message': 'Insufficient Balance'}])
+        rec = quota.guidance(common.task(t['id']), self.c, self.q)
+        self.assertEqual(rec['billing_reason'], 'insufficient_balance')
+        self.assertEqual([a['profile'] for a in rec['alternatives']], ['senior-code', 'deep-research'])
+        # A recorded quota replenishment is proven recovery for a balance block.
+        quota.trip('deepseek', 'Insufficient Balance', 'm-402', reason='insufficient_balance')
+        quota.clear('deepseek', evidence='quota')
+        rec = quota.guidance(common.task(t['id']), self.c, self.q)
+        self.assertEqual([a['profile'] for a in rec['alternatives']],
+                         ['fast-code', 'senior-code', 'deep-research'])
+
+    def test_historical_monthly_error_guides_away_from_same_provider_read_only(self):
+        t = self.new(profile='senior-code', mode='read', scopes=[])
+        # Legacy compact evidence: classification comes from the exact stored message.
+        t = common.update(t['id'], status='failed', reason='APIError', errors=[
+            {'source': 'model', 'code': 'APIError', 'http_status': 403, 'retryable': False,
+             'message': self.MONTHLY}])
+        before = (self.state / 'billing.json').read_bytes() if (self.state / 'billing.json').exists() else b''
+        rec = quota.guidance(common.task(t['id']), self.c, self.q)
+        self.assertEqual(rec['billing_reason'], 'monthly_usage_limit')
+        self.assertEqual(rec['blocked_provider'], 'kimi-for-coding')
+        self.assertEqual([a['profile'] for a in rec['alternatives']], ['fast-code'])
+        self.assertIsNone(quota.billing_block('kimi-for-coding'))
+        self.assertEqual((self.state / 'billing.json').read_bytes()
+                         if (self.state / 'billing.json').exists() else b'', before)
+        # An unrelated balance recovery is not proof that this monthly limit cleared.
+        quota.trip('kimi-for-coding', 'Insufficient Balance', 'm-balance',
+                   reason='insufficient_balance')
+        quota.clear('kimi-for-coding', evidence='quota')
+        rec = quota.guidance(common.task(t['id']), self.c, self.q)
+        self.assertEqual([a['profile'] for a in rec['alternatives']], ['fast-code'])
+        # After explicit manual retry authorization, the provider is a candidate again.
+        quota.trip('kimi-for-coding', self.MONTHLY, 'm-manual', reason='monthly_usage_limit')
+        quota.retry_provider('kimi-for-coding')
+        rec = quota.guidance(common.task(t['id']), self.c, self.q)
+        self.assertEqual([a['profile'] for a in rec['alternatives']],
+                         ['fast-code', 'senior-code', 'deep-research'])
+
+    def test_monthly_without_alternative_reports_specific_blockage(self):
+        self.c['profiles']['fast-code']['enabled'] = False
+        self.config.write_text(json.dumps(self.c))
+        t, result = self.fail_monthly()
+        self.assertEqual(result['reason'], 'provider_billing_monthly_usage_limit')
+        rec = quota.recovery(t, self.c, self.q)
+        self.assertEqual(rec['billing_reason'], 'monthly_usage_limit')
+        self.assertEqual(rec['alternatives'], [])
+        self.assertFalse(rec['autonomous_reselection'])
+        self.assertEqual(rec['suggested_action'], 'top_up_or_authorize_manual_retry')
+        self.assertFalse(rec['autonomous_next_action']['wait_for_quota'])
+        self.assertIn('quota --retry-provider kimi-for-coding',
+                      rec['autonomous_next_action']['retry_command'])
+        waited = delegate.wait_result(common.task(t['id']), 0)
+        self.assertTrue(waited['terminal'])
+        self.assertTrue(waited['attention'])
+        self.assertEqual(waited['next_action'], 'top_up_or_authorize_manual_retry')
 
     def running(self, owner, scope, profile='fast-code', group=None):
         t = self.new(scopes=[scope], profile=profile)

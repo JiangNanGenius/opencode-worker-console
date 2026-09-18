@@ -51,14 +51,21 @@ def wait_result(t, waited_seconds):
     result = task_status(t)
     terminal = t['status'] in TERMINAL
     recovery = result.get('recovery')
-    # A blocked queued task needs coordinator re-selection, not another blind wait.
+    # A blocked queued task or a terminal billing failure needs coordinator
+    # re-selection, not another blind wait or a generic error inspection.
     blocked = t['status'] == 'queued' and isinstance(recovery, dict)
+    billing_terminal = t['status'] in ('failed', 'needs_attention') and isinstance(recovery, dict)
+    actionable = blocked or billing_terminal
+    alternatives = recovery.get('alternatives') if isinstance(recovery, dict) else None
+    monthly = isinstance(recovery, dict) and recovery.get('billing_reason') == 'monthly_usage_limit'
     result.update(
         terminal=terminal,
         continue_waiting=not terminal and not blocked,
         waited_seconds=max(0, round(waited_seconds, 3)),
         next_action=(
-            'reselect_profile_and_resubmit' if blocked and recovery.get('alternatives') else
+            'reselect_profile_and_resubmit' if actionable and alternatives else
+            'top_up_or_authorize_manual_retry' if actionable and monthly else
+            'top_up_provider_account_then_resubmit' if billing_terminal else
             'top_up_provider_account_then_wait' if blocked else
             'call_wait_again' if not terminal else
             'collect_and_review' if t['status'] == 'completed' else
@@ -68,7 +75,7 @@ def wait_result(t, waited_seconds):
     )
     if recovery:
         result['recovery'] = recovery
-    if blocked:
+    if actionable:
         result['attention'] = True
     return result
 
@@ -311,6 +318,10 @@ def main():
     s = sub.add_parser('cancel'); s.add_argument('id')
     s = sub.add_parser('wait'); s.add_argument('id'); s.add_argument('--seconds', type=int, default=20)
     s = sub.add_parser('quota'); s.add_argument('--refresh', action='store_true')
+    s.add_argument('--retry-provider', metavar='PROVIDER',
+                   help='Explicit local authorization to allow new attempts on a billing-blocked provider '
+                        'until a further billing error re-blocks it; manual retry authorization, not proof '
+                        'of recovery')
     s = sub.add_parser('integrate'); s.add_argument('id'); s.add_argument('--apply', action='store_true')
     for name in ('doctor', 'daemon', 'stats'):
         sub.add_parser(name)
@@ -388,7 +399,8 @@ def main():
             time.sleep(1)
         result = wait_result(task(args.id), time.time() - began)
     elif args.cmd == 'quota':
-        result = quota.refresh(force=args.refresh)
+        result = quota.retry_provider(args.retry_provider) if args.retry_provider \
+            else quota.refresh(force=args.refresh)
     elif args.cmd == 'integrate':
         with locked():
             t = task(args.id)
