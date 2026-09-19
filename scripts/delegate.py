@@ -5,8 +5,10 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import shlex
 import signal
 import statistics
+import subprocess
 import sys
 import threading
 import time
@@ -256,6 +258,34 @@ def daemon():
         th.join(timeout=max(0, deadline - time.time()))
 
 
+def detect_wizard_lang():
+    for var in ('LC_ALL', 'LC_MESSAGES', 'LANG'):
+        value = os.environ.get(var, '')
+        if value:
+            return 'zh-CN' if value.lower().startswith('zh') else 'en'
+    return 'en'
+
+
+def setup_wizard_command(lang=None):
+    """Open the interactive setup/review wizard for the installed runtime.
+
+    With a TTY this runs the co-located installer wizard, which only mutates
+    anything after an explicit review confirmation. Without a TTY it documents
+    the exact installed install.py --wizard command (or the noninteractive
+    installer flags) so a coordinator can surface it to the user.
+    """
+    lang = lang or detect_wizard_lang()
+    installer = Path(__file__).resolve().parent / 'install.py'
+    if sys.stdin.isatty() and sys.stdout.isatty() and installer.is_file():
+        code = subprocess.call([sys.executable, str(installer), '--wizard', '--lang', lang])
+        return {'wizard': 'completed' if code == 0 else 'cancelled' if code == 2 else 'failed',
+                'lang': lang, 'exit_code': code}
+    return {'setup': 'interactive terminal required; no changes were made', 'lang': lang,
+            'command': 'python3 {0} --wizard --lang {1}'.format(shlex.quote(str(installer)), lang),
+            'noninteractive': 'python3 {0} --model provider/model [--no-start] or '
+                              '--preset deepseek-kimi'.format(shlex.quote(str(installer)))}
+
+
 def doctor():
     result = {'config_path': str(CONFIG), 'state_path': str(STATE), 'profiles': config()['profiles']}
     try:
@@ -338,6 +368,8 @@ def main():
     for name in ('doctor', 'daemon', 'stats'):
         sub.add_parser(name)
     s = sub.add_parser('service'); s.add_argument('action', choices=['start', 'stop'])
+    s = sub.add_parser('setup', help='Interactive bilingual setup wizard for this installation (terminal only)')
+    s.add_argument('--lang', choices=['en', 'zh-CN'], help='Wizard language (default: auto-detect from locale)')
     s = sub.add_parser('console'); s.add_argument('--open', action='store_true')
     s = sub.add_parser('steer'); s.add_argument('id'); s.add_argument('text'); s.add_argument('--request-id')
     s = sub.add_parser('sessions'); s.add_argument('--search', default=''); s.add_argument('--directory'); s.add_argument('--archived', action='store_true')
@@ -355,6 +387,11 @@ def main():
     crun.add_argument('--timeout', type=float, default=60)
     crun.add_argument('command', nargs=argparse.REMAINDER)
     args = p.parse_args()
+    if args.cmd == 'setup':
+        # Handled before init(): a non-TTY setup must not create state dirs.
+        result = setup_wizard_command(args.lang)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return result.get('exit_code', 0)
     init()
     if args.cmd == 'credential':
         import credentials

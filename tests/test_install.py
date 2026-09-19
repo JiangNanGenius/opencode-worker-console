@@ -39,7 +39,10 @@ class InstallTests(unittest.TestCase):
 
     def make_package(self, root):
         root.mkdir(parents=True, exist_ok=True)
-        (root / 'SKILL.md').write_text('skill\n')
+        for name, text in [('SKILL.md', 'skill\n'), ('README.md', 'readme en\n'),
+                           ('README.zh-CN.md', 'readme zh\n'), ('LICENSE', 'license\n'),
+                           ('SECURITY.md', 'security\n'), ('CONTRIBUTING.md', 'contributing\n')]:
+            (root / name).write_text(text)
         for name in ('agents', 'scripts', 'references', 'web'):
             (root / name).mkdir(exist_ok=True)
         (root / 'scripts' / 'service.py').write_text('# service\n')
@@ -98,6 +101,8 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(password.stat().st_mode), 0o600)
         self.assertNotIn(password.read_text(), out)
         self.assertEqual((self.install_dir / 'SKILL.md').read_text(), 'skill\n')
+        for guide in ('README.md', 'README.zh-CN.md', 'LICENSE', 'SECURITY.md', 'CONTRIBUTING.md'):
+            self.assertEqual((self.install_dir / guide).read_text(), self.src.joinpath(guide).read_text())
         self.assertEqual((self.install_dir / 'scripts' / 'common.py').read_text(), '# common\n')
         wrapper = self.home / '.local' / 'bin' / 'delegate-opencode'
         self.assertTrue(wrapper.exists())
@@ -297,6 +302,88 @@ class InstallTests(unittest.TestCase):
         self.run_install('--model', 'acme/worker', '--opencode', str(binary))
         c = json.loads(self.config.read_text())
         self.assertEqual(c['opencode_binary'], str(binary.resolve()))
+
+    def test_existing_configured_binary_reused_before_path_and_bootstrap(self):
+        binary = self.root / 'custom' / 'opencode'
+        binary.parent.mkdir()
+        binary.write_text('#!/bin/sh\n')
+        binary.chmod(0o755)
+        existing = {'version': 1, 'server_url': 'http://127.0.0.1:41234',
+                    'console_url': 'http://127.0.0.1:41235',
+                    'opencode_binary': str(binary),
+                    'profiles': {'fast-code': {'model': 'acme/one', 'label': 'Mine'}}}
+        self.config.parent.mkdir(parents=True)
+        self.config.write_text(json.dumps(existing))
+        # Neither PATH nor bootstrap may be consulted while the saved binary is valid.
+        with patch.object(install.shutil, 'which', return_value=None) as which, \
+                patch('bootstrap.ensure_opencode', side_effect=AssertionError('must not bootstrap')):
+            self.run_install()
+        self.assertFalse(which.called)
+        c = json.loads(self.config.read_text())
+        # The saved value is preserved (never rewritten on upgrade).
+        self.assertEqual(c['opencode_binary'], str(binary))
+        self.assertTrue(self.started())
+
+    def test_invalid_saved_binary_falls_back_to_path(self):
+        existing = {'version': 1, 'server_url': 'http://127.0.0.1:41234',
+                    'console_url': 'http://127.0.0.1:41235',
+                    'opencode_binary': str(self.root / 'gone' / 'opencode'),
+                    'profiles': {'fast-code': {'model': 'acme/one', 'label': 'Mine'}}}
+        self.config.parent.mkdir(parents=True)
+        self.config.write_text(json.dumps(existing))
+        self.run_install()
+        c = json.loads(self.config.read_text())
+        # Invalid saved path falls back to PATH; the configured value is not clobbered.
+        self.assertTrue(self.started())
+        self.assertEqual(c['opencode_binary'], str(self.root / 'gone' / 'opencode'))
+
+    def test_wizard_requires_explicit_language(self):
+        with self.assertRaises(SystemExit) as error:
+            install.main(['--wizard'])
+        self.assertIn('--lang', str(error.exception))
+        self.assertFalse(self.run_mock.called)
+        with self.assertRaises(SystemExit) as error:
+            install.main(['--lang', 'en'])
+        self.assertIn('--wizard', str(error.exception))
+        self.assertFalse(self.run_mock.called)
+
+    def test_wizard_rejects_conflicting_flags(self):
+        for argv in (['--wizard', '--lang', 'en', '--model', 'acme/worker'],
+                     ['--wizard', '--lang', 'en', '--preset', 'deepseek-kimi'],
+                     ['--wizard', '--lang', 'en', '--opencode', '/x/opencode'],
+                     ['--wizard', '--lang', 'en', '--stop'],
+                     ['--wizard', '--lang', 'en', '--live']):
+            with self.assertRaises(SystemExit) as error:
+                install.main(list(argv))
+            self.assertIn('--wizard cannot be combined', str(error.exception))
+        self.assertFalse(self.run_mock.called)
+        self.assertFalse(self.config.exists())
+
+    def test_wizard_rejects_unattended_invocation_before_changes(self):
+        import setup_wizard
+        with patch.object(setup_wizard.sys, 'stdin', io.StringIO()), \
+                patch.object(setup_wizard.sys, 'stdout', io.StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                install.main(['--wizard', '--lang', 'en'])
+        message = str(error.exception)
+        self.assertIn('--model', message)
+        self.assertIn('No changes were made', message)
+        self.assertFalse(self.run_mock.called)
+        self.assertFalse(self.config.exists())
+
+    def test_wizard_delegates_with_language_and_no_start(self):
+        import setup_wizard
+        with patch.object(setup_wizard, 'run') as run_mock:
+            install.main(['--wizard', '--lang', 'zh-CN', '--no-start'])
+        run_mock.assert_called_once_with('zh-CN', no_start=True)
+
+    def test_wizard_cancel_reports_exit_code_two(self):
+        import setup_wizard
+        with patch.object(setup_wizard, 'run', side_effect=setup_wizard.Cancelled('cancelled test')):
+            with self.assertRaises(SystemExit) as error:
+                install.main(['--wizard', '--lang', 'en'])
+        self.assertEqual(error.exception.code, 2)
+        self.assertFalse(self.config.exists())
 
 
 if __name__ == '__main__':

@@ -18,6 +18,11 @@ not just low-level chores, and do not duplicate a worker's repository reading lo
 
 ## Make a useful handoff
 
+For installation or upgrades, follow [the agent installation runbook](references/agent-install.md)
+([中文](references/agent-install.zh-CN.md)). Use noninteractive installer flags when acting as
+an agent; the terminal setup wizard is for the user. Preserve existing configuration and
+separate installation, provider connection and real execution verification.
+
 Use `~/.local/bin/delegate-opencode`, or this skill's `scripts/delegate.py` with Python 3.
 `submit` starts missing services and installs the pinned official OpenCode if needed.
 Existing credentials and configuration are preserved. Use `service start` before `doctor`

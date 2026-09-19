@@ -30,7 +30,8 @@ WEB = Path(__file__).resolve().parent.parent / 'web'
 # The login page reuses the existing translation bundle, so it is public too.
 PUBLIC_ASSETS = {'login.js': 'text/javascript', 'style.css': 'text/css', 'i18n.js': 'text/javascript'}
 # Authenticated application assets are never served anonymously.
-PRIVATE_ASSETS = {'app.js': 'text/javascript', 'manage.js': 'text/javascript', 'i18n.js': 'text/javascript'}
+PRIVATE_ASSETS = {'app.js': 'text/javascript', 'manage.js': 'text/javascript', 'i18n.js': 'text/javascript',
+                  'setup.js': 'text/javascript'}
 MAX_LOGIN_BODY = 4096
 MAX_API_BODY = 65536
 # Long-lived streams and WebSockets re-check the server-side session this often

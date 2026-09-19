@@ -340,6 +340,7 @@ class ConsoleHttpTests(unittest.TestCase):
         (self.web / 'index.html').write_bytes(b'<html>Worker Desk console</html>')
         (self.web / 'app.js').write_bytes(b'/* app */')
         (self.web / 'manage.js').write_bytes(b'/* manage */')
+        (self.web / 'setup.js').write_bytes(b'/* WorkerDeskSetup */')
         self.patchers = [
             patch.object(common, 'STATE', self.state),
             patch.object(console, 'STATE', self.state),
@@ -525,10 +526,13 @@ class ConsoleHttpTests(unittest.TestCase):
         for asset in ('/console-assets/login.js', '/console-assets/style.css', '/console-assets/i18n.js'):
             response = self.call('GET', asset)
             self.assertEqual(response['status'], 200, asset)
-        for private in ('/console-assets/app.js', '/console-assets/manage.js'):
+        for private in ('/console-assets/app.js', '/console-assets/manage.js', '/console-assets/setup.js'):
             self.assertEqual(self.call('GET', private)['status'], 401, private)
         cookie = self.cookie(self.login())
         self.assertEqual(self.call('GET', '/console-assets/app.js', headers={'Cookie': cookie})['status'], 200)
+        setup_asset = self.call('GET', '/console-assets/setup.js', headers={'Cookie': cookie})
+        self.assertEqual(setup_asset['status'], 200)
+        self.assertIn(b'WorkerDeskSetup', setup_asset['body'])
         for unknown in ('/console-assets/unknown.js', '/console-assets/../i18n.js', '/console-assets/'):
             self.assertEqual(self.call('GET', unknown)['status'], 404, unknown)
 

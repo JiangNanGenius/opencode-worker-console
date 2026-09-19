@@ -24,7 +24,11 @@ INSTALL = Path(os.environ.get('DELEGATE_INSTALL', '~/.codex/skills/delegate-open
 STATE = Path(os.environ.get('DELEGATE_STATE', '~/.local/state/delegate-opencode')).expanduser()
 CONFIG = Path(os.environ.get('DELEGATE_CONFIG', '~/.config/opencode/delegate-pool.json')).expanduser()
 
-PACKAGE_ITEMS = ['SKILL.md', 'agents', 'scripts', 'references', 'web']
+# Guides ship with the runtime so installed references linking ../README.md stay
+# valid; missing optional items are skipped by copy_package.
+PACKAGE_ITEMS = ['SKILL.md', 'README.md', 'README.zh-CN.md', 'LICENSE',
+                 'SECURITY.md', 'CONTRIBUTING.md',
+                 'agents', 'scripts', 'references', 'web']
 # Routing defaults (quota.route): fast -> fast-code, background -> senior-code,
 # deep -> deep-research. Profile names must stay aligned with those routes.
 PROFILE_NAMES = ['fast-code', 'senior-code', 'deep-research']
@@ -60,12 +64,33 @@ def same_path(a, b):
         return False
 
 
+def configured_opencode():
+    """Valid executable path saved in an existing config, if there is one.
+
+    Reusing it keeps upgrades on the user's chosen binary even when it is not
+    on PATH, instead of silently downloading another copy.
+    """
+    try:
+        record = json.loads(CONFIG.read_text())
+    except (OSError, ValueError):
+        return None
+    value = record.get('opencode_binary') if isinstance(record, dict) else None
+    if isinstance(value, str) and value:
+        candidate = Path(value).expanduser()
+        if candidate.is_file() and os.access(str(candidate), os.X_OK):
+            return str(candidate.resolve())
+    return None
+
+
 def detect_opencode(explicit=None):
     if explicit:
         candidate = Path(explicit).expanduser()
         if not candidate.is_file() or not os.access(candidate, os.X_OK):
             fail('--opencode must point to an executable file: ' + explicit)
         return str(candidate.resolve())
+    saved = configured_opencode()
+    if saved:
+        return saved
     found = shutil.which('opencode')
     if not found:
         from bootstrap import ensure_opencode
@@ -304,12 +329,33 @@ def parse_args(argv=None):
     p.add_argument('--model', help='provider/model used for all three profiles on a fresh install')
     p.add_argument('--preset', choices=sorted(PRESETS), help='Known profile bundle for a fresh install')
     p.add_argument('--opencode', help='Path to the opencode binary (default: search PATH)')
+    p.add_argument('--wizard', action='store_true',
+                   help='Run the interactive bilingual setup wizard (requires --lang en|zh-CN)')
+    p.add_argument('--lang', choices=('en', 'zh-CN'),
+                   help='Wizard language; only valid together with --wizard')
     return p.parse_args(argv)
 
 
 def main(argv=None):
     args = parse_args(argv)
     check_platform()
+    if args.wizard:
+        if args.stop or args.live or args.model or args.preset or args.opencode:
+            fail('--wizard cannot be combined with --stop, --live, --model, --preset or '
+                 '--opencode; make those choices inside the wizard instead')
+        if not args.lang:
+            fail('--wizard requires an explicit language: --lang en or --lang zh-CN')
+        import setup_wizard
+        try:
+            setup_wizard.run(args.lang, no_start=args.no_start)
+        except setup_wizard.Cancelled as cancelled:
+            # Distinct code (2) so callers can tell user cancellation/EOF from an
+            # installer failure (1) or success (0).
+            print(str(cancelled) or 'Setup cancelled; no changes were made.', file=sys.stderr)
+            raise SystemExit(2)
+        return
+    if args.lang:
+        fail('--lang is only valid together with --wizard')
     if args.model and args.preset:
         fail('--model and --preset are mutually exclusive')
     if args.model:

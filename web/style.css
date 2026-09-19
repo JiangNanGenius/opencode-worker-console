@@ -29,3 +29,45 @@
 .login-help{margin:24px 0 0;color:var(--muted);font-size:12px;line-height:1.8}
 .login-footer{display:flex;justify-content:space-between;gap:16px;width:100%;max-width:1120px;margin:0 auto;padding:24px 40px;color:var(--muted);font-size:11px;line-height:1.6}
 @media(max-width:540px){.login-header{padding:24px}.login-header .brand{font-size:17px}.login-page .login-main{padding-top:40px}.login-main h1{font-size:27px}.login-footer{padding:24px;flex-wrap:wrap}.account-controls{gap:8px}#account-name{max-width:110px}}
+.setup-banner{display:flex;align-items:center;gap:14px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:16px 20px;margin:0 0 14px}
+.setup-banner-text{flex:1;min-width:0;font-size:13px}
+.setup-banner-text p{margin:4px 0 0;color:var(--muted);font-size:12px;line-height:1.6}
+.setup-progress{display:flex;gap:8px;list-style:none;margin:0 0 18px;padding:0}
+.setup-progress li{flex:1 1 0;min-width:0}
+.setup-progress button{display:flex;align-items:center;gap:9px;width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--muted);font:inherit;font-size:12px;text-align:left}
+.setup-progress li.done button{color:var(--accent)}
+.setup-progress li.current button{border-color:var(--accent);color:var(--ink);font-weight:600}
+.setup-step-num{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;border:1px solid currentColor;font-size:11px;flex-shrink:0}
+.setup-step-name{overflow:hidden;text-overflow:ellipsis}
+.setup-card{overflow-wrap:anywhere}
+.setup-card .setup-lede{font-size:12px;color:var(--muted);line-height:1.7;margin:0 0 14px}
+.setup-subhead{font-size:12px;margin:16px 0 8px}
+.setup-choices{border:0;margin:0;padding:0}
+.setup-choice{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line);border-radius:8px;padding:13px 15px;margin:10px 0;cursor:pointer}
+.setup-choice input{margin-top:2px;accent-color:var(--accent);flex-shrink:0}
+.setup-choice.selected{border-color:var(--accent);background:#f2f8f6}
+.setup-choice strong{font-size:13px;display:block}
+.setup-choice small{color:var(--muted);font-size:11px;line-height:1.6;display:block;margin-top:3px}
+.setup-provider{display:flex;gap:12px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line);font-size:12px;flex-wrap:wrap}
+.setup-provider:last-child{border-bottom:0}
+.setup-ok{color:var(--accent)}
+.setup-bad{color:#a33d36}
+.setup-list{margin:0;padding:0;list-style:none;font-size:12px}
+.setup-list li{padding:7px 0;border-bottom:1px solid var(--line);display:flex;gap:10px;flex-wrap:wrap;align-items:baseline;min-width:0}
+.setup-list li:last-child{border-bottom:0}
+.setup-profile{margin-top:18px}
+.setup-field-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+.setup-field-grid label{font-size:11px;color:var(--muted);display:flex;flex-direction:column;gap:8px;min-width:0}
+.setup-field-grid select,.setup-field-grid input{font:inherit;font-size:12px;color:var(--ink);border:1px solid #cfd7dd;border-radius:6px;background:#fff;padding:10px;min-width:0;width:100%;line-height:1.5}
+.setup-variant-note{margin-top:26px}
+.setup-alert{border:1px solid #d9a5a1;background:#faf0ef;color:#7a221c;border-radius:8px;padding:12px 16px;font-size:12px;margin:14px 0}
+.setup-alert p{margin:0 0 6px}.setup-alert p:last-child{margin-bottom:0}
+.setup-alert ul{margin:0;padding-left:18px}
+.setup-warn{border:1px solid #e3cf9b;background:#fbf6e9;color:#6b5312;border-radius:8px;padding:12px 16px;font-size:12px;margin:14px 0}
+.setup-warn ul{margin:0;padding-left:18px}
+.setup-fields{border:0;margin:0;padding:0;min-width:0}
+.setup-fields:disabled{opacity:.7}
+.setup-actions{display:flex;gap:10px;align-items:center;margin-top:18px;flex-wrap:wrap}
+.setup-actions-spacer{flex:1}
+.setup-review-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 28px}
+@media(max-width:760px){.primary-nav{flex-wrap:wrap}.setup-field-grid,.setup-review-grid{grid-template-columns:minmax(0,1fr)}.setup-banner{flex-wrap:wrap}.setup-progress{flex-wrap:wrap}.setup-progress li{flex:1 1 46%}}
