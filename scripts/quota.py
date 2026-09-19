@@ -1,9 +1,16 @@
 """Read-only account telemetry and provider billing circuit; selection stays with the coordinator."""
+import calendar
 import math
+import re
 from datetime import datetime, timezone
 import time
 from concurrent.futures import ThreadPoolExecutor
 from common import config, STATE, HttpFailure, auth_key, credential_identity, locked, read_json, redact, request, write_json
+
+try:
+    import zoneinfo
+except ImportError:  # pragma: no cover - Python < 3.9; schedules fail closed without IANA zones.
+    zoneinfo = None
 
 ENDPOINTS = {
     'deepseek': 'https://api.deepseek.com/user/balance',
@@ -20,6 +27,127 @@ MANUAL_RETRY_NOTE = ('Manual retry authorization: releases the block so new atte
                      'billing error re-opens it. It is not proof the provider quota was restored. Seen message '
                      'IDs and recovery watermarks are preserved, and a retry that is still exhausted re-blocks.')
 MANUAL_RETRY_WARNING = 'Not proven recovery; new attempts may still fail while the provider is exhausted.'
+MONTHLY_RESET_KEY = 'kimi_monthly_reset'
+MONTHLY_RESET_DEFAULTS = {'enabled': False, 'day': 1, 'time': '12:00', 'timezone': 'Asia/Shanghai'}
+SCHEDULED_RESET_RELEASE = 'scheduled_reset'
+MODEL_SUCCESS_RELEASE = 'model_success'
+_MONTHLY_TIME = re.compile(r'^([01][0-9]|2[0-3]):[0-5][0-9]$')
+
+
+def _epoch(value):
+    """Positive finite epoch seconds from untrusted state, else None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    return value if math.isfinite(value) and value > 0 else None
+
+
+def _zone(name):
+    if zoneinfo is None:
+        raise ValueError('zoneinfo unavailable')
+    return zoneinfo.ZoneInfo(name)
+
+
+def valid_timezone(name):
+    """True only for an IANA zone the host can resolve; never the host's local zone."""
+    if not isinstance(name, str) or not name or len(name) > 128 or name.startswith('/') or '..' in name:
+        return False
+    try:
+        _zone(name)
+        return True
+    except Exception:
+        return False
+
+
+def valid_monthly_time(value):
+    return isinstance(value, str) and bool(_MONTHLY_TIME.match(value))
+
+
+def normalize_monthly_schedule(value):
+    """Fail-closed normalization of a stored schedule.
+
+    Malformed or legacy fields fall back to generic defaults and disable the schedule, so an
+    invalid record can never release a block. A personal choice such as day 19 is only ever
+    active when it was explicitly stored and validated; it is never a public default.
+    """
+    defaults = dict(MONTHLY_RESET_DEFAULTS)
+    if not isinstance(value, dict):
+        return defaults
+    day = value.get('day')
+    time_text = value.get('time')
+    zone_name = value.get('timezone')
+    enabled = (value.get('enabled') is True and isinstance(day, int) and not isinstance(day, bool)
+               and 1 <= day <= 31 and valid_monthly_time(time_text) and valid_timezone(zone_name))
+    return {'enabled': enabled,
+            'day': day if isinstance(day, int) and not isinstance(day, bool) and 1 <= day <= 31
+                   else defaults['day'],
+            'time': time_text if valid_monthly_time(time_text) else defaults['time'],
+            'timezone': zone_name if valid_timezone(zone_name) else defaults['timezone']}
+
+
+def validate_monthly_schedule(value):
+    """Strict settings-API validation; raises ValueError and returns a normalized copy."""
+    if not isinstance(value, dict):
+        raise ValueError('kimi_monthly_reset must be an object')
+    enabled = value.get('enabled')
+    if not isinstance(enabled, bool):
+        raise ValueError('kimi_monthly_reset.enabled must be boolean')
+    day = value.get('day')
+    if isinstance(day, bool) or not isinstance(day, int) or not 1 <= day <= 31:
+        raise ValueError('kimi_monthly_reset.day must be an integer between 1 and 31')
+    time_text = value.get('time')
+    if not valid_monthly_time(time_text):
+        raise ValueError('kimi_monthly_reset.time must be 24-hour HH:MM')
+    zone_name = value.get('timezone')
+    if not valid_timezone(zone_name):
+        raise ValueError('kimi_monthly_reset.timezone must be a valid IANA time zone')
+    return {'enabled': enabled, 'day': day, 'time': time_text, 'timezone': zone_name}
+
+
+def configured_monthly_schedule():
+    """Normalized schedule from configuration; any read failure fails closed to disabled."""
+    try:
+        return normalize_monthly_schedule(config().get(MONTHLY_RESET_KEY))
+    except Exception:
+        return dict(MONTHLY_RESET_DEFAULTS)
+
+
+def _month_shift(year, month, delta):
+    index = year * 12 + month - 1 + delta
+    return index // 12, index % 12 + 1
+
+
+def _boundary_epoch(schedule, year, month):
+    """Epoch seconds of the clamped monthly boundary in the schedule's own IANA zone."""
+    zone = _zone(schedule['timezone'])
+    day = min(schedule['day'], calendar.monthrange(year, month)[1])
+    return datetime(year, month, day, int(schedule['time'][:2]), int(schedule['time'][3:]), tzinfo=zone).timestamp()
+
+
+def monthly_boundaries(now, schedule):
+    """(most recent elapsed, next) boundary epochs for a normalized enabled schedule."""
+    zone = _zone(schedule['timezone'])
+    local = datetime.fromtimestamp(now, tz=zone)
+    current = _boundary_epoch(schedule, local.year, local.month)
+    if current > now:
+        year, month = _month_shift(local.year, local.month, -1)
+        return _boundary_epoch(schedule, year, month), current
+    year, month = _month_shift(local.year, local.month, 1)
+    return current, _boundary_epoch(schedule, year, month)
+
+
+def monthly_reset_view(now=None):
+    """Read-only schedule exposure for quota consumers; next_reset_at is ISO8601 when enabled."""
+    schedule = configured_monthly_schedule()
+    out = dict(schedule)
+    out['next_reset_at'] = None
+    if schedule['enabled']:
+        try:
+            _, following = monthly_boundaries(time.time() if now is None else now, schedule)
+            out['next_reset_at'] = datetime.fromtimestamp(following, tz=timezone.utc).isoformat()
+        except Exception:
+            out['enabled'] = False
+    return out
 
 
 def trip(provider, message='', message_id=None, occurred_at=None, reason=None):
@@ -69,12 +197,13 @@ def clear(provider, sampled_since=None, identity=None, evidence='quota'):
     """Close the circuit on fresh verified evidence; keep seen message IDs and watermarks.
 
     evidence is 'quota' (fresh positive account query) or 'manual_retry' (explicit local
-    authorization). Monthly plan exhaustion only clears with 'manual_retry': the plan's
-    usage endpoint keeps reporting window allowance while the monthly cycle is exhausted,
-    so quota telemetry is never accepted as evidence of monthly recovery, and reported
-    reset timestamps are never parsed into a recovery inference. There is deliberately no
-    automatic success-based clearing, because a session reply carries no verifiable
-    request credential provenance.
+    authorization). Monthly plan exhaustion never clears with 'quota': the plan's usage
+    endpoint keeps reporting window allowance while the monthly cycle is exhausted, so
+    quota telemetry is never accepted as evidence of monthly recovery, and reported reset
+    timestamps are never parsed into a recovery inference. Monthly blocks instead use the
+    separate, provenance-guarded paths scheduled_release (configured local-zone boundary)
+    and observe_model_success (verified completed model response); neither is inferred from
+    telemetry or from unverified session replies.
 
     sampled_since/identity guard the race where an account query started before a
     concurrent trip: a stale in-flight sample must never clear a newer circuit.
@@ -98,6 +227,82 @@ def clear(provider, sampled_since=None, identity=None, evidence='quota'):
         return True
 
 
+def scheduled_release(provider, now=None):
+    """Release a monthly block opened strictly before the most recent configured boundary.
+
+    The schedule is the configured IANA-zone monthly boundary, independent of host local
+    time and DST. The persisted watermark is that boundary, not this (possibly late) check
+    time, so a genuine post-boundary error re-blocks for the rest of the cycle while
+    earlier errors stay stale and can never relatch. Only a monthly block bound to the
+    current credential is touched; this is authorization to try, never proof of recovery.
+    """
+    if provider != 'kimi-for-coding':
+        return False
+    now = time.time() if now is None else now
+    schedule = configured_monthly_schedule()
+    if not schedule['enabled']:
+        return False
+    try:
+        boundary, _ = monthly_boundaries(now, schedule)
+    except Exception:
+        return False
+    if _epoch(boundary) is None:
+        return False
+    with locked('billing'):
+        blocks = read_json(STATE / BILLING, {})
+        b = blocks.get(provider)
+        if not b or b.get('cleared_at') or b.get('reason') != MONTHLY_REASON:
+            return False
+        opened = _epoch(b.get('opened_at'))
+        if opened is None or opened >= boundary:
+            return False
+        # A known current credential must exactly match the block's binding; a rotated or
+        # removed credential (None) never releases, and malformed legacy state fails closed.
+        ident = credential_identity(provider)
+        if ident is None or b.get('credential') != ident:
+            return False
+        blocks[provider] = dict(b, cleared_at=boundary, released=SCHEDULED_RESET_RELEASE)
+        write_json(STATE / BILLING, blocks)
+        return True
+
+
+def observe_model_success(provider, identity, started_at, completed_at):
+    """Clear the current credential's monthly block after a verified completed success.
+
+    The caller owns provenance: it passes the request credential identity captured
+    privately for the actual provider plus that request's start and completion times from
+    a genuinely finished, error-free model response. The request must have started strictly
+    after the block opened, so a success predating the failure can never release it, and
+    completion must not precede the start. All timestamps must be positive and finite, and
+    the supplied identity must still equal the provider's current credential, so a rotated
+    or removed credential can never clear a block. The completion time becomes the
+    watermark, preserving message IDs and the credential binding; another block reason
+    never clears. Returns True only when this call released the block.
+    """
+    if not isinstance(provider, str) or not provider:
+        return False
+    if not isinstance(identity, str) or not identity:
+        return False
+    started = _epoch(started_at)
+    completed = _epoch(completed_at)
+    if started is None or completed is None or completed < started:
+        return False
+    with locked('billing'):
+        blocks = read_json(STATE / BILLING, {})
+        b = blocks.get(provider)
+        if not b or b.get('cleared_at') or b.get('reason') != MONTHLY_REASON:
+            return False
+        opened = _epoch(b.get('opened_at'))
+        if opened is None or started <= opened:
+            return False
+        ident = credential_identity(provider)
+        if ident is None or identity != ident or b.get('credential') != ident:
+            return False
+        blocks[provider] = dict(b, cleared_at=completed, released=MODEL_SUCCESS_RELEASE)
+        write_json(STATE / BILLING, blocks)
+        return True
+
+
 def known_providers():
     names = set(ENDPOINTS)
     try:
@@ -111,7 +316,8 @@ def known_providers():
 def retry_provider(provider):
     """Explicit local release/recheck authorization; never inferred from telemetry.
 
-    This is the only path that may release a monthly block for new attempts. It is
+    This is one explicit path that may release a monthly block for new attempts, alongside
+    the configured scheduled boundary release and a verified completed model success. It is
     labeled as an authorization to try again, not as proven recovery: the release stays
     open until a further billing error re-opens the block, and seen message IDs plus the
     cleared_at watermark keep historical errors from re-latching.
@@ -202,6 +408,10 @@ def refresh(force=False):
         now = time.time()
         providers = [p for p in ENDPOINTS if any(v['model'].split('/', 1)[0] == p for v in config()['profiles'].values())]
         identities = {p: credential_identity(p) for p in providers}
+        # A configured monthly schedule releases the previous cycle's Kimi monthly block on
+        # every refresh, including cache hits. It is authorization to try, never quota
+        # proof, and it never touches non-monthly or credential-mismatched blocks.
+        scheduled_release('kimi-for-coding', now)
         same = all(old.get(p, {}).get('_credential') == identities[p] for p in providers)
         recent = old and all(now - old.get(p, {}).get('checked_at', 0) < 60 for p in providers)
         if not force and same and recent:
@@ -235,36 +445,50 @@ def view(values):
             reason = block.get('reason') or GENERIC_REASON
             telemetry_available = v.get('available')
             billing = {'opened_at': block.get('opened_at'), 'message': block.get('message'),
-                       'reason': reason}
+                       'reason': reason, 'telemetry_state': v.get('state'),
+                       'telemetry_available': telemetry_available}
             v.update(available=False, state='billing_blocked', billing=billing,
                      billing_reason=reason)
             if reason == MONTHLY_REASON:
                 v['monthly_plan_exhausted'] = True
-                billing['telemetry_available'] = telemetry_available is True
                 billing['warning'] = ('Monthly plan quota is exhausted for this billing cycle. Reported '
                                       'window remaining values are authentic account telemetry but do not '
                                       'mean the provider is callable until real evidence of recovery appears.')
+        if p == 'kimi-for-coding':
+            # Read-only schedule exposure for the console: the same normalized setting plus
+            # the next configured boundary in ISO8601 when the schedule is enabled.
+            v['monthly_reset'] = monthly_reset_view()
         out[p] = v
     return out
 
 
-def allowed(provider, q, complexity, threshold=0):
+def allowed(provider, q, complexity, threshold=0, retry_monthly=False):
     v = q.get(provider, {})
-    if billing_block(provider):
-        # An observed billing failure overrides even a fresh cached positive sample.
-        return False, 'provider_billing_blocked'
-    if v.get('state') == 'auth_error':
+    # Preserve the account endpoint's verdict separately from the monthly-error overlay.
+    # Explicit retries only bypass the hidden monthly flag, never confirmed empty quota.
+    telemetry = v.get('billing') or {}
+    state = telemetry.get('telemetry_state', v.get('state'))
+    available = (telemetry.get('telemetry_available') if v.get('state') == 'billing_blocked'
+                 else v.get('available'))
+    if state == 'auth_error':
         return False, 'credential_rejected'
-    if v.get('state') == 'rate_limited':
+    if state == 'rate_limited':
         return False, 'quota_endpoint_rate_limited'
-    fresh_enough = time.time() - v.get('sampled_at', 0) <= 900
-    if fresh_enough and v.get('available') is False:
+    empty_window = any(w.get('valid', True) and w.get('remaining') == 0
+                       for w in v.get('windows', []))
+    if available is False or empty_window:
         return False, 'quota_exhausted_or_account_unavailable'
+    block = billing_block(provider)
+    if block and not (retry_monthly and block.get('reason') == MONTHLY_REASON):
+        return False, 'provider_billing_blocked'
+    fresh_enough = time.time() - v.get('sampled_at', 0) <= 900
     if provider == 'kimi-for-coding' and fresh_enough:
         pcts = [w['remaining_percent'] for w in v.get('windows', []) if w.get('remaining_percent') is not None]
         if pcts and min(pcts) < threshold and complexity != 'deep':
             return False, 'reserve_kimi_for_complex_work'
-    return True, 'quota_unknown' if v.get('stale', True) or v.get('available') is None else 'quota_available'
+    if block:
+        return True, 'explicit_profile_monthly_retry'
+    return True, 'quota_unknown' if v.get('stale', True) or available is None else 'quota_available'
 
 
 def _tier(t):
@@ -323,9 +547,12 @@ def route(t, c, q):
     if not profile or c['profiles'][profile].get('enabled') is False:
         return None, 'profile_disabled_or_missing'
     provider = c['profiles'][profile]['model'].split('/', 1)[0]
-    ok, why = allowed(provider, q, t.get('complexity', 'normal'), c.get('kimi_reserve_percent', 0))
+    requested = t.get('requested_profile', 'auto')
+    ok, why = allowed(provider, q, t.get('complexity', 'normal'),
+                      c.get('kimi_reserve_percent', 0), retry_monthly=requested != 'auto')
+    if ok and why == 'explicit_profile_monthly_retry':
+        return profile, why
     if ok:
-        requested = t.get('requested_profile', 'auto')
         return profile, ('explicit_profile' if requested != 'auto' else _tier(t)) + ':' + why
     # Never silently switch profiles or models; the coordinator re-selects deliberately.
     return None, why
@@ -337,16 +564,20 @@ def _unrecovered_provider(provider, kind):
     Historical evidence can predate this classification (or a circuit may have been
     pruned), so guidance stays conservative read-only: the failed shared provider is not
     offered as a candidate until a cleared circuit records a verified recovery path
-    (fresh quota replenishment for a balance block or an explicit manual retry
-    authorization). This never trips, clears or mutates the circuit.
+    (fresh quota replenishment for a balance block, an explicit manual retry
+    authorization, a configured scheduled monthly release, or a verified completed model
+    success). This never trips, clears or mutates the circuit.
     """
     if not provider or not kind or billing_block(provider):
         return None
     b = read_json(STATE / BILLING, {}).get(provider)
     if b and b.get('cleared_at'):
-        if b.get('released') == 'manual_retry':
+        released = b.get('released')
+        if released == 'manual_retry':
             return None
-        if kind != MONTHLY_REASON and b.get('released') == 'quota':
+        if kind == MONTHLY_REASON and released in (SCHEDULED_RESET_RELEASE, MODEL_SUCCESS_RELEASE):
+            return None
+        if kind != MONTHLY_REASON and released == 'quota':
             return None
     return provider
 
@@ -383,6 +614,9 @@ def _options(t, c, q, blocked_reason, partial_work=False, billing_reason=None, p
     """
     alts = alternatives(t, c, q, exclude=_unrecovered_provider(provider, billing_reason))
     retry_command = 'delegate-opencode quota --retry-provider ' + provider if provider else None
+    retry_allowed = bool(provider and billing_reason == MONTHLY_REASON and
+                         allowed(provider, q, t.get('complexity', 'normal'),
+                                 c.get('kimi_reserve_percent', 0), retry_monthly=True)[0])
     if alts:
         action = 'inspect_partial_work_and_reselect_profile' if partial_work else 'reselect_profile'
         preferred = alts[0]
@@ -402,19 +636,23 @@ def _options(t, c, q, blocked_reason, partial_work=False, billing_reason=None, p
             'top_up_provider_account_or_wait_for_quota'
         instruction = ('No viable alternative profile is currently dispatchable. Report this specific '
                        'blockage; do not expect this task to resume automatically.')
-        if billing_reason == MONTHLY_REASON:
+        if billing_reason == MONTHLY_REASON and retry_allowed:
             # Waiting on window telemetry cannot prove a monthly cycle recovered.
             action = 'top_up_or_authorize_manual_retry'
             instruction = ('No viable alternative profile is currently dispatchable. The monthly plan is '
                            'exhausted for this billing cycle; K2.8 and K3 share the same provider block, so '
-                           'neither is an alternative while it is open. Report the blockage; do not infer a '
-                           'monthly reset from usage-window telemetry. New attempts require explicit local '
-                           'retry authorization' + (' (' + retry_command + ')' if retry_command else '') + '.')
+                           'neither is an alternative while it is open. Monthly exhaustion is advisory: a task '
+                           'may still be submitted with this provider as an explicit requested_profile to try, '
+                           'and a verified successful reply clears the flag. Do not infer a monthly reset from '
+                           'usage-window telemetry or reported reset timestamps; the configured schedule or a '
+                           'local retry authorization' + (' (' + retry_command + ')' if retry_command else '') +
+                           ' can release the block for new attempts.')
         autonomous = {'action': action, 'instruction': instruction,
                       'requires_user_approval': False,
-                      'wait_for_quota': billing_reason != MONTHLY_REASON,
+                      'wait_for_quota': not retry_allowed,
                       'retry_command': retry_command, 'retry_is_proof': False}
     return {'blocked_reason': blocked_reason, 'billing_reason': billing_reason,
+            'explicit_retry_allowed': retry_allowed,
             'blocked_provider': provider, 'suggested_action': action, 'alternatives': alts,
             'automatic_fallback': False, 'autonomous_reselection': bool(alts),
             'autonomous_next_action': autonomous,

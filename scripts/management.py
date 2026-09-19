@@ -147,9 +147,14 @@ def settings():
     out = {'profiles': profiles, 'max_parallel_per_owner': _per_owner_limit(c.get('max_parallel_per_owner')),
            'kimi_reserve_percent': c.get('kimi_reserve_percent'),
            'revision': c.get('revision', 0), 'auto_approve': c.get('auto_approve', True)}
+    import cleanup
+    import quota
+    # Always export a complete, validated schedule: generic defaults when unset and a
+    # fail-closed normalization when a legacy record is malformed. The personal day 19 is
+    # never a default; it only appears when explicitly stored.
+    out['kimi_monthly_reset'] = quota.normalize_monthly_schedule(c.get('kimi_monthly_reset'))
     if isinstance(c.get('routing'), dict):
         out['routing'] = c['routing']
-    import cleanup
     out['cleanup'] = cleanup.policy()
     return out
 
@@ -207,6 +212,11 @@ def _validate_settings(body):
         if not isinstance(body['auto_approve'], bool):
             raise ValueError('auto_approve must be boolean')
         result['auto_approve'] = body['auto_approve']
+    if 'kimi_monthly_reset' in body:
+        import quota
+        # Strict validation with zoneinfo: unknown zones, malformed times and out-of-range
+        # days are rejected. Omitting the key preserves the stored schedule for old clients.
+        result['kimi_monthly_reset'] = quota.validate_monthly_schedule(body['kimi_monthly_reset'])
     routing = body.get('routing')
     if routing is not None:
         if not isinstance(routing, dict) or set(routing.keys()) != set(_ROUTING_KEYS):

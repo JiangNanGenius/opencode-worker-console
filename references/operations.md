@@ -114,24 +114,53 @@ the reason. Unknown quota is not a promise of availability.
 An unequivocal model billing error blocks further provider dispatch even if the cached balance
 was positive. Two reasons are distinguished. `insufficient_balance` (HTTP 402 or an explicit
 balance message) is replenishable: a fresh successful account check clears it after top-up, as
-before. `monthly_usage_limit` is Kimi's hidden monthly plan exhaustion: an HTTP 403 model error
+before, and it stays an absolute block even for an explicitly requested profile.
+`monthly_usage_limit` is Kimi's hidden monthly plan exhaustion: an HTTP 403 model error
 whose message says the monthly usage limit was reached and the quota refreshes next cycle.
 That error is authoritative even while `/coding/v1/usages` reports available windows
 (`available: true`, remaining 5-hour/overall percentages), because neither window proves the
-monthly cycle was restored. A fresh positive query therefore never clears it, the plan usage
+monthly cycle was restored. Monthly exhaustion is advisory rather than an absolute dispatch
+prohibition: automatic routing and candidate alternatives keep avoiding the exhausted provider,
+but a task submitted with this provider as an explicit `requested_profile` may still try, and a
+verified successful reply clears the flag. A fresh positive query never clears it, the plan usage
 endpoint is never parsed as a monthly reset, and `quota.view` presents the provider as
-`billing_blocked` with `billing.reason` and `monthly_plan_exhausted: true` without hiding the
-authentic window telemetry. The block is provider-wide, so Kimi K2.8 and K3 share it and can
-never be alternatives to each other while it is open. Session replies do not automatically
-clear this block: they do not establish which credential served the request. No model probe
-loop is started. Credential rotation or an explicit local retry release permits new attempts.
+`billing_blocked` with `billing.reason`, `monthly_plan_exhausted: true` and the authentic window
+telemetry unhidden. The block is provider-wide, so Kimi K2.8 and K3 share it and can never be
+alternatives to each other while it is open. No model probe loop is started.
+
+Quota endpoint exhaustion is a hard availability verdict: an explicit profile retry, monthly schedule, or successful model response never overrides an endpoint reporting zero allowance or an unavailable account. Only the hidden monthly-error flag is retryable; wait for a refreshed positive endpoint sample before dispatching against confirmed empty quota.
+
+Kimi monthly blocks are released by exactly three provenance-guarded paths, none inferred from
+window telemetry: an explicit local retry authorization, a configured schedule, or a verified
+completed model success. The optional schedule is stored as `kimi_monthly_reset`
+(`{enabled, day 1-31, time HH:MM, timezone IANA}`; generic defaults are disabled, day 1,
+12:00, Asia/Shanghai). Day 29-31 clamps to the month's last day, and the boundary is computed in
+the configured IANA zone, independent of host local time and DST. On quota refresh, including a
+cache hit, a monthly block opened strictly before the most recent elapsed boundary is released
+with `released: scheduled_reset` and the boundary itself as the watermark - not the possibly
+late check time - so a genuine post-boundary error re-blocks for the rest of the cycle while
+stale pre-boundary errors and repeated message IDs can never relatch. Releasing is an
+authorization to try, never proof the provider recovered; it never touches another reason or a
+block bound to a different credential, and an invalid legacy schedule fails closed to disabled.
+With the default disabled schedule the old sticky monthly behavior is unchanged.
+
+A genuinely finished, error-free model response can clear a monthly block through
+`quota.observe_model_success(provider, identity, started_at, completed_at)`: the bridge passes
+the privately captured request credential identity and times, and the clear applies only when
+the request started strictly after the block opened, completion is not earlier than the start,
+all timestamps are positive and finite, and the identity still equals the provider's current
+credential. It persists `released: model_success` with the completion time as the watermark and
+preserves message IDs and the credential binding. Pending, empty, failed, unattributed or older
+replies never clear anything.
 
 `status`, `wait` and `collect` expose recovery guidance; no dispatched task is automatically
 replayed. Recovery separates two facts: `automatic_fallback: false` means the bridge itself
 never switches models or replays work, while `autonomous_reselection: true` plus
 `autonomous_next_action` is the explicit coordinator instruction to choose a candidate
 profile and continue without asking the user or waiting for quota. Candidates carry the
-configured `variant`, so a continuation keeps maximum reasoning. Inspect partial work before
+configured `variant`, so a continuation keeps maximum reasoning. For a monthly blockage an
+explicitly requested profile on the blocked provider is advisory and may still be submitted to
+try; alternatives are still chosen from providers without the block. Inspect partial work before
 creating a deliberate continuation linked by `--parent-task-id`; submit a new task rather
 than replaying the failed one. Keep healthy capacity waits alive, but act on a quota blockage.
 
@@ -143,8 +172,8 @@ watermark, and rejects unknown providers. It does not enforce a single attempt a
 reinterpret telemetry or reset timestamps. Monthly classification requires exhaustion
 wording (`reached`/`exhausted`/`refreshed in the next cycle`, and similar), so a 403 such as
 "you do not have permission to view monthly quota" or a stated monthly allowance never
-trips the circuit. Pending, failed, older or apparently successful session replies never clear
-a monthly block.
+trips the circuit. Historical recovery guidance honors only `manual_retry`, `scheduled_reset`
+and `model_success` releases; a positive window sample alone never proves recovery.
 
 No automatic recharge or booster setting changes. Account-wide before/after quota is not
 attributed as an exact task charge. `stats` reports observed mixed task latency, not a benchmark.

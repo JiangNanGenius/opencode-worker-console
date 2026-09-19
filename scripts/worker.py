@@ -2,6 +2,7 @@
 import collections
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import shlex
@@ -9,7 +10,7 @@ import threading
 import time
 import uuid
 from common import (STATE, HttpFailure, api, artifact_dir, config, read_json, redact,
-                    task, update, write_json, locked, message_id as next_message_id)
+                    task, update, write_json, locked, credential_identity, message_id as next_message_id)
 from workspace import collect_changes, prepare
 import diagnostics
 import quota
@@ -187,11 +188,43 @@ def record_billing_errors(t, errors):
     return True
 
 
-# Automatic success-based circuit clearing is intentionally absent. A session reply
-# does not carry verifiable request credential provenance, and a completion timestamp
-# alone cannot distinguish an aborted or empty reply from a real successful response.
-# Recovery from a billing block is explicit only: fresh positive quota for a
-# replenishable balance block, credential rotation, or the local manual retry release.
+def record_billing_success(t, messages):
+    """Use a finished real response, bound to this dispatch's credential, as recovery.
+
+    A timestamp alone is not success: pending, aborted and empty messages must not
+    erase exhaustion. Dispatch provenance is private task metadata, never a key or
+    part of the prompt/public task. Old sessions without it cannot prove recovery.
+    """
+    provenance = t.get('_billing_dispatch') or {}
+    provider, identity = provenance.get('provider'), provenance.get('identity')
+    if not provider or not identity:
+        return False
+    assistants = [m for m in messages if m.get('info', {}).get('role') == 'assistant']
+    if not assistants:
+        return False
+    message = assistants[-1]
+    info = message.get('info') or {}
+    if info.get('error') or info.get('providerID') != provider:
+        return False
+    times = info.get('time') or {}
+    started, completed = times.get('created'), times.get('completed')
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0
+           for v in (started, completed)):
+        return False
+    started = started / 1000 if started >= 1e12 else started
+    completed = completed / 1000 if completed >= 1e12 else completed
+    if started < provenance.get('at', float('inf')):
+        return False
+    finish_reason = info.get('finish')
+    tokens = info.get('tokens') or {}
+    has_output = any(isinstance(tokens.get(k), (int, float)) and tokens[k] > 0
+                     for k in ('output', 'reasoning'))
+    has_output = has_output or any(p.get('type') in ('text', 'reasoning') and
+                                  bool(p.get('text', '').strip()) or p.get('type') == 'tool'
+                                  for p in message.get('parts', []))
+    if finish_reason not in ('stop', 'tool-calls', 'length') or not has_output:
+        return False
+    return quota.observe_model_success(provider, identity, started, completed)
 
 
 def summarize_messages(messages):
@@ -263,6 +296,7 @@ def _finish(t, messages, forced_status=None, reason=None):
     info = evidence.pop('last_info')
     observed = diagnostics.from_messages(messages)
     billing = record_billing_errors(t, observed)
+    record_billing_success(t, messages)
     kind = diagnostics.billing_kind(info.get('error')) if info.get('error') else None
     if info.get('error') and not forced_status:
         status = 'failed'
@@ -321,7 +355,10 @@ def run_task(task_id, shutdown):
             provider, model = cfg['model'].split('/', 1)
             message_id = next_message_id()
             # Persist intent before I/O. On a lost acknowledgement, observe rather than replay.
-            t = update(task_id, message_id=message_id, dispatch_attempted_at=time.time())
+            dispatched_at = time.time()
+            t = update(task_id, message_id=message_id, dispatch_attempted_at=dispatched_at,
+                       _billing_dispatch={'provider': provider, 'identity': credential_identity(provider),
+                                          'at': dispatched_at})
             try:
                 call(t, '/prompt_async', 'POST', {
                     'messageID': message_id, 'agent': t['profile'],
@@ -355,6 +392,7 @@ def run_task(task_id, shutdown):
                 is_idle = native_status.get('type') == 'idle'
                 observed_errors = diagnostics.from_messages(messages)
                 record_billing_errors(t, observed_errors)
+                record_billing_success(t, messages)
                 if native_status.get('type') == 'retry':
                     observed_errors.append(diagnostics.error('model', 'retrying', native_status.get('message', 'OpenCode is retrying'),
                                             retryable=True, action='wait', attempt=native_status.get('attempt'),

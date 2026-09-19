@@ -1,4 +1,5 @@
 import io
+import copy
 import json
 from pathlib import Path
 import sys
@@ -131,6 +132,30 @@ class ErrorBridgeTests(unittest.TestCase):
             worker.run_task('job-error', threading.Event())
         abort.assert_called_once()
         self.assertEqual(common.task('job-error')['status'], 'cancelled')
+
+    def test_only_real_completed_attributed_model_reply_is_recovery_evidence(self):
+        now = time.time()
+        t = common.task('job-error')
+        t['_billing_dispatch'] = {'provider': 'test', 'identity': 'cred-test', 'at': now - 20}
+        message = {'info': {'role': 'assistant', 'providerID': 'test', 'finish': 'stop',
+                            'time': {'created': (now - 10) * 1000, 'completed': now * 1000}},
+                   'parts': [{'type': 'text', 'text': 'Verified reply'}]}
+        with patch.object(quota, 'observe_model_success', return_value=True, create=True) as observe:
+            self.assertTrue(worker.record_billing_success(t, [message]))
+            observe.assert_called_once_with('test', 'cred-test', (now - 10), now)
+        variants = []
+        pending = copy.deepcopy(message); del pending['info']['time']['completed']; variants.append(pending)
+        failed = copy.deepcopy(message); failed['info']['error'] = {'name': 'APIError'}; variants.append(failed)
+        wrong = copy.deepcopy(message); wrong['info']['providerID'] = 'other'; variants.append(wrong)
+        empty = copy.deepcopy(message); empty['parts'] = []; variants.append(empty)
+        aborted = copy.deepcopy(message); aborted['info']['finish'] = 'error'; variants.append(aborted)
+        old = copy.deepcopy(message); old['info']['time']['created'] = (now - 30) * 1000; variants.append(old)
+        with patch.object(quota, 'observe_model_success', create=True) as observe:
+            for m in variants:
+                self.assertFalse(worker.record_billing_success(t, [m]))
+            self.assertFalse(worker.record_billing_success(common.task('job-error'), [message]))
+            observe.assert_not_called()
+        self.assertNotIn('_billing_dispatch', common.public_task(t))
 
     def test_http_error_keeps_safe_message_and_redacts_key(self):
         body = json.dumps({'error': {'message': 'Invalid sk-abcdefghijklmnop'},

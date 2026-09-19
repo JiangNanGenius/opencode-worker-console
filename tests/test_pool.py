@@ -140,8 +140,10 @@ class PoolTests(unittest.TestCase):
         # An explicitly configured nonzero reserve is preserved.
         self.assertFalse(quota.allowed('kimi-for-coding', self.q, 'normal', 20)[0])
 
-    def test_expired_cache_not_zero_auth_blocks(self):
+    def test_expired_zero_stays_unavailable_until_positive_refresh(self):
         q = {'deepseek': {'state': 'unavailable', 'sampled_at': time.time() - 1000, 'available': False}}
+        self.assertFalse(quota.allowed('deepseek', q, 'normal')[0])
+        q['deepseek'].update(state='ok', available=True, sampled_at=time.time())
         self.assertTrue(quota.allowed('deepseek', q, 'normal')[0])
         q['deepseek']['state'] = 'auth_error'
         self.assertFalse(quota.allowed('deepseek', q, 'normal')[0])
@@ -391,9 +393,9 @@ class PoolTests(unittest.TestCase):
                              'message': self.MONTHLY, 'statusCode': 403, 'isRetryable': False}}},
                 'parts': []}
 
-    def fail_monthly(self):
-        t = self.new(profile='senior-code', mode='read', scopes=[])
-        t = common.update(t['id'], status='running', profile='senior-code', started_at=time.time(),
+    def fail_monthly(self, requested='senior-code', profile='senior-code'):
+        t = self.new(profile=requested, mode='read', scopes=[])
+        t = common.update(t['id'], status='running', profile=profile, started_at=time.time(),
                           timeout_seconds=60, directory=str(self.repo))
         result = worker.finish(common.task(t['id']), [self.monthly_message()])
         return common.task(t['id']), result
@@ -446,8 +448,14 @@ class PoolTests(unittest.TestCase):
         self.assertIn('do not ask the user', action['instruction'])
         self.assertIn('do not wait for quota', action['instruction'])
         deep = self.new(profile='deep-research', complexity='deep')
-        self.assertIsNone(quota.route(deep, self.c, self.q)[0])
+        # Monthly exhaustion is advisory, not an absolute prohibition: an explicitly
+        # requested profile may still try, while candidates keep avoiding the provider.
+        self.assertEqual(quota.route(deep, self.c, self.q),
+                         ('deep-research', 'explicit_profile_monthly_retry'))
         self.assertEqual([a['profile'] for a in quota.alternatives(deep, self.c, self.q)], ['fast-code'])
+        explicit = self.new(profile='senior-code')
+        self.assertEqual(quota.route(explicit, self.c, self.q),
+                         ('senior-code', 'explicit_profile_monthly_retry'))
 
     def test_monthly_recovery_reaches_status_wait_collect_read_only(self):
         t, result = self.fail_monthly()
@@ -514,12 +522,10 @@ class PoolTests(unittest.TestCase):
                    reason='monthly_usage_limit')
         self.assertEqual(quota.billing_block('kimi-for-coding')['reason'], 'monthly_usage_limit')
 
-    def test_successful_reply_never_auto_clears_monthly_block(self):
-        # Request credential provenance for a session reply is not verifiable here, so
-        # automatic success-based clearing is intentionally absent. A completed,
-        # attributed, error-free reply must leave the monthly block in place; only the
-        # explicit local retry release, credential rotation or a balance replenishment
-        # can clear a circuit.
+    def test_monthly_success_release_requires_private_credential_provenance(self):
+        # A session reply alone never clears the flag. The root bridge captures the request
+        # credential identity and validated request timing privately and then calls the
+        # helper; until then a completed error-free reply leaves the block in place.
         t = self.new(profile='senior-code', mode='read', scopes=[])
         t = common.update(t['id'], status='running', profile='senior-code', started_at=time.time(),
                           timeout_seconds=60, directory=str(self.repo))
@@ -532,11 +538,27 @@ class PoolTests(unittest.TestCase):
         block = quota.billing_block('kimi-for-coding')
         self.assertIsNotNone(block)
         self.assertEqual(block['reason'], 'monthly_usage_limit')
-        # A historical error ID already seen cannot relatch or clear anything.
-        quota.trip('kimi-for-coding', self.MONTHLY, 'msg_err', occurred_at=now - 50,
-                   reason='monthly_usage_limit')
+        opened = block['opened_at']
+        # Missing identity, a mismatched credential, a pre-block start or bad timing never clear.
+        self.assertFalse(quota.observe_model_success('kimi-for-coding', None, opened + 1, opened + 2))
+        self.assertFalse(quota.observe_model_success('kimi-for-coding', 'cred-x', opened + 1, opened + 2))
+        self.assertFalse(quota.observe_model_success('kimi-for-coding', 'cred-k', opened, opened + 2))
+        self.assertFalse(quota.observe_model_success('kimi-for-coding', 'cred-k', opened + 2, opened + 1))
         self.assertIsNotNone(quota.billing_block('kimi-for-coding'))
-        # Explicit local retry release remains the only monthly path.
+        # A verified completed success clears with the completion watermark, preserving IDs.
+        self.assertTrue(quota.observe_model_success('kimi-for-coding', 'cred-k', opened + 1, opened + 5))
+        stored = common.read_json(self.state / 'billing.json', {})['kimi-for-coding']
+        self.assertEqual(stored['released'], 'model_success')
+        self.assertEqual(stored['cleared_at'], opened + 5)
+        self.assertEqual(stored['credential'], 'cred-k')
+        self.assertIn('msg_err', stored['message_ids'])
+        self.assertIsNone(quota.billing_block('kimi-for-coding'))
+        # Stale pre-success evidence cannot relatch; a new post-success error reblocks.
+        quota.trip('kimi-for-coding', self.MONTHLY, 'm-stale', opened + 3, 'monthly_usage_limit')
+        self.assertIsNone(quota.billing_block('kimi-for-coding'))
+        quota.trip('kimi-for-coding', self.MONTHLY, 'm-new', opened + 6, 'monthly_usage_limit')
+        self.assertIsNotNone(quota.billing_block('kimi-for-coding'))
+        # Explicit local retry release remains an available path.
         self.assertTrue(quota.retry_provider('kimi-for-coding')['released'])
         self.assertIsNone(quota.billing_block('kimi-for-coding'))
 
@@ -612,7 +634,8 @@ class PoolTests(unittest.TestCase):
     def test_monthly_without_alternative_reports_specific_blockage(self):
         self.c['profiles']['fast-code']['enabled'] = False
         self.config.write_text(json.dumps(self.c))
-        t, result = self.fail_monthly()
+        # Auto routing (requested_profile='auto') still avoids the exhausted provider.
+        t, result = self.fail_monthly(requested='auto')
         self.assertEqual(result['reason'], 'provider_billing_monthly_usage_limit')
         rec = quota.recovery(t, self.c, self.q)
         self.assertEqual(rec['billing_reason'], 'monthly_usage_limit')
@@ -622,6 +645,8 @@ class PoolTests(unittest.TestCase):
         self.assertFalse(rec['autonomous_next_action']['wait_for_quota'])
         self.assertIn('quota --retry-provider kimi-for-coding',
                       rec['autonomous_next_action']['retry_command'])
+        self.assertIn('explicit requested_profile',
+                      rec['autonomous_next_action']['instruction'])
         waited = delegate.wait_result(common.task(t['id']), 0)
         self.assertTrue(waited['terminal'])
         self.assertTrue(waited['attention'])

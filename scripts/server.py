@@ -18,10 +18,27 @@ def runtime_overlay(c):
                         'prompt': instructions(auto),
                         'permission': 'allow' if auto else {'*': 'deny', 'read': 'allow', 'glob': 'allow', 'grep': 'allow',
                                        'list': 'allow', 'lsp': 'allow', 'todowrite': 'allow'}}
-    return {'$schema': 'https://opencode.ai/config.json', 'agent': agents,
+    overlay = {'$schema': 'https://opencode.ai/config.json', 'agent': agents,
                'permission': 'allow' if auto else 'ask',
                'share': 'disabled', 'autoupdate': False, 'snapshot': False,
                'formatter': False}
+    # Keep the original preset/auth ID stable when the upstream catalog renames it
+    # to kimi-code-plan-cn/global. This uses the same existing kimi.com endpoint
+    # and stored credential; no key migration or extra destination is involved.
+    if any(p['model'].startswith('kimi-for-coding/') for p in c['profiles'].values()):
+        overlay['provider'] = {'kimi-for-coding': {
+            'name': 'Kimi for Coding', 'npm': '@ai-sdk/openai-compatible',
+            'options': {'baseURL': 'https://api.kimi.com/coding/v1'},
+            'models': {model: {
+                'name': name, 'reasoning': True, 'tool_call': True,
+                'interleaved': {'field': 'reasoning_content'},
+                'modalities': {'input': ['text', 'image'], 'output': ['text']},
+                'limit': {'context': 1048576, 'output': output},
+                'variants': {level: {'reasoningEffort': level} for level in ('low', 'high', 'max')},
+            } for model, name, output in (
+                ('kimi-for-coding', 'Kimi for Coding', 32768), ('k3', 'Kimi K3', 131072))},
+        }}
+    return overlay
 
 
 def main():

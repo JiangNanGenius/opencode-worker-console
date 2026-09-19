@@ -204,10 +204,14 @@ class ManagementTests(unittest.TestCase):
     def test_settings_returns_only_editable_fields(self):
         result = management.settings()
         self.assertEqual(set(result.keys()), {'profiles', 'max_parallel_per_owner',
-                                              'kimi_reserve_percent', 'revision', 'cleanup', 'auto_approve'})
+                                              'kimi_reserve_percent', 'revision', 'cleanup', 'auto_approve',
+                                              'kimi_monthly_reset'})
         self.assertEqual(result['max_parallel_per_owner'], 4)
         self.assertEqual(result['profiles']['fast-code'],
                          {'model': 'deepseek/deepseek-flash', 'label': 'Flash', 'variant': 'high', 'enabled': True})
+        # Generic disabled defaults are exported when the schedule was never configured.
+        self.assertEqual(result['kimi_monthly_reset'], {'enabled': False, 'day': 1, 'time': '12:00',
+                                                        'timezone': 'Asia/Shanghai'})
         self.assertNotIn('max_steps', result)
         for leaked in ('server_url', 'console_url', 'opencode_binary'):
             self.assertNotIn(leaked, result)
@@ -233,6 +237,58 @@ class ManagementTests(unittest.TestCase):
             result = management.save_settings(body)
         self.assertNotIn('max_steps', result)
         self.assertNotIn('max_steps', self.read_config())
+
+    def test_monthly_reset_valid_values_persist_and_export_normally(self):
+        schedule = {'enabled': True, 'day': 19, 'time': '12:00', 'timezone': 'Asia/Shanghai'}
+        body = self.valid_body()
+        body['kimi_monthly_reset'] = schedule
+        with patch.object(common, 'api', return_value={}):
+            result = management.save_settings(body)
+        self.assertEqual(result['kimi_monthly_reset'], schedule)
+        self.assertEqual(self.read_config()['kimi_monthly_reset'], schedule)
+        self.assertEqual(management.settings()['kimi_monthly_reset'], schedule)
+
+    def test_monthly_reset_preserved_when_old_client_omits_it(self):
+        schedule = {'enabled': True, 'day': 19, 'time': '12:00', 'timezone': 'Asia/Shanghai'}
+        config = self.base_config()
+        config['kimi_monthly_reset'] = schedule
+        self.write_config(config)
+        self.assertNotIn('kimi_monthly_reset', self.valid_body())
+        with patch.object(common, 'api', return_value={}):
+            management.save_settings(self.valid_body())
+        self.assertEqual(self.read_config()['kimi_monthly_reset'], schedule)
+        self.assertEqual(management.settings()['kimi_monthly_reset'], schedule)
+
+    def test_monthly_reset_invalid_values_rejected_without_writing(self):
+        original = self.config.read_text()
+        cases = [('not object', 'junk'),
+                 ('missing enabled', {'day': 19, 'time': '12:00', 'timezone': 'Asia/Shanghai'}),
+                 ('string enabled', {'enabled': 'true', 'day': 19, 'time': '12:00', 'timezone': 'Asia/Shanghai'}),
+                 ('day low', {'enabled': True, 'day': 0, 'time': '12:00', 'timezone': 'Asia/Shanghai'}),
+                 ('day high', {'enabled': True, 'day': 32, 'time': '12:00', 'timezone': 'Asia/Shanghai'}),
+                 ('bool day', {'enabled': True, 'day': True, 'time': '12:00', 'timezone': 'Asia/Shanghai'}),
+                 ('bad time', {'enabled': True, 'day': 19, 'time': '24:00', 'timezone': 'Asia/Shanghai'}),
+                 ('text time', {'enabled': True, 'day': 19, 'time': 'noon', 'timezone': 'Asia/Shanghai'}),
+                 ('bad zone', {'enabled': True, 'day': 19, 'time': '12:00', 'timezone': 'Mars/Base'}),
+                 ('empty zone', {'enabled': True, 'day': 19, 'time': '12:00', 'timezone': ''})]
+        for name, value in cases:
+            with self.subTest(name=name):
+                body = self.valid_body()
+                body['kimi_monthly_reset'] = value
+                with patch.object(common, 'api') as api:
+                    with self.assertRaises(ValueError):
+                        management.save_settings(body)
+                    api.assert_not_called()
+                self.assertEqual(self.config.read_text(), original)
+
+    def test_monthly_reset_invalid_legacy_record_exports_disabled_defaults(self):
+        config = self.base_config()
+        config['kimi_monthly_reset'] = {'enabled': True, 'day': 19, 'time': '12:00', 'timezone': 'Mars/Base'}
+        self.write_config(config)
+        exported = management.settings()['kimi_monthly_reset']
+        self.assertFalse(exported['enabled'])
+        self.assertEqual(exported['day'], 19)
+        self.assertEqual(exported['timezone'], 'Asia/Shanghai')
 
     def test_save_settings_preserves_other_config_and_sets_revision(self):
         with patch.object(common, 'api', return_value={}) as api:

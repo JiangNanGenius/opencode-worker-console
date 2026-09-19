@@ -41,6 +41,18 @@ class RuntimeOverlayTests(unittest.TestCase):
     def test_missing_max_steps_is_omitted(self):
         self.assert_no_steps(self.overlay())
 
+    def test_original_kimi_profile_survives_catalog_provider_rename(self):
+        overlay = server.runtime_overlay({'profiles': {
+            'senior-code': profile('kimi-for-coding/kimi-for-coding', 'max'),
+            'deep-research': profile('kimi-for-coding/k3', 'max')}})
+        provider = overlay['provider']['kimi-for-coding']
+        self.assertEqual(provider['options'], {'baseURL': 'https://api.kimi.com/coding/v1'})
+        self.assertEqual(set(provider['models']), {'kimi-for-coding', 'k3'})
+        self.assertNotIn('apiKey', str(provider))
+        for agent in overlay['agent'].values():
+            self.assertEqual(agent['variant'], 'max')
+            self.assertNotIn('steps', agent)
+
     def test_variant_and_overlay_defaults_preserved(self):
         overlay = self.overlay(max_steps=80)
         fast = overlay['agent']['fast-code']

@@ -199,10 +199,19 @@ routing is desired.
   replay work. Codex autonomously makes the next choice within any explicit user model
   constraints, without another user confirmation for ordinary continuation.
   Kimi may return HTTP 403 with "monthly usage limit" even while its usage endpoint
-  reports remaining allowance. Treat this explicit model error as authoritative: skip
-  every profile sharing that provider, autonomously choose DeepSeek or another available
-  provider, and retain its highest supported reasoning variant. Do not wait for a top-up
+  reports remaining allowance. Treat this explicit model error as an availability warning:
+  ordinarily prefer DeepSeek or another available provider, retaining its highest supported
+  reasoning variant. Do not wait for a top-up
   or treat a positive five-hour/weekly usage sample as proof that the monthly block cleared.
+  An endpoint reporting zero allowance remains unavailable until a refreshed sample
+  shows recovery; neither explicit retries nor monthly-flag releases override that verdict.
+  An explicit profile choice may still retry Kimi while marked exhausted; do not treat the
+  flag as a permission denial. A verified successful response clears the shared provider's
+  monthly flag automatically. Do not repeatedly retry a confirmed quota failure blindly.
+  A user-configured monthly reset schedule can release the previous cycle's block for
+  new attempts; it is not evidence that the provider has restored quota. Use the configured
+  billing time zone, not the host time zone. A fresh monthly error marks that provider
+  exhausted again; explicit retries, a later verified success or the next cycle can recover it.
   Review the failed task's diff and evidence, include its partial work and remaining writable
   files in the handoff, then choose a suitable profile and submit a bounded continuation
   with `--parent-task-id`. If replacing a queued task, cancel it first and confirm it never
