@@ -105,11 +105,16 @@ def submit(spec):
     if mode not in ('read', 'write'):
         raise ValueError('Mode must be read or write')
     scopes = [relative_scope(s, root) for s in spec.get('scopes', [])]
-    if mode == 'write' and not scopes:
-        raise ValueError('Write tasks require at least one explicit scope')
+    targets = spec.get('targets', [])
+    if not isinstance(targets, list) or any(not isinstance(x, str) or not x.strip() for x in targets):
+        raise ValueError('Targets must be an array of non-empty strings')
+    targets = [x.strip() for x in targets]
+    if mode == 'write' and not scopes and not targets:
+        raise ValueError('Write tasks require at least one explicit local scope or operational target')
     workspace = spec.get('workspace', 'auto')
     if workspace == 'auto':
-        workspace = 'isolated' if mode == 'write' and (spec.get('large') or '.' in scopes) else 'shared'
+        # Isolation partitions local paths; target-only work has no local scope to isolate.
+        workspace = 'isolated' if mode == 'write' and scopes and (spec.get('large') or '.' in scopes) else 'shared'
     if workspace not in ('shared', 'isolated'):
         raise ValueError('Workspace must be auto, shared or isolated')
     if workspace == 'isolated' and git_root(root) != root:
@@ -119,14 +124,20 @@ def submit(spec):
     if spec.get('complexity', 'normal') not in ('normal', 'deep'):
         raise ValueError('Complexity must be normal or deep')
     for command in spec.get('commands', []):
-        if not isinstance(command, str) or not command.strip() or any(x in command for x in '*?[]'):
-            raise ValueError('Allowed commands must be literal non-empty commands without permission wildcards')
+        if not isinstance(command, str) or not command.strip():
+            raise ValueError('Allowed commands must be non-empty strings')
+    # Restricted mode treats commands as an exact native allowlist, so permission
+    # wildcards are rejected there. Auto Approve runs tools without prompts and
+    # documents commands as suggested checks, where ordinary shell globs are legal.
+    if not c.get('auto_approve', True) and any(x in command for command in spec.get('commands', [])
+                                               for x in '*?[]'):
+        raise ValueError('Restricted-mode allowed commands must be literal commands without wildcards')
     t = {
         'id': 'job-' + uuid.uuid4().hex[:16], 'title': spec.get('title') or spec['objective'][:80],
         'objective': spec['objective'], 'acceptance': spec.get('acceptance', []),
         'requested_profile': spec.get('profile', 'auto'), 'mode': mode,
         'urgency': spec.get('urgency', 'background'), 'complexity': spec.get('complexity', 'normal'),
-        'workspace': workspace, 'source_dir': str(root), 'scopes': scopes,
+        'workspace': workspace, 'source_dir': str(root), 'scopes': scopes, 'targets': targets,
         'commands': spec.get('commands', []), 'resources': spec.get('resources', []),
         'web': bool(spec.get('web', False)),
         'status': 'queued', 'created_at': time.time(), 'updated_at': time.time(),
@@ -294,7 +305,10 @@ def main():
     s.add_argument('--large', action='store_true')
     s.add_argument('--scope', action='append', default=[])
     s.add_argument('--command', action='append', default=[])
-    s.add_argument('--resource', action='append', default=[])
+    s.add_argument('--resource', action='append', default=[],
+                   help='Shared lock name (repeatable); use stable names such as ssh:host:service')
+    s.add_argument('--target', action='append', default=[],
+                   help='Operational target (repeatable), e.g. ssh:example.com:nginx')
     s.add_argument('--acceptance', action='append', default=[])
     # Accept old callers without reintroducing an execution deadline.
     s.add_argument('--timeout-seconds', type=int, help=argparse.SUPPRESS)
@@ -373,7 +387,8 @@ def main():
             spec = json.loads(sys.stdin.read() if args.spec == '-' else Path(args.spec).read_text())
         else:
             spec = vars(args).copy()
-            spec.update(scopes=args.scope, commands=args.command, resources=args.resource)
+            spec.update(scopes=args.scope, commands=args.command, resources=args.resource,
+                        targets=args.target)
         result = submit(spec)
     elif args.cmd == 'status':
         if args.id:

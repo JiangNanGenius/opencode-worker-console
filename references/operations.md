@@ -25,10 +25,14 @@ delegate-opencode stats
 For complex text, use `submit --spec /absolute/task.json` or `--spec -` with a JSON
 object on stdin. Fields: `directory`, `objective`, `title`, `acceptance` (string array),
 `profile` (`auto` or a configured profile), `mode` (`read`/`write`), `scopes` (literal relative
-path array), `commands` (suggested checks; exact allowlist when Auto Approve is off), `resources` (shared lock-name array),
+path array, repository-local), `targets` (operational target array such as `ssh:example.com:nginx`),
+`commands` (suggested checks; exact allowlist when Auto Approve is off), `resources` (shared lock-name array),
 `urgency` (`fast`/`background`), `complexity` (`normal`/`deep`), `workspace`
 (`auto`/`shared`/`isolated`), `large`, and `web`.
-Do not put API keys or other secrets in tasks. Web fetching is opt-in with `web: true`.
+Do not put API keys or other secrets in tasks. With Auto Approve enabled (the default),
+all native tools, including web fetching, run without prompts. In restricted mode,
+`web: true` explicitly allows the `webfetch` tool and, as in Auto Approve mode, never
+expands scope, authority or any other capability.
 Use `group_title` for a readable main-task name, `group_id` to override the current Codex
 task ID, and `parent_task_id` for a child of an existing delegated task in the same group.
 
@@ -61,6 +65,46 @@ Astra for complex real interface operation, visual direction and subtle aestheti
 workers can contribute proposals and analysis. This allocation reflects available tools and
 strengths, not a category ban. Astra owns final acceptance; worker static evidence alone is
 not final UI proof.
+
+## Operational targets and remote systems
+
+`targets` declares authorized operational scope for work that is not repository-local:
+SSH hosts and services, deployment environments, APIs, databases, and files or data on
+remote systems. A write task needs at least one local `scopes` entry or one `targets`
+entry, so a remote-only write requires no Git repository and no local file scope and can
+run in an ordinary directory. Two write tasks naming the same target never run
+concurrently; use `--resource` with stable names such as `ssh:<host>:<service>`
+(for example `ssh:example.com:nginx`), not per-model locks, so every profile serializes
+against the same remote system.
+
+For an already-authorized remote service repair, submit one complete outcome:
+
+```sh
+delegate-opencode submit --directory "$PWD" --profile senior-code --mode write \
+  --target ssh:staging-api:api --resource ssh:staging-api:api \
+  --group-title 'Restore staging API' --title 'Repair and verify staging API' \
+  --acceptance 'Report the cause, actual remote changes, running version and health.' \
+  'Use the existing SSH alias staging-api and its remote runbook to diagnose and repair the api service. Verify the resulting service state and health. Preserve unrelated services.'
+```
+
+The working directory may be an ordinary local directory. Add `--scope` only for local
+files the outcome also needs to change; add repeated `--target` for additional authorized
+operational targets. The console's New task form exposes the same targets and resources.
+
+Workers choose suitable methods themselves: `ssh`, `scp` and `rsync`, plus existing
+project scripts, CI workflows and runbooks for routine deployment; established
+authenticated tools are reused instead of asking Astra to spell out commands. Connection
+setup comes from the user's existing `~/.ssh/config` and `ssh-agent` identities; only a
+genuinely new login or consent belongs to the user. When a new secret is unavoidable,
+register a metadata-only `credential` reference and run the command through
+`credential run` — never place key or password values in prompts, argv, task JSON or
+logs. Name the target and environment explicitly in the objective so the authorized
+system is unambiguous.
+
+Read tasks stay read-only everywhere, including remote systems: never use read mode to
+smuggle remote mutations. Remote effects are evidenced by command output, API responses
+and observed state the worker actually saw; local before/after snapshots do not cover
+remote changes and are never claimed as such.
 
 ## Local console
 
@@ -211,8 +255,9 @@ prompt and validates it itself. Missing or invalid reports become `needs_attenti
 ## Deployment and service control
 
 Deployment is a normal worker responsibility when included in the user's authorized outcome.
-Give the worker the workspace, intended environment, expected result and necessary writable
-scopes; use the same `--resource` for jobs deploying to the same target. Let it discover routine
+Give the worker the workspace, intended environment, expected result and the necessary
+writable scopes or operational targets; use the same `--resource` for jobs deploying to
+the same target, with stable `ssh:<host>:<service>` names rather than per-model locks. Let it discover routine
 commands from project scripts, CI workflows and runbooks. Provide a method for special processes
 only when needed. The worker owns build, deployment, routine troubleshooting and verification
 of the running version and health, and returns concise evidence for Astra's final review.

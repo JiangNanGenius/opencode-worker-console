@@ -1,6 +1,6 @@
 interface:
   display_name: "OpenCode Worker Pool"
   short_description: "Delegate complete outcomes to general-purpose agents"
-  default_prompt: "Use $delegate-opencode to delegate coherent authorized outcomes to general-purpose agents based on task fit, available tools and subscription allowance, without coding-only roles or a capability allowlist."
+  default_prompt: "Use $delegate-opencode to delegate coherent authorized outcomes to general-purpose agents based on task fit, available tools and subscription allowance, including SSH, remote operations, deployments, APIs, research and implementation. Let workers own investigation through verification; do not impose coding-only roles or a capability allowlist."
 policy:
   allow_implicit_invocation: true

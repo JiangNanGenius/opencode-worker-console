@@ -1,8 +1,10 @@
 import http.client
 import importlib
+import io
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -10,6 +12,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
+from contextlib import redirect_stdout
 from http.server import ThreadingHTTPServer
 import unittest
 from unittest.mock import patch
@@ -170,6 +173,90 @@ class PoolTests(unittest.TestCase):
         self.assertTrue(workspace.conflicts(a, b))
         b['resources'] = []
         self.assertFalse(workspace.conflicts(a, b))
+
+    def test_write_requires_scope_or_target(self):
+        with self.assertRaises(ValueError):
+            self.new(mode='write', scopes=[])
+        t = self.new(mode='write', scopes=[], targets=['ssh:example.com:nginx'])
+        self.assertEqual(t['scopes'], [])
+        self.assertEqual(t['targets'], ['ssh:example.com:nginx'])
+        self.assertEqual(t['workspace'], 'shared')
+        # Read tasks need neither and remain read-only, including remote targets.
+        r = self.new(mode='read', scopes=[], targets=['ssh:example.com:nginx'])
+        self.assertEqual(r['targets'], ['ssh:example.com:nginx'])
+
+    def test_target_validation_rejects_non_list_blank_and_non_string(self):
+        for bad in ('ssh:example.com', 42, {'target': 'ssh:x'}, [''], ['   '],
+                    ['ssh:a', 7], ['ssh:a', ' ']):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                self.new(targets=bad)
+        t = self.new(targets=[' ssh:example.com:nginx ', 'api:staging'])
+        self.assertEqual(t['targets'], ['ssh:example.com:nginx', 'api:staging'])
+
+    def test_targets_rejected_like_other_fields_when_credential_like(self):
+        (self.state / 'server-password').write_text('srv-pass-0123456789')
+        with self.assertRaises(ValueError):
+            self.new(targets=['ssh:example.com:' + 'srv-pass-0123456789'])
+        # Ordinary targets survive redaction untouched.
+        t = self.new(targets=['ssh:example.com:nginx'])
+        self.assertEqual(common.redact(common.public_task(t))['targets'],
+                         ['ssh:example.com:nginx'])
+
+    def test_public_task_prompt_and_collect_expose_targets(self):
+        t = self.new(mode='write', scopes=[], targets=['ssh:example.com:nginx'])
+        self.assertEqual(common.public_task(t)['targets'], ['ssh:example.com:nginx'])
+        collected = diagnostics.collect(t['id'])
+        self.assertEqual(collected['task']['targets'], ['ssh:example.com:nginx'])
+        prompt = worker.prompt(dict(t, directory=str(self.repo)))
+        self.assertIn('"targets"', prompt)
+        self.assertIn('ssh:example.com:nginx', prompt)
+
+    def test_cli_repeated_target_flag_propagates(self):
+        import service
+        argv = ['delegate.py', 'submit', '--directory', str(self.repo), '--mode', 'write',
+                '--target', 'ssh:example.com:nginx', '--target', 'api:staging',
+                '--profile', 'fast-code', 'Restart nginx on the staging host']
+        out = io.StringIO()
+        with patch.object(sys, 'argv', argv), patch.object(service, 'start', return_value={}), \
+                redirect_stdout(out):
+            self.assertIsNone(delegate.main())
+        parsed = json.loads(out.getvalue())
+        self.assertEqual(parsed['targets'], ['ssh:example.com:nginx', 'api:staging'])
+        self.assertEqual(parsed['scopes'], [])
+        self.assertEqual(common.task(parsed['id'])['targets'],
+                         ['ssh:example.com:nginx', 'api:staging'])
+
+    def test_same_target_writes_conflict_without_blocking_reads(self):
+        a = self.new(mode='write', scopes=[], targets=['ssh:h:nginx'])
+        b = self.new(mode='write', scopes=[], targets=['ssh:h:nginx'])
+        self.assertTrue(workspace.conflicts(a, b))
+        self.assertFalse(workspace.conflicts(a, dict(b, targets=['ssh:h:postgres'])))
+        reader = self.new(mode='read', scopes=[], targets=['ssh:h:nginx'])
+        self.assertFalse(workspace.conflicts(a, reader))
+        # Worktree isolation partitions local paths, not one shared remote target.
+        self.assertTrue(workspace.conflicts(dict(a, workspace='isolated'),
+                                            dict(b, workspace='isolated')))
+        # Existing local scope conflicts are unchanged.
+        x = self.new(scopes=['src'])
+        y = self.new(scopes=['src/x.py'])
+        self.assertTrue(workspace.conflicts(x, y))
+
+    def test_auto_approve_accepts_glob_commands_restricted_rejects(self):
+        self.c['auto_approve'] = True
+        self.config.write_text(json.dumps(self.c))
+        t = self.new(commands=['python3 -m unittest tests/test_*.py'])
+        self.assertEqual(t['commands'], ['python3 -m unittest tests/test_*.py'])
+        self.c['auto_approve'] = False
+        self.config.write_text(json.dumps(self.c))
+        with self.assertRaises(ValueError):
+            self.new(commands=['python3 -m unittest tests/test_*.py'])
+        # Exact allowlists stay legal and validated in restricted mode.
+        t = self.new(commands=['python3 -m unittest -v'])
+        t['directory'] = str(self.repo)
+        patterns = [r['pattern'] for r in worker.permissions(t)]
+        self.assertIn('cd ' + shlex.quote(str(self.repo)) + ' && python3 -m unittest -v', patterns)
+        with self.assertRaises(ValueError):
+            self.new(commands=[''])
 
     def test_reject_scope_escape_and_globs(self):
         for scope in ['../other', '/tmp/other', '*.py', '.git/config']:

@@ -106,6 +106,17 @@ delegate-opencode credential run --use DB_PASSWORD=db --use API_KEY=api --timeou
   asked to use; only general bridge redaction skips an optional missing or
   invalid registration.
 
+## Operational and SSH secrets
+
+For SSH, `scp` and `rsync` work, prefer the user's existing `~/.ssh/config` host aliases
+and `ssh-agent` identities; the bridge and its prompts never need the raw key or
+password, and only a genuinely new login or consent belongs to the user. When a script
+truly needs a new secret value, register a metadata-only reference and invoke the
+command through `credential run`, so the value stays out of prompts, argv, task JSON,
+logs and transcripts. Operational target names such as `ssh:<host>:<service>` are plain
+identifiers, never credentials, and follow the normal task-field rejection and redaction
+rules like any other submitted text.
+
 ## Limits, rotation and history
 
 - Redaction covers known local credentials and registered references, plus

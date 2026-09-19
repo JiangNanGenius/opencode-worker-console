@@ -7,7 +7,7 @@ Manage task ownership, parent/child tasks, worker profiles, automatic routing, s
 ## What it does
 
 - **Console access:** username/password sign-in, expiring sessions and sign-out protect both the dashboard and native OpenCode gateway. Optional LAN binding and explicit reverse-proxy origins are configured locally.
-- **Tasks:** delegate coherent bounded outcomes to general-purpose agents, including investigation, implementation, operations and verification. These examples are not a capability allowlist; select work by task fit, available tools and the user's authorization. Inspect evidence and cancel safely.
+- **Tasks:** delegate coherent bounded outcomes to general-purpose agents, including SSH/remote administration, deployment, CLI/API workflows, research, writing, data processing, implementation and verification. Remote-only changes can use operational targets without a dummy local file scope or Git repository. These examples are not a capability allowlist; select work by task fit, available tools and the user's authorization. Inspect evidence and cancel safely.
 - **Sessions:** browse across projects, search, create, rename, archive/restore, fork, permanently delete and open the native OpenCode conversation. Forking does not send a prompt.
 - **Models:** add, remove and disable profiles; choose provider/model and optional reasoning variant; configure routing and concurrency. Settings apply only when workers and native sessions are idle.
 - **Profile routing:** coordinators can select a profile from task semantics or use coarse automatic routing based on urgency and complexity. All tiers can own complete tasks.

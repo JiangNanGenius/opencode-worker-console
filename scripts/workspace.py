@@ -47,6 +47,11 @@ def overlap(a, b):
 def conflicts(a, b):
     if set(a.get('resources', [])) & set(b.get('resources', [])):
         return True
+    # Writes naming the same operational target mutate one remote system, which
+    # local worktree isolation cannot partition, so serialize them like resources.
+    if a['mode'] == 'write' and b['mode'] == 'write' and \
+            set(a.get('targets', [])) & set(b.get('targets', [])):
+        return True
     if a['workspace'] == 'isolated' or b['workspace'] == 'isolated':
         return False
     if a['mode'] != 'write' or b['mode'] != 'write':
