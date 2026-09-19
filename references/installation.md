@@ -2,6 +2,22 @@
 
 [简体中文](installation.zh-CN.md) · [README](../README.md) · [Agent runbook](agent-install.md)
 
+## Easy installation: send one message
+
+**Installation is simple: copy the message below into Codex or Claude Code and let your agent handle the setup.**
+
+```text
+Install and set up Worker Desk for me:
+https://github.com/JiangNanGenius/opencode-worker-console
+Read references/agent-install.md in the repository and follow it to complete installation, start the services, open the web console, and verify the result.
+Reuse my existing OpenCode configuration and install in a permanent user directory outside temporary conversation folders.
+Ask me only for a missing provider/model choice or a login I need to complete.
+```
+
+The agent handles the installation steps and checks. If an account needs to be connected or a model chosen, it will guide you through that part.
+
+Prefer to install it yourself? Follow the manual steps below.
+
 ## 1. Check prerequisites
 
 - macOS or Linux/POSIX, Python 3.9 or later, and Git.

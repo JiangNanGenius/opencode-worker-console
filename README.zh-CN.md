@@ -4,6 +4,20 @@
 
 [English](README.md) · [安装指引](references/installation.zh-CN.md) · [让模型帮你安装](references/agent-install.zh-CN.md)
 
+## 安装很简单：给模型发一条消息
+
+**只需复制下面这段话，在 Codex 或 Claude Code 中发送，模型就会按指引帮你完成安装和设置。**
+
+```text
+帮我安装并配置 Worker Desk：
+https://github.com/JiangNanGenius/opencode-worker-console
+请先阅读仓库中的 references/agent-install.zh-CN.md，按指引完成安装、启动服务、打开网页控台并验证结果。
+复用我已有的 OpenCode 配置，安装在常规用户目录，不要放在临时对话目录里。
+只有缺少供应商或模型选择、需要我完成登录时再问我。
+```
+
+安装步骤和检查交给模型处理；需要登录账号或选择模型时，它会引导你完成。
+
 让主 Agent 负责统筹、关键判断和最终验收，通过 OpenCode 把完整执行任务交给其他强模型。Worker Desk 提供持久任务队列、明确的工作区、模型配置，以及可以查看执行过程的网页控台。
 
 协作的前提，是执行模型已经足够强。调查仓库、实现功能、测试修复、文档、SSH 运维和部署，都可以作为完整任务下发。长上下文模型可以消化大型代码库和长文档，再返回结论与证据。合理分工可以降低高端模型额度依赖和总体金钱成本；**总 Token 未必减少，具体收益取决于任务、模型及套餐**。
@@ -31,13 +45,6 @@
 | 首次配置模型 | 控台里的 **设置向导** |
 | 下发任务、检查证据 | [Skill](SKILL.md) 和 [操作手册](references/operations.md) |
 | 内网或外网反代 | [账号与远程访问](references/remote-access.md) |
-
-也可以把这段话交给你的 Agent：
-
-> 帮我安装 https://github.com/JiangNanGenius/opencode-worker-console，
-> 先阅读 references/agent-install.zh-CN.md。复用我已有的 OpenCode 配置，
-> 装在独立于临时对话目录的常规位置，并验证结果。
-> 只有缺少模型/供应商选择，或需要我完成登录时再问我。
 
 ### 向导安装
 

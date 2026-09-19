@@ -4,6 +4,20 @@
 
 [简体中文](README.zh-CN.md) · [Installation](references/installation.md) · [Install with an AI agent](references/agent-install.md)
 
+## Easy installation: send one message
+
+**Installation is simple: copy the message below into Codex or Claude Code and let your agent handle the setup.**
+
+```text
+Install and set up Worker Desk for me:
+https://github.com/JiangNanGenius/opencode-worker-console
+Read references/agent-install.md in the repository and follow it to complete installation, start the services, open the web console, and verify the result.
+Reuse my existing OpenCode configuration and install in a permanent user directory outside temporary conversation folders.
+Ask me only for a missing provider/model choice or a login I need to complete.
+```
+
+The agent handles the installation steps and checks. If an account needs to be connected or a model chosen, it will guide you through that part.
+
 Let a capable coordinator handle planning, judgment and acceptance while OpenCode workers own complete execution tasks. Worker Desk connects them through a durable task queue, explicit workspaces, model profiles and an authenticated web console.
 
 The premise is that execution models are strong enough to deliver complete outcomes. Delegate repository investigation, implementation, test-and-fix, writing, SSH operations or deployment—not just tiny code fragments. Large-context workers can read substantial material and return concise findings with evidence. This can reduce reliance on premium-model capacity and overall monetary cost; **total tokens and savings depend on the workload, models and plans**.
@@ -31,13 +45,6 @@ The included **Codex skill** supplies delegation guidance. Claude Code and other
 | Configure models after installation | Open **Setup wizard** in the console |
 | Delegate and inspect work | [Skill](SKILL.md) and [operations](references/operations.md) |
 | Use LAN access or a reverse proxy | [Accounts and remote access](references/remote-access.md) |
-
-To let your agent handle installation, give it this request:
-
-> Install Worker Desk from https://github.com/JiangNanGenius/opencode-worker-console.
-> Read references/agent-install.md first. Reuse my existing OpenCode configuration,
-> keep the install outside temporary conversation folders, and verify the result.
-> Ask me only for a missing provider/model choice or a login I need to complete.
 
 ### Guided installation
 

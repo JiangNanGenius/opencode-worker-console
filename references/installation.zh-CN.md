@@ -2,6 +2,22 @@
 
 [English](installation.md) · [README](../README.zh-CN.md) · [模型安装指引](agent-install.zh-CN.md)
 
+## 安装很简单：给模型发一条消息
+
+**只需复制下面这段话，在 Codex 或 Claude Code 中发送，模型就会按指引帮你完成安装和设置。**
+
+```text
+帮我安装并配置 Worker Desk：
+https://github.com/JiangNanGenius/opencode-worker-console
+请先阅读仓库中的 references/agent-install.zh-CN.md，按指引完成安装、启动服务、打开网页控台并验证结果。
+复用我已有的 OpenCode 配置，安装在常规用户目录，不要放在临时对话目录里。
+只有缺少供应商或模型选择、需要我完成登录时再问我。
+```
+
+安装步骤和检查交给模型处理；需要登录账号或选择模型时，它会引导你完成。
+
+想自己动手安装，也可以按下面的步骤操作。
+
 ## 1. 检查环境
 
 - macOS 或 Linux/POSIX、Python 3.9+、Git。
