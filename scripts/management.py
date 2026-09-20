@@ -146,6 +146,9 @@ def settings():
                           'variant': profile.get('variant'), 'enabled': profile.get('enabled', True)}
     out = {'profiles': profiles, 'max_parallel_per_owner': _per_owner_limit(c.get('max_parallel_per_owner')),
            'kimi_reserve_percent': c.get('kimi_reserve_percent'),
+           'kimi_low_weekly_threshold_percent': c.get('kimi_low_weekly_threshold_percent', 5),
+           'kimi_low_weekly_k3_limit': c.get('kimi_low_weekly_k3_limit', 1),
+           'auto_reroute_on_quota_exhaustion': c.get('auto_reroute_on_quota_exhaustion', True),
            'revision': c.get('revision', 0), 'auto_approve': c.get('auto_approve', True)}
     import cleanup
     import quota
@@ -220,6 +223,15 @@ def _validate_settings(body):
     profiles = {name: _clean_profile(name, value) for name, value in raw_profiles.items()}
     result = {'profiles': profiles, 'max_parallel_per_owner': _int_setting(body, 'max_parallel_per_owner', 1, 16),
               'kimi_reserve_percent': _int_setting(body, 'kimi_reserve_percent', 0, 100)}
+    if 'kimi_low_weekly_threshold_percent' in body:
+        result['kimi_low_weekly_threshold_percent'] = _int_setting(
+            body, 'kimi_low_weekly_threshold_percent', 0, 100)
+    if 'kimi_low_weekly_k3_limit' in body:
+        result['kimi_low_weekly_k3_limit'] = _int_setting(body, 'kimi_low_weekly_k3_limit', 0, 16)
+    if 'auto_reroute_on_quota_exhaustion' in body:
+        if not isinstance(body['auto_reroute_on_quota_exhaustion'], bool):
+            raise ValueError('auto_reroute_on_quota_exhaustion must be boolean')
+        result['auto_reroute_on_quota_exhaustion'] = body['auto_reroute_on_quota_exhaustion']
     if 'auto_approve' in body:
         if not isinstance(body['auto_approve'], bool):
             raise ValueError('auto_approve must be boolean')

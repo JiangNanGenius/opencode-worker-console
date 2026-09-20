@@ -254,7 +254,13 @@ def choose_ready(all_tasks, c, q, admissions=None):
             choices.append((t, None, 'owner_at_capacity'))
             continue
         explicit = (t.get('requested_profile') or 'auto') != 'auto'
-        profile, why = quota.route(t, c, q, admissions)
+        # At the configured low-weekly threshold, normal work leaves Kimi and
+        # native K3 deep work has one global slot by default. Other concurrency
+        # remains per owning Codex conversation.
+        route_task, guard = quota.apply_kimi_low_weekly_guard(t, c, q, active)
+        profile, why = quota.route(route_task, c, q, admissions)
+        if guard:
+            why += ':kimi_low_weekly_guard_' + str(round(guard['remaining_percent'], 3)) + 'pct'
         if profile is None:
             if admissions is not None:
                 admissions.discard()

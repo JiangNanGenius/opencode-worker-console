@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import common
 import diagnostics
 import quota
+import routing
 import workspace
 import worker
 import delegate
@@ -197,6 +198,61 @@ class PoolTests(unittest.TestCase):
         self.assertTrue(quota.allowed('kimi-for-coding', self.q, 'normal')[0])
         # An explicitly configured nonzero reserve is preserved.
         self.assertFalse(quota.allowed('kimi-for-coding', self.q, 'normal', 20)[0])
+
+    def test_low_weekly_guard_uses_overall_and_allows_only_one_native_k3(self):
+        self.c['profiles'].update({
+            'ark-evolving': {'model': 'ark/doubao-seed-evolving'},
+            'ark-k3': {'model': 'ark/kimi-k3'},
+        })
+        self.c['routing_policy'] = {
+            'background': [[{'profile': 'senior-code', 'weight': 1},
+                            {'profile': 'ark-evolving', 'weight': 1}],
+                           [{'profile': 'fallback', 'weight': 1}]],
+            'deep': [[{'profile': 'deep-research', 'weight': 2},
+                      {'profile': 'ark-k3', 'weight': 1}],
+                     [{'profile': 'senior-code', 'weight': 1},
+                      {'profile': 'ark-evolving', 'weight': 1}],
+                     [{'profile': 'fallback', 'weight': 1}]],
+        }
+        self.c.update(kimi_low_weekly_threshold_percent=5, kimi_low_weekly_k3_limit=1)
+        self.q['kimi-for-coding']['windows'] = [
+            {'name': 'window_0', 'remaining_percent': 99, 'duration_minutes': 300, 'valid': True},
+            {'name': 'overall', 'remaining_percent': 3, 'valid': True},
+        ]
+        self.q['ark'] = {'state': 'ok', 'stale': False, 'sampled_at': time.time(),
+                         'available': True, 'windows': [{'name': 'weekly',
+                                                        'remaining_percent': 70, 'valid': True}]}
+        self.config.write_text(json.dumps(self.c))
+        normal = self.new(profile='auto', tier='normal', mode='read', scopes=[])
+        deep_a = self.new(profile='auto', tier='deep', mode='read', scopes=[])
+        deep_b = self.new(profile='auto', tier='deep', mode='read', scopes=[])
+        choices = delegate.choose_ready(
+            [common.task(normal['id']), common.task(deep_a['id']), common.task(deep_b['id'])],
+            self.c, self.q, routing.Admissions.load(self.c['routing_policy']))
+        selected = {task['id']: (profile, reason) for task, profile, reason in choices}
+        self.assertEqual(selected[normal['id']][0], 'ark-evolving')
+        deep_profiles = [selected[deep_a['id']][0], selected[deep_b['id']][0]]
+        self.assertEqual(deep_profiles.count('deep-research'), 1)
+        self.assertEqual(deep_profiles.count('ark-k3'), 1)
+        self.assertTrue(all('kimi_low_weekly_guard_3.0pct' in selected[x['id']][1]
+                            for x in (normal, deep_a, deep_b)))
+
+    def test_low_weekly_signal_is_unknown_when_only_five_hour_window_exists(self):
+        self.assertIsNone(quota.kimi_weekly_remaining_percent(self.q))
+
+    def test_low_weekly_guard_also_applies_to_legacy_single_profile_routes(self):
+        self.c.update(kimi_low_weekly_threshold_percent=5, kimi_low_weekly_k3_limit=1,
+                      routing={'fast': 'fallback', 'background': 'senior-code',
+                               'deep': 'deep-research'})
+        self.q['kimi-for-coding']['windows'] = [
+            {'name': 'overall', 'remaining_percent': 3, 'valid': True}]
+        normal = {'requested_profile': 'auto', 'tier': 'normal', 'complexity': 'normal'}
+        guarded, _ = quota.apply_kimi_low_weekly_guard(normal, self.c, self.q, [])
+        self.assertEqual(quota.route(guarded, self.c, self.q),
+                         (None, 'routing_guard_excluded_profile'))
+        deep = {'requested_profile': 'auto', 'tier': 'deep', 'complexity': 'deep'}
+        guarded, _ = quota.apply_kimi_low_weekly_guard(deep, self.c, self.q, [])
+        self.assertEqual(quota.route(guarded, self.c, self.q)[0], 'deep-research')
 
     def test_expired_zero_stays_unavailable_until_positive_refresh(self):
         q = {'deepseek': {'state': 'unavailable', 'sampled_at': time.time() - 1000, 'available': False}}

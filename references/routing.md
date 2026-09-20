@@ -103,6 +103,12 @@ Only the first stage with an available candidate participates. Coordinators subm
 Weighted admission is durable and counts admitted jobs, not tokens or money. Waiting for owner
 capacity, scope locks or provider recovery consumes no turn.
 
+The preset also defaults to a 5% Kimi weekly/overall guard with one global native-K3 slot.
+At or below that threshold, automatic Normal work excludes Kimi; automatic Deep work may use
+one native K3 job while other jobs select Ark K3 or later stages. The bridge prefers the valid
+`overall` aggregate and otherwise an exact seven-day window, never the five-hour window. Both
+the threshold and slot count are editable under **Models & routing**.
+
 If automatic routing reaches the configured `fallback` after skipping at least one preferred
 stage, task status exposes `fallback_used: true` and a routing notice. Ordinary model choices are
 silent; coordinators tell the user only when this final fallback is actually used.
@@ -118,9 +124,10 @@ economic trade. Fresh reset-aware quota telemetry can move the ratios by one ste
 For each valid window, runway is `remaining fraction / time fraction until reset`. The most
 constrained window represents the provider. Stale, missing or unauthenticated telemetry keeps the
 baseline. Ark Auto, Evolving and K3 share one runway, so heavy Auto use naturally reduces later
-Ark share. Endpoint-confirmed zero removes the provider. A dispatched task remains pinned; the
-coordinator inspects partial work and continues with the same tier, while the bridge selects the
-next available model.
+Ark share. Endpoint-confirmed zero removes the provider. A confirmed quota/window stop or
+model-origin HTTP 429 can continue within the same OpenCode session on the next route. The
+transition keeps the transcript and workspace, adds the failed provider to the exclusion set,
+and instructs the new model not to repeat completed or external side effects.
 
 ## AFP-equivalent
 

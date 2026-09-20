@@ -80,7 +80,7 @@ No real request is required merely to render the wizard or run fixture tests. Re
 - A normal install/update waits for idle work. Do not cancel another conversation's tasks.
 - `python3 scripts/install.py --live` is for compatible code-only updates. It retains OpenCode while restarting observer/console; it cannot change model/binary configuration. Never assume every migration is live-compatible.
 - An uncertain dispatch must be inspected through the existing task/session before retrying. Never blindly replay side effects.
-- For provider billing failure, inspect recovery and partial work, then continue with the same tier and `profile=auto`; the bridge selects the next available stage. Endpoint-confirmed zero remains unavailable; Kimi hidden monthly errors have a separate explicit-retry recovery flow.
+- Confirmed provider quota/window errors and model-origin 429s continue in the same OpenCode session on the next route by default. Inspect `route_history` and partial work. If automatic rerouting is disabled or no route remains, continue with the same tier and `profile=auto`; endpoint-confirmed zero remains unavailable and Kimi hidden monthly errors retain the separate explicit-retry path.
 - Do not delete task ledgers, auth state, worktrees or artifacts to “start clean.” Existing runtime backups live under private state `releases/`; restoration should preserve current config/state and respect active tasks.
 
 ## Coordinator handoff

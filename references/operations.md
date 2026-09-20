@@ -153,9 +153,25 @@ tasks can use available plan allowance. If configured higher, it holds ordinary 
 that percentage while allowing deep work. Before dispatch, an automatic task skips unavailable
 stages and the bridge chooses the next configured stage. It returns `fallback_used: true` and a
 routing notice only when every preferred stage was unavailable or exhausted and the final
-fallback was dispatched. A running task is never silently migrated after a model failure;
-continue the remaining outcome with the same tier and `profile=auto`, so the recorded provider
-block lets the bridge choose the next stage. If none is suitable, it reports that blockage.
+fallback was dispatched.
+
+The separate low-weekly guard defaults to 5% and one native-K3 slot. It uses a fresh valid Kimi
+`overall` aggregate, falling back only to an exact seven-day window; the five-hour window is not
+a weekly proxy. At or below the threshold, automatic Normal tasks exclude every Kimi profile.
+Automatic Deep tasks may use a Kimi profile in the first Deep stage only while fewer than the
+configured global native-K3 slot count are active. Other Deep tasks choose the Ark peer or a
+later stage. Explicit profile requests remain an operator override. Both settings are editable.
+
+After dispatch, a model-origin HTTP 429, explicit usage-window exhaustion, insufficient balance
+or unequivocal monthly-plan exhaustion is a confirmed capacity stop. When automatic quota
+rerouting is enabled, the bridge confirms the old attempt has stopped, excludes its provider,
+applies the low-weekly guard again and submits a continuation to the next route in the same
+OpenCode session. This preserves transcript, workspace and partial work. The continuation tells
+the new model to inspect existing state and not repeat completed edits, deployments, messages,
+payments, destructive operations or other external side effects. It never replays the original
+prompt. Authentication failures, network failures and ordinary model errors do not trigger this
+transition. If no route is suitable, rerouting is disabled, or acknowledgement is uncertain, the
+task surfaces recovery guidance instead.
 Fresh telemetry also permits later use of a replenished account. Queue status records
 the reason. Unknown quota is not a promise of availability.
 
@@ -201,16 +217,16 @@ credential. It persists `released: model_success` with the completion time as th
 preserves message IDs and the credential binding. Pending, empty, failed, unattributed or older
 replies never clear anything.
 
-`status`, `wait` and `collect` expose recovery guidance; no dispatched task is automatically
-replayed. Recovery separates two facts: `automatic_fallback: false` means the bridge itself
-never switches models or replays work, while `autonomous_reselection: true` plus
-`autonomous_next_action` is the explicit coordinator instruction to choose a candidate
-profile and continue without asking the user or waiting for quota. Candidates carry the
-configured `variant`, so a continuation keeps maximum reasoning. For a monthly blockage an
-explicitly requested profile on the blocked provider is advisory and may still be submitted to
-try; alternatives are still chosen from providers without the block. Inspect partial work before
-creating a deliberate continuation linked by `--parent-task-id`; submit a new task rather
-than replaying the failed one. Keep healthy capacity waits alive, but act on a quota blockage.
+`status`, `wait` and `collect` expose `route_history` for successful in-session transitions and
+recovery guidance when no automatic transition occurred. In the latter case,
+`automatic_fallback: false` describes that terminal recovery result, while
+`autonomous_reselection: true` plus `autonomous_next_action` tells the coordinator to create a
+same-tier continuation without asking the user or waiting for quota. Candidates and automatic
+continuations retain the configured reasoning `variant`. For a monthly blockage, an explicitly
+requested profile on the blocked provider is advisory and may still be submitted to try;
+automatic routes and alternatives avoid it. Inspect partial work before creating any deliberate
+continuation linked by `--parent-task-id`. Keep healthy non-capacity waits alive, but act on a
+confirmed quota or rate-limit stop.
 
 For a future actual recovery, the narrow manual path is
 `delegate-opencode quota --retry-provider PROVIDER`. It is labeled as a manual retry
@@ -333,7 +349,8 @@ Each error carries `source`, `code`, `message`, `retryable` (null when unknown),
 A model billing error also carries `billing: true` and `billing_reason`
 (`insufficient_balance` or `monthly_usage_limit`). Only a model origin qualifies: transport
 text, tool output containing the same phrase, ordinary HTTP 403 authorization failures and
-429 rate limits never trip the billing circuit. Historical compact billing errors inform
+429 rate limits never trip the durable billing circuit, but a model-origin 429 is a confirmed
+capacity stop eligible for same-session routing continuation. Historical compact billing errors inform
 `recovery` read-only and never re-arm or clear a circuit by themselves.
 Errors from earlier failed tool attempts can coexist with a successfully completed report.
 A transport error after dispatch means the prompt may have been accepted: observe the

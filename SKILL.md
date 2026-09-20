@@ -124,6 +124,12 @@ DeepSeek; ordinary work uses native Kimi K2.8 and Ark Seed Evolving at 1:1, then
 direct DeepSeek; deep work uses native Kimi K3 and Ark K3 at 2:1, then the ordinary pair, Ark
 Auto and direct DeepSeek.
 
+The bridge also owns low-weekly protection. By default, when the fresh authoritative Kimi
+weekly/overall pool is at or below 5%, automatic Normal work leaves Kimi and only one native
+K3 Deep task may run globally. Other Deep work uses the configured Ark peer or later stages.
+The threshold and native-K3 slot count are operator settings. A five-hour window is never
+mistaken for the weekly pool, and stale or missing telemetry does not invent a percentage.
+
 Ark Auto (`ark-code-latest`) follows the model setting in the Ark console. Only a console
 setting of Auto enables provider-side automatic routing and its applicable discounts. It
 cannot guarantee K3, but the Worker Desk client ceiling is 1,024,000 so Auto can use a
@@ -178,12 +184,19 @@ a prompt whose acceptance is uncertain, or duplicate side effects during a conti
 ## Availability and recovery
 
 Errors, tool failures, command exits, questions and permission requests reach Codex through
-`status`, `wait` and `collect`. Inspect `recovery`, refresh quota and keep the task's capability
-tier unless the work itself changed. Resubmit with `profile=auto`; the bridge excludes the known
-unavailable provider and selects the next configured stage. Review partial work and carry
-forward the remaining outcome with `--parent-task-id`; the bridge never changes an already dispatched model or blindly replays operations.
-Ordered fallback and weighted selection apply only before initial dispatch. Do not request a top-up or wait on depleted allowance while a
-suitable alternative can continue the authorized task.
+`status`, `wait` and `collect`. A model-origin HTTP 429, an explicit usage-window exhaustion,
+HTTP 402/insufficient balance, or an unequivocal monthly-plan exhaustion is a confirmed
+capacity stop. With automatic quota rerouting enabled, the bridge stops the exhausted attempt,
+keeps the same OpenCode session and workspace, excludes that provider, and sends a continuation
+to the next route. The continuation explicitly inspects prior work and must not repeat completed
+or external side effects. This preserves context; it is not a replay of the original prompt.
+
+Keep waiting on the same job after a recorded `route_history` transition. If automatic rerouting
+is disabled, no route remains, or prompt acknowledgement is uncertain, inspect `recovery`, keep
+the capability tier and submit a deliberate `profile=auto` continuation with
+`--parent-task-id`. Do not request a top-up or wait on depleted allowance while a suitable
+alternative can continue the authorized task. Authentication, transport and ordinary model
+errors do not trigger quota rerouting.
 
 When `status`, `wait` or `collect` returns `fallback_used: true`, tell the user once that all
 preferred routing stages were unavailable or exhausted and the configured fallback was used.

@@ -51,11 +51,13 @@ class ErrorBridgeTests(unittest.TestCase):
             'name': 'APIError', 'data': {'message': 'Rate limit exceeded', 'statusCode': 429,
                                        'isRetryable': True}}}, 'parts': []}]
         result = worker.finish(common.task('job-error'), messages)
-        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['status'], 'needs_attention')
+        self.assertEqual(result['reason'], 'provider_usage_window_limit')
         compact = diagnostics.collect('job-error')
         self.assertEqual(compact['task']['errors'][0]['message'], 'Rate limit exceeded')
         self.assertEqual(compact['result']['errors'][0]['http_status'], 429)
-        self.assertTrue(compact['result']['errors'][0]['retryable'])
+        self.assertFalse(compact['result']['errors'][0]['retryable'])
+        self.assertTrue(compact['result']['errors'][0]['usage_window'])
         self.assertEqual(compact['task']['session_id'], 'ses_error')
 
     def test_tool_nonzero_and_recovered_report_keep_error(self):

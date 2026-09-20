@@ -109,7 +109,7 @@ Codex chooses Fast, Normal or Deep and submits with `profile=auto`; the bridge o
 
 - **Tasks:** expand details directly under a task; inspect live activity and input/output/reasoning/cache tokens without leaving the console. The current filter shows recorded worker totals; these exclude coordinator usage and are not a cost estimate. Parent/child ownership, live guidance, structured errors and full transcripts remain available.
 - **Sessions:** search, create, rename, fork, archive/restore, workspace binding, deletion and native OpenCode links. Forking alone sends no prompt.
-- **Models, usage and economics:** visual profiles and route stages for one provider, primary/backup, fixed pools or opt-in quota adaptation; DeepSeek balance, Kimi plan windows and Ark AFP windows. The console shows live dynamic shares and a configurable cost ruler (`1 AFP-equivalent = ¥0.002` by default); AFP-equivalent is not Kimi quota.
+- **Models, usage and economics:** visual profiles and route stages for one provider, primary/backup, fixed pools or opt-in quota adaptation; DeepSeek balance, Kimi plan windows and Ark AFP windows. A configurable low-weekly guard reserves the last Kimi allowance for a bounded number of native K3 jobs, and confirmed quota/429 stops can continue in the same session on the next route. The console shows live dynamic shares and a configurable cost ruler (`1 AFP-equivalent = ¥0.002` by default); AFP-equivalent is not Kimi quota.
 - **Parallel work:** four running workers per owning Codex conversation by default; independent capacity across conversations. Conflicting files/resources and provider availability still govern dispatch.
 - **Workspaces:** disjoint shared scopes, remote operational targets or isolated Git worktrees; review patches before integration.
 - **Long jobs:** no artificial model-step, tool-call or total-runtime cap. Observe and guide through completion; never blindly replay uncertain operations.
@@ -151,7 +151,7 @@ Provider login, console login and the internal server password are separate. Kee
 
 Services run in the background and start on demand after reboot; there is no login daemon and no promise of execution through logout/sleep. Model changes require idle workers and native sessions. Compatible code-only live updates retain OpenCode; see the installation guide.
 
-Kimi hidden monthly exhaustion differs from endpoint-confirmed zero allowance. The coordinator inspects partial work and reselects when appropriate; the bridge does not blindly switch models or replay operations. [Recovery](references/operations.md#quota-and-routing).
+Kimi hidden monthly exhaustion differs from endpoint-confirmed zero allowance. Confirmed quota, window and model-origin 429 stops can continue on the next route in the same OpenCode session, preserving context and partial work without replaying the original task. [Recovery](references/operations.md#quota-and-routing).
 
 ## Development
 

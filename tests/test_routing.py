@@ -719,7 +719,7 @@ class ManagementPolicyTests(unittest.TestCase):
 
 
 class WindowClassificationTests(unittest.TestCase):
-    """Explicit 5-hour exhaustion is distinct from monthly blocks and 429 throttling."""
+    """Explicit windows and model 429s are capacity stops, distinct from billing."""
 
     def test_explicit_5h_window_classifies(self):
         for message in ["You've reached your 5-hour usage limit for this window.",
@@ -737,9 +737,10 @@ class WindowClassificationTests(unittest.TestCase):
         self.assertEqual(diagnostics.billing_kind({'data': {'statusCode': 403, 'message': MONTHLY_MESSAGE}}),
                          diagnostics.MONTHLY_REASON)
 
-    def test_429_and_auth_and_throttling_are_preserved(self):
-        for status in (401, 429):
-            self.assertIsNone(diagnostics.usage_window_kind(status, WINDOW_5H), status)
+    def test_429_is_capacity_stop_while_auth_and_ambiguous_text_are_preserved(self):
+        self.assertEqual(diagnostics.usage_window_kind(429, 'Rate limit exceeded'),
+                         diagnostics.WINDOW_REASON)
+        self.assertIsNone(diagnostics.usage_window_kind(401, WINDOW_5H))
         for message in ['Rate limit exceeded, retry later',
                         'Rate limit exceeded, retry in 5 hours',
                         'You do not have permission to view 5-hour quota',
@@ -904,6 +905,7 @@ class WorkerWindowRecoveryTests(unittest.TestCase):
         with patch.object(worker, 'call', return_value=[]) as call, \
              patch.object(worker, 'api', return_value=status), \
              patch.object(worker, 'stop', return_value=True) as stop, \
+             patch.object(worker, 'reroute_after_capacity_stop', return_value=False), \
              patch.object(worker, 'finish', return_value={'done': True}) as finish:
             worker.run_task('job-window', threading.Event())
         stop.assert_called_once()
@@ -926,17 +928,41 @@ class WorkerWindowRecoveryTests(unittest.TestCase):
         self.assertFalse(any(c.args[1] == '/prompt_async' for c in call.call_args_list))
         self.assertEqual(common.task('job-window')['status'], 'uncertain')
 
-    def test_429_retry_with_duration_text_keeps_waiting(self):
+    def test_429_retry_stops_and_enters_capacity_reroute(self):
         shutdown = threading.Event()
         status = {'ses_window': {'type': 'retry', 'statusCode': 429, 'message': WINDOW_5H}}
         with patch.object(worker, 'call', return_value=[]), \
              patch.object(worker, 'api', return_value=status), \
-             patch.object(worker, 'stop') as stop, \
+             patch.object(worker, 'stop', return_value=True) as stop, \
+             patch.object(worker, 'reroute_after_capacity_stop',
+                          side_effect=lambda *args: shutdown.set() or True) as reroute, \
              patch.object(worker, 'finish', return_value={'done': True}) as finish:
-            threading.Timer(0.4, shutdown.set).start()
             worker.run_task('job-window', shutdown)
-        self.assertFalse(stop.called)
+        stop.assert_called_once()
+        reroute.assert_called_once()
         self.assertFalse(finish.called)
+
+    def test_capacity_reroute_keeps_session_and_selects_same_tier_peer(self):
+        common.write_json(self.state / 'quota.json', {})
+        with patch.object(worker, 'call', return_value=[]) as call:
+            self.assertTrue(worker.reroute_after_capacity_stop(
+                common.task('job-window'), 'kimi-for-coding', 'provider_usage_or_rate_limit'))
+        task = common.task('job-window')
+        self.assertEqual(task['session_id'], 'ses_window')
+        self.assertEqual(task['profile'], 'ark-k3')
+        self.assertEqual(task['excluded_providers'], ['kimi-for-coding'])
+        self.assertEqual(task['route_history'][-1]['to_profile'], 'ark-k3')
+        prompt_call = next(c for c in call.call_args_list if c.args[1] == '/prompt_async')
+        self.assertEqual(prompt_call.args[3]['model']['providerID'], 'ark')
+        self.assertIn('Do not repeat completed', prompt_call.args[3]['parts'][0]['text'])
+
+    def test_capacity_reroute_respects_explicit_model_pin(self):
+        common.update('job-window', requested_profile='deep-research')
+        with patch.object(worker, 'call') as call:
+            self.assertFalse(worker.reroute_after_capacity_stop(
+                common.task('job-window'), 'kimi-for-coding', 'provider_usage_or_rate_limit'))
+        call.assert_not_called()
+        self.assertEqual(common.task('job-window')['profile'], 'deep-research')
 
     def test_generic_retry_keeps_waiting(self):
         status = {'ses_window': {'type': 'retry', 'message': 'Rate limit exceeded, retry later'}}

@@ -91,12 +91,13 @@ class BillingClassificationTests(unittest.TestCase):
         self.assertIsNone(errors[0].get('billing'))
         self.assertNotIn('billing_reason', errors[0])
 
-    def test_non_billing_model_error_keeps_provider_action(self):
+    def test_model_429_is_capacity_stop_not_billing(self):
         raw = {'data': {'statusCode': 429, 'message': 'Rate limit exceeded', 'isRetryable': True}}
         error = diagnostics.from_messages([{'info': {'id': 'msg_r', 'role': 'assistant',
                                                      'error': raw}, 'parts': []}])[0]
         self.assertNotIn('billing', error)
-        self.assertEqual(error['suggested_action'], 'inspect_model_error')
+        self.assertTrue(error['usage_window'])
+        self.assertEqual(error['suggested_action'], 'inspect_partial_work_and_resubmit_same_tier_auto')
 
 
 if __name__ == '__main__':

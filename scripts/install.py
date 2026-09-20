@@ -90,9 +90,19 @@ DEFAULT_ROUTING_DYNAMICS = {
 }
 # Concurrency is capped per owning Codex conversation (owner_thread_id), never
 # globally or per provider; the scheduler reads max_parallel_per_owner (default 4).
-# kimi_reserve_percent is optional (0 = no reservation); plan-backed Kimi is
-# already preferred whenever subscription allowance exists.
-TOP_LEVEL_DEFAULTS = {'max_parallel_per_owner': 4, 'kimi_reserve_percent': 0, 'auto_approve': True}
+# The low-weekly guard is independent from ordinary weighted routing. Once the
+# authoritative Kimi weekly/overall allowance reaches the threshold, normal work
+# leaves Kimi and only a bounded number of native-K3 deep jobs may run at once.
+# Confirmed quota errors can continue in the same OpenCode session on the next
+# same-tier route, preserving context and partial work without replaying the task.
+TOP_LEVEL_DEFAULTS = {
+    'max_parallel_per_owner': 4,
+    'kimi_reserve_percent': 0,
+    'kimi_low_weekly_threshold_percent': 5,
+    'kimi_low_weekly_k3_limit': 1,
+    'auto_reroute_on_quota_exhaustion': True,
+    'auto_approve': True,
+}
 ACTIVE_STATUSES = {'queued', 'starting', 'running', 'stopping', 'uncertain'}
 ENV_VARS = ('DELEGATE_INSTALL', 'DELEGATE_STATE', 'DELEGATE_CONFIG', 'DELEGATE_BIN_DIR')
 

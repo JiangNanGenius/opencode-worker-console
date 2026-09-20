@@ -173,6 +173,7 @@ def public_task(t):
             'group_id', 'group_title', 'parent_task_id', 'owner_thread_id',
             'workspace', 'source_dir', 'directory', 'scopes', 'targets', 'resources',
             'excluded_providers', 'session_id', 'session_deleted', 'session_directory', 'guidance',
+            'route_history',
             'created_at', 'started_at', 'finished_at', 'reason', 'queue_reason', 'route_reason',
             'actual_models', 'fallback_used', 'routing_notice', 'review_required', 'artifact_dir',
             'summary', 'elapsed_seconds', 'errors', 'recovery', 'auto_approve']

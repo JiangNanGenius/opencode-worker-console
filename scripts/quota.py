@@ -582,6 +582,84 @@ def allowed(provider, q, complexity, threshold=0, retry_monthly=False):
     return True, 'quota_unknown' if v.get('stale', True) or available is None else 'quota_available'
 
 
+def kimi_weekly_remaining_percent(q):
+    """Fresh authoritative Kimi weekly/overall remaining percent, else None.
+
+    The live Kimi endpoint currently exposes the weekly plan pool as ``overall``
+    without a duration. Some versions instead expose a seven-day window. Prefer
+    the explicit overall aggregate, then the exact 10080-minute window; never use
+    the much shorter five-hour window as a weekly signal.
+    """
+    v = q.get('kimi-for-coding', {})
+    if not isinstance(v, dict) or v.get('stale', True):
+        return None
+    windows = v.get('windows') if isinstance(v.get('windows'), list) else []
+    for name in ('overall',):
+        for w in windows:
+            if (isinstance(w, dict) and w.get('name') == name and w.get('valid', True)
+                    and isinstance(w.get('remaining_percent'), (int, float))):
+                return float(w['remaining_percent'])
+    for w in windows:
+        if (isinstance(w, dict) and w.get('duration_minutes') == 10080
+                and w.get('valid', True)
+                and isinstance(w.get('remaining_percent'), (int, float))):
+            return float(w['remaining_percent'])
+    return None
+
+
+def kimi_low_weekly(q, c):
+    threshold = c.get('kimi_low_weekly_threshold_percent', 5)
+    if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or threshold < 0:
+        threshold = 5
+    remaining = kimi_weekly_remaining_percent(q)
+    return remaining is not None and remaining <= threshold, remaining
+
+
+def apply_kimi_low_weekly_guard(t, c, q, active=()):
+    """Return (routing task, guard metadata) for automatic low-weekly protection.
+
+    Explicit profile requests remain an operator override. Automatic normal work
+    excludes every Kimi profile. Automatic deep work may still use a Kimi profile
+    from the first deep stage while fewer than the configured number are active;
+    lower deep stages cannot consume Kimi's last weekly allowance.
+    """
+    low, remaining = kimi_low_weekly(q, c)
+    if not low or (t.get('requested_profile') or 'auto') != 'auto':
+        return t, None
+    policy = routing.configured(c) or {}
+    first_deep_stage = (policy.get('deep') or [[]])[0]
+    native_k3_profiles = {
+        entry.get('profile') for entry in first_deep_stage
+        if isinstance(entry, dict)
+        and str((c.get('profiles', {}).get(entry.get('profile')) or {}).get('model', '')).split('/', 1)[0]
+        == 'kimi-for-coding'
+    }
+    native_k3_profiles.discard(None)
+    if not native_k3_profiles:
+        legacy_deep = (c.get('routing') or {}).get('deep')
+        legacy_profile = c.get('profiles', {}).get(legacy_deep) or {}
+        if (legacy_deep and str(legacy_profile.get('model', '')).split('/', 1)[0]
+                == 'kimi-for-coding'):
+            native_k3_profiles.add(legacy_deep)
+    all_kimi_profiles = {
+        name for name, value in c.get('profiles', {}).items()
+        if isinstance(value, dict)
+        and str(value.get('model', '')).split('/', 1)[0] == 'kimi-for-coding'
+    }
+    if not all_kimi_profiles:
+        return t, None
+    limit = c.get('kimi_low_weekly_k3_limit', 1)
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 0 <= limit <= 16:
+        limit = 1
+    excluded = set(t.get('excluded_profiles') or []) | all_kimi_profiles
+    native_running = sum(1 for item in active if item.get('profile') in native_k3_profiles)
+    if tier_of(t) == 'deep' and native_running < limit:
+        excluded -= native_k3_profiles
+    routed = dict(t, excluded_profiles=sorted(excluded))
+    return routed, {'remaining_percent': remaining, 'native_k3_limit': limit,
+                    'excluded_profiles': sorted(excluded)}
+
+
 def tier_of(t):
     """Work tier used by legacy routing and by an opt-in routing_policy."""
     if t.get('tier') in ('fast', 'normal', 'deep'):
@@ -662,6 +740,8 @@ def _allowed_profile(name, t, c, q):
     if not isinstance(p, dict) or p.get('enabled') is False or not p.get('model'):
         return None, False, 'profile_disabled_or_missing'
     provider = str(p['model']).split('/', 1)[0]
+    if name in (t.get('excluded_profiles') or []):
+        return provider, False, 'routing_guard_excluded_profile'
     if provider in (t.get('excluded_providers') or []):
         return provider, False, 'continuation_excluded_provider'
     ok, why = allowed(provider, q, t.get('complexity', 'normal'), c.get('kimi_reserve_percent', 0))
@@ -742,6 +822,8 @@ def route(t, c, q, batch=None):
     profile = _profile_name(t, c)
     if not profile or c['profiles'][profile].get('enabled') is False:
         return None, 'profile_disabled_or_missing'
+    if profile in (t.get('excluded_profiles') or []):
+        return None, 'routing_guard_excluded_profile'
     provider = c['profiles'][profile]['model'].split('/', 1)[0]
     ok, why = allowed(provider, q, t.get('complexity', 'normal'), c.get('kimi_reserve_percent', 0))
     if ok:
@@ -871,17 +953,17 @@ def _options(t, c, q, blocked_reason, partial_work=False, billing_reason=None, p
            'blocked_provider': provider, 'suggested_action': action, 'alternatives': alts,
            'automatic_fallback': False, 'autonomous_reselection': bool(alts),
            'autonomous_next_action': autonomous,
-           'note': ('automatic_fallback=false means the bridge never switches or replays by itself; '
+           'note': ('automatic_fallback=false means no automatic transition occurred for this terminal task; '
                     'autonomous_reselection=' + ('true' if alts else 'false') + '. ' +
                     ('Continue the same tier with profile=auto without asking or waiting.' if alts else
                      'Report the blockage; no route in this tier is dispatchable right now.') +
-                    ' Running tasks are pinned and prompts are never replayed; a continuation lets the '
-                    'bridge choose the next stage.')}
+                    ' Original prompts are never replayed; a continuation lets the bridge choose the '
+                    'next stage while preserving prior evidence.')}
     if window:
         # Explicit short-window exhaustion: never a durable circuit, never a monthly
         # block, and never a guessed recovery time. It is coordinator guidance only.
         out['usage_window_exhausted'] = True
-        out['note'] = ('automatic_fallback=false means the bridge never switches or replays by itself. '
+        out['note'] = ('automatic_fallback=false means no automatic transition occurred for this terminal task. '
                        'The provider reported an explicit usage-window exhaustion, which is not a durable '
                        'billing block and not a monthly plan block; no reset time is inferred and the '
                        'provider is not blocked permanently. ' +

@@ -264,10 +264,16 @@ class ManagementTests(unittest.TestCase):
         result = management.settings()
         self.assertEqual(set(result.keys()), {'profiles', 'max_parallel_per_owner',
                                               'kimi_reserve_percent', 'revision', 'cleanup', 'auto_approve',
-                                              'kimi_monthly_reset', 'economics'})
+                                              'kimi_monthly_reset', 'economics',
+                                              'kimi_low_weekly_threshold_percent',
+                                              'kimi_low_weekly_k3_limit',
+                                              'auto_reroute_on_quota_exhaustion'})
         self.assertEqual(result['economics']['afp_cny_per_unit'], 0.002)
         self.assertEqual(result['economics']['kimi_plan_cny'], 699.0)
         self.assertEqual(result['max_parallel_per_owner'], 4)
+        self.assertEqual(result['kimi_low_weekly_threshold_percent'], 5)
+        self.assertEqual(result['kimi_low_weekly_k3_limit'], 1)
+        self.assertTrue(result['auto_reroute_on_quota_exhaustion'])
         self.assertEqual(result['profiles']['fallback'],
                          {'model': 'deepseek/deepseek-flash', 'label': 'Flash', 'variant': 'high', 'enabled': True})
         # Generic disabled defaults are exported when the schedule was never configured.

@@ -107,9 +107,21 @@ def permissions(t):
     return rules
 
 
-def prompt(t):
+def prompt(t, continuation=None):
     spec = {k: t.get(k) for k in ('title', 'objective', 'acceptance', 'mode', 'scopes', 'targets', 'resources', 'commands')}
-    return instructions(t.get('auto_approve', config().get('auto_approve', True))) + '\nTask specification:\n' + json.dumps(spec, ensure_ascii=False, indent=2)
+    transition = ''
+    if continuation:
+        transition = """
+This is a quota/capacity continuation in the existing OpenCode session. Read the
+prior conversation and inspect the current workspace before acting. Continue only
+the unfinished outcome. Do not repeat completed edits, deployments, messages,
+payments, destructive operations or other external side effects. The bridge changed
+the model because the previous provider slot could not continue; this is not a new
+task and does not expand authorization.
+Transition evidence:
+""" + json.dumps(continuation, ensure_ascii=False, indent=2) + '\n'
+    return instructions(t.get('auto_approve', config().get('auto_approve', True))) + transition + \
+        '\nTask specification:\n' + json.dumps(spec, ensure_ascii=False, indent=2)
 
 
 def call(t, suffix, method='GET', data=None):
@@ -267,6 +279,96 @@ def summarize_messages(messages):
             'last_info': last.get('info', {})}
 
 
+def reroute_after_capacity_stop(t, provider, trigger):
+    """Continue a confirmed quota/capacity stop in the same session on the next route.
+
+    The old provider is excluded, the low-weekly Kimi guard is applied again, and
+    the existing conversation/workspace is retained. Intent is persisted before I/O;
+    an ambiguous acknowledgement is observed rather than replayed.
+    """
+    t = task(t['id'])
+    c = config()
+    if c.get('auto_reroute_on_quota_exhaustion', True) is not True:
+        return False
+    # A named-model request is an operator pin (often a controlled comparison).
+    # Capacity automation applies only to bridge-owned automatic routing.
+    if (t.get('requested_profile') or 'auto') != 'auto':
+        return False
+    excluded = set(t.get('excluded_providers') or [])
+    if provider:
+        excluded.add(provider)
+    route_task = dict(t, requested_profile='auto', excluded_providers=sorted(excluded))
+    q = quota.view(read_json(STATE / 'quota.json', {}))
+    try:
+        import common
+        try:
+            active = [x for x in common.tasks() if x.get('status') in common.ACTIVE]
+        except (KeyError, TypeError, ValueError):
+            # Old retained task records may predate ordering metadata. The current
+            # task is enough to keep the guard conservative until migration/save.
+            active = [t]
+        route_task, guard = quota.apply_kimi_low_weekly_guard(
+            route_task, c, q, active)
+        profile, reason = quota.route(route_task, c, q)
+    except Exception as e:
+        update(t['id'], errors=(t.get('errors') or []) + [diagnostics.exception(e, 'quota_reroute')])
+        return False
+    if not profile or profile == t.get('profile'):
+        return False
+    if guard:
+        reason += ':kimi_low_weekly_guard_' + str(round(guard['remaining_percent'], 3)) + 'pct'
+    cfg = c['profiles'][profile]
+    next_provider, model = cfg['model'].split('/', 1)
+    message_id = next_message_id()
+    now = time.time()
+    history = list(t.get('route_history') or [])
+    history.append({'from_profile': t.get('profile'), 'from_provider': provider,
+                    'to_profile': profile, 'to_provider': next_provider,
+                    'trigger': trigger, 'route_reason': reason, 'at': now})
+    previous = {'profile': t.get('profile'), 'message_id': t.get('message_id'),
+                'dispatch_attempted_at': t.get('dispatch_attempted_at'),
+                '_billing_dispatch': t.get('_billing_dispatch')}
+    fields = {'profile': profile, 'route_reason': reason, 'route_history': history,
+              'excluded_providers': sorted(excluded), 'message_id': message_id,
+              'dispatch_attempted_at': now, 'dispatch_acknowledged': False,
+              '_billing_dispatch': {'provider': next_provider,
+                                    'identity': credential_identity(next_provider), 'at': now},
+              'status': 'running', 'reason': None}
+    stage = next((part for part in str(reason).split(':') if part.startswith('stage')), '')
+    try:
+        stage_index = int(stage[5:])
+    except (TypeError, ValueError):
+        stage_index = -1
+    if profile == 'fallback' and stage_index > 0:
+        fields.update(fallback_used=True,
+                      routing_notice=('Preferred routing stages were unavailable or exhausted; '
+                                      'the bridge continued on the configured fallback model.'))
+    t = update(t['id'], **fields)
+    try:
+        call(t, '/prompt_async', 'POST', {
+            'messageID': message_id, 'agent': profile,
+            'model': {'providerID': next_provider, 'modelID': model},
+            **({'variant': cfg['variant']} if cfg.get('variant') else {}),
+            'parts': [{'type': 'text', 'text': prompt(t, {
+                'reason': trigger, 'previous_provider': provider,
+                'selected_profile': profile, 'selected_provider': next_provider})}]})
+        update(t['id'], dispatch_acknowledged=True)
+        return True
+    except HttpFailure as e:
+        error = diagnostics.exception(e, 'quota_reroute_dispatch',
+                                      dispatched=not (e.status and 400 <= e.status < 500))
+        if e.status and 400 <= e.status < 500:
+            history[-1]['accepted'] = False
+            update(t['id'], profile=previous['profile'], message_id=previous['message_id'],
+                   dispatch_attempted_at=previous['dispatch_attempted_at'],
+                   _billing_dispatch=previous['_billing_dispatch'], route_history=history,
+                   errors=(t.get('errors') or []) + [error])
+            return False
+        update(t['id'], status='uncertain', reason='quota_reroute_acknowledgement_unknown',
+               errors=(t.get('errors') or []) + [error])
+        return True
+
+
 def finish(t, messages, forced_status=None, reason=None):
     with locked('control-' + t['id']):
         t = task(t['id'])
@@ -288,8 +390,14 @@ def _finish(t, messages, forced_status=None, reason=None):
     report = evidence.get('structured')
     status = forced_status or ('completed' if isinstance(report, dict) and report.get('outcome') == 'done' else 'needs_attention')
     flags = []
-    expected = config()['profiles'][t['profile']]['model']
-    if evidence['actual_models'] and any(m != expected for m in evidence['actual_models']):
+    cfg = config()
+    expected_models = {cfg['profiles'][t['profile']]['model']}
+    for hop in t.get('route_history') or []:
+        for key in ('from_profile', 'to_profile'):
+            profile = hop.get(key) if isinstance(hop, dict) else None
+            if profile in cfg.get('profiles', {}):
+                expected_models.add(cfg['profiles'][profile]['model'])
+    if evidence['actual_models'] and any(m not in expected_models for m in evidence['actual_models']):
         flags.append('unexpected_model')
     try:
         changes = collect_changes(t, evidence['edits'])
@@ -441,6 +549,10 @@ def run_task(task_id, shutdown):
                             messages = call(t, '/message')
                         except HttpFailure:
                             messages = []  # The observed window error already proves the stop.
+                        current = config()['profiles'].get(t.get('profile'), {})
+                        provider = str(current.get('model', '')).split('/', 1)[0] or None
+                        if reroute_after_capacity_stop(t, provider, 'provider_usage_or_rate_limit'):
+                            continue
                         return finish(t, messages, 'needs_attention',
                                       'provider_usage_window_limit')
                     # Abort unconfirmed: retain ownership and keep observing, never replay.
@@ -451,6 +563,17 @@ def run_task(task_id, shutdown):
                     assistants = [m for m in messages if m.get('info', {}).get('role') == 'assistant']
                     last = assistants[-1].get('info', {}) if assistants else {}
                     if is_idle and (last.get('time', {}).get('completed') or last.get('error')):
+                        raw = last.get('error')
+                        billing_kind = diagnostics.billing_kind(raw) if raw else None
+                        capacity_kind = None if billing_kind or not raw else diagnostics.window_kind(raw)
+                        if billing_kind or capacity_kind:
+                            current = config()['profiles'].get(t.get('profile'), {})
+                            provider = last.get('providerID') or \
+                                (str(current.get('model', '')).split('/', 1)[0] or None)
+                            trigger = ('provider_billing_' + billing_kind if billing_kind else
+                                       'provider_usage_or_rate_limit')
+                            if reroute_after_capacity_stop(t, provider, trigger):
+                                continue
                         return finish(t, messages)
                     if is_idle and time.time() - t['dispatch_attempted_at'] > 45 and not assistants:
                         return finish(t, messages, 'needs_attention', 'prompt_present_but_no_response')

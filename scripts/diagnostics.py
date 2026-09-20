@@ -57,20 +57,22 @@ def billing_kind_message(status, message):
 
 
 def usage_window_kind(status, message):
-    """Explicit short usage-window exhaustion, else None.
+    """Provider capacity/window exhaustion that should leave this slot, else None.
 
     Distinct in every direction: a monthly plan block is handled by billing_kind_message
-    and never reaches here; auth (401) and rate-limit (429) responses stay generic so
-    throttling behavior is preserved; and a duration alone (for example "rate limit
-    exceeded, retry in 5 hours") is throttling, not a usage window. Both a usage/quota
-    or window reference and exhaustion wording are required.
+    and never reaches here; auth (401) stays generic. A model-origin HTTP 429 is exact
+    evidence that the current provider slot cannot proceed now, so the bridge treats it
+    like a usage-window stop and moves to the next route instead of waiting indefinitely.
+    Without 429, both explicit duration/window wording and exhaustion wording are needed.
     """
     try:
         status = int(status) if status is not None else None
     except (TypeError, ValueError):
         status = None
-    if status in (401, 429):
+    if status == 401:
         return None
+    if status == 429:
+        return WINDOW_REASON
     text = str(message or '').lower()
     if not text or _monthly_limit(text):
         return None
