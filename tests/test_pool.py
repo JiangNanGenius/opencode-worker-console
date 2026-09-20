@@ -83,6 +83,22 @@ class PoolTests(unittest.TestCase):
                 t = self.new(**spec)
                 self.assertNotIn('timeout_seconds', t)
 
+    def test_ordered_routing_requires_a_reason_for_an_explicit_profile(self):
+        self.c['routing_policy'] = {
+            'background': [[{'profile': 'senior-code', 'weight': 1}],
+                           [{'profile': 'fast-code', 'weight': 1}]]}
+        self.config.write_text(json.dumps(self.c))
+        with self.assertRaisesRegex(ValueError, 'requires profile_reason'):
+            self.new()
+        task = self.new(profile_reason='Controlled comparison requested by the user')
+        self.assertEqual(task['profile_reason'], 'Controlled comparison requested by the user')
+        self.assertEqual(common.public_task(task)['profile_reason'],
+                         'Controlled comparison requested by the user')
+
+    def test_profile_reason_is_rejected_for_automatic_routing(self):
+        with self.assertRaisesRegex(ValueError, 'only to an explicit profile'):
+            self.new(profile='auto', profile_reason='unnecessary')
+
     def test_console_health_requires_live_pool_and_server(self):
         with patch.object(console_server, 'read_json', side_effect=lambda path, default: {'time': time.time()} if path.name == 'heartbeat.json' else {'pool': {}}), patch.object(console_server.service, 'alive', return_value=True), patch.object(console_server, 'api', return_value={'healthy': True}):
             self.assertEqual(console_server.service_health(), {'pool': True, 'server': True})

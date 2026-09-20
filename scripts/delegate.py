@@ -102,10 +102,23 @@ def submit(spec):
         raise ValueError('Task directory does not exist')
     if not spec.get('objective', '').strip():
         raise ValueError('A non-empty objective is required')
-    if spec.get('profile', 'auto') not in {'auto', *c['profiles']}:
+    requested_profile = spec.get('profile', 'auto')
+    if requested_profile not in {'auto', *c['profiles']}:
         raise ValueError('Unknown profile')
-    if spec.get('profile', 'auto') != 'auto' and c['profiles'][spec['profile']].get('enabled') is False:
+    if requested_profile != 'auto' and c['profiles'][requested_profile].get('enabled') is False:
         raise ValueError('Profile is disabled')
+    profile_reason = spec.get('profile_reason')
+    if profile_reason is not None and (not isinstance(profile_reason, str) or not profile_reason.strip()):
+        raise ValueError('Profile reason must be a non-empty string')
+    if isinstance(profile_reason, str):
+        profile_reason = profile_reason.strip()
+        if len(profile_reason) > 500:
+            raise ValueError('Profile reason must be at most 500 characters')
+    if requested_profile == 'auto' and profile_reason:
+        raise ValueError('Profile reason applies only to an explicit profile')
+    if c.get('routing_policy') and requested_profile != 'auto' and not profile_reason:
+        raise ValueError('Explicit profile requires profile_reason when routing policy is enabled; '
+                         'use profile=auto for subscription-first routing')
     mode = spec.get('mode', 'read')
     if mode not in ('read', 'write'):
         raise ValueError('Mode must be read or write')
@@ -140,7 +153,7 @@ def submit(spec):
     t = {
         'id': 'job-' + uuid.uuid4().hex[:16], 'title': spec.get('title') or spec['objective'][:80],
         'objective': spec['objective'], 'acceptance': spec.get('acceptance', []),
-        'requested_profile': spec.get('profile', 'auto'), 'mode': mode,
+        'requested_profile': requested_profile, 'mode': mode,
         'urgency': spec.get('urgency', 'background'), 'complexity': spec.get('complexity', 'normal'),
         'workspace': workspace, 'source_dir': str(root), 'scopes': scopes, 'targets': targets,
         'commands': spec.get('commands', []), 'resources': spec.get('resources', []),
@@ -151,6 +164,8 @@ def submit(spec):
         'group_title': spec.get('group_title') or root.name,
         'parent_task_id': spec.get('parent_task_id'),
     }
+    if profile_reason:
+        t['profile_reason'] = profile_reason
     if t['parent_task_id']:
         parent = task(t['parent_task_id'])
         if parent.get('group_id') != t['group_id']:
@@ -360,6 +375,7 @@ def main():
     s.add_argument('--spec', help='JSON task specification; use - for stdin')
     s.add_argument('--directory', default=os.getcwd())
     s.add_argument('--profile', default='auto')
+    s.add_argument('--profile-reason', help='Why this task must bypass automatic routing')
     s.add_argument('--mode', choices=['read', 'write'], default='read')
     s.add_argument('--urgency', choices=['fast', 'background'], default='background')
     s.add_argument('--complexity', choices=['normal', 'deep'], default='normal')

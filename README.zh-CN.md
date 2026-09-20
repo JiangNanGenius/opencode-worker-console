@@ -99,9 +99,9 @@ python3 scripts/install.py --preset ark-agent-plan
 | --- | --- | --- |
 | `senior-code` | Kimi K2.8 Preview | 套餐可用时的完整通用任务 |
 | `deep-research` | Kimi K3 | 大仓库、长上下文、复杂根因与审查 |
-| `fast-code` | DeepSeek V4.1 Flash | 很小且明确的任务，或速度优先的工作 |
+| `fast-code` | DeepSeek V4.1 Flash | 显式指定模型，或 Agent Plan 预设的最终兜底 |
 
-所有 profile 都能承担通用任务。名称是稳定路由标识，背后模型可在控台调整。预设使用 `max`；新增模型要选择供应商实际支持的思考档位。`auto` 按任务层级选择路由，可配置派发前顺序接替与加权分配；显式 profile 固定模型。详见[路由与套餐利用率](references/routing.zh-CN.md)。
+所有 profile 都能承担通用任务。名称是稳定路由标识，背后模型可在控台调整。预设使用 `max`；新增模型要选择供应商实际支持的思考档位。`auto` 按任务层级选择路由，可配置派发前顺序接替与加权分配；紧急度只影响调度，不负责选模型。启用顺序路由时，显式 profile 固定模型且必须说明原因。详见[路由与套餐利用率](references/routing.zh-CN.md)。
 
 ## 主要功能
 

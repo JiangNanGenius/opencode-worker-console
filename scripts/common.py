@@ -169,7 +169,7 @@ def api(path, directory=None, method='GET', data=None, timeout=15, include_curso
 
 
 def public_task(t):
-    keys = ['id', 'title', 'status', 'profile', 'requested_profile', 'mode', 'urgency', 'complexity',
+    keys = ['id', 'title', 'status', 'profile', 'requested_profile', 'profile_reason', 'mode', 'urgency', 'complexity',
             'group_id', 'group_title', 'parent_task_id', 'owner_thread_id',
             'workspace', 'source_dir', 'directory', 'scopes', 'targets', 'resources', 'session_id', 'session_deleted', 'session_directory', 'guidance',
             'created_at', 'started_at', 'finished_at', 'reason', 'queue_reason', 'route_reason',

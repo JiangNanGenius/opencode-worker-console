@@ -1,19 +1,21 @@
 ---
 name: delegate-opencode
-description: Delegate complete authorized outcomes to general-purpose OpenCode agents, including SSH and remote administration, deployment, CLI/API workflows, investigation, data processing, writing, coding and testing. Prefer delegation for substantial execution and bulk context gathering; task examples and model profiles are not capability limits. Use the configured subscription-first routing policy; choose task depth deliberately and pin a model only when required. Coordinate tasks, guidance, transcripts, sessions and recovery through the durable bridge.
+description: Delegate complete authorized outcomes to general-purpose OpenCode agents. Every task category is eligible; decide only from the concrete tools, access and verification the outcome needs, never its domain or importance. Prefer delegation for substantial execution and bulk context gathering. Use the configured subscription-first routing policy, choose task depth deliberately and pin a model only for a concrete model requirement. Coordinate tasks, guidance, transcripts, sessions and recovery through the durable bridge.
 ---
 
 # Delegate OpenCode work
 
-OpenCode is a general-purpose execution layer for Codex. Start from the assumption that a
-worker can own the authorized outcome, then check the tools and access the particular task
-needs. SSH, operations, deployments, research, documents, data, APIs, testing and code are all
-eligible. This is an illustrative list, not an allowlist. Do not reserve a category for Codex
-because it is important, involves a remote system, or goes beyond source-code edits.
+OpenCode is a general-purpose execution layer for Codex. Every authorized outcome is eligible
+for delegation by default. Decide from the concrete tools, access and acceptance evidence that
+the outcome needs; its name, domain, importance and whether it changes code never decide
+eligibility. When the worker has the required tools, delegate the whole workflow and its
+verification rather than retaining an unlisted category or sending only a low-level fragment.
 
 Codex coordinates, supplies context and authority, reviews evidence and owns final acceptance.
-Keep visual direction, nuanced interaction and difficult decisions where Codex adds value;
-workers can investigate, propose, implement and verify those areas too. Delegate complete work,
+Keep only the step that truly requires Codex Computer Use, nuanced visual judgment or a user-only
+login, MFA, legal acceptance or approval with the appropriate actor. Let the worker finish every
+other supported step and report the exact remaining handoff. Workers can still investigate,
+implement and run terminal or headless verification for interface work. Delegate complete work,
 not just low-level chores, and do not duplicate a worker's repository reading locally.
 
 ## Make a useful handoff
@@ -99,13 +101,18 @@ not a permitted job category. Check `quota` before a batch or after an availabil
 When `routing_policy` is configured, prefer `--profile auto` and deliberately choose task
 **depth**. This lets the configured allowance priorities and weighted pools work. An explicit
 profile pins one model and bypasses the policy; use it for a real model requirement or an
-informed recovery decision, not by habit.
+informed recovery decision, not by habit. Urgency changes scheduling only: use
+`--profile auto --urgency fast` for quick feedback. Never select a profile because its stable
+ID or label contains `fast`, because the task is small, or because direct billing appears
+quicker. In the Agent Plan preset, `fast-code` is the legacy ID for direct paid DeepSeek and
+remains the final fallback. An explicit profile must carry a concrete `profile_reason`; if no
+such reason exists, use `auto`.
 
 | Task shape | Selection |
 | --- | --- |
 | Ordinary coherent implementation, SSH/operations, deployment, investigation, writing, testing or second opinion | `--profile auto --complexity normal` |
 | Large-repository reading, long-context synthesis, ambiguous or cross-module causes, architecture/dependency mapping or consequential review | `--profile auto --complexity deep` |
-| A specific model, independent second opinion, or latency-critical exception | Explicit enabled profile, with a reason |
+| A user-required model, controlled model comparison, or informed recovery after the policy reports a provider unavailable | Explicit enabled profile with `profile_reason` |
 
 Configured policy stages are tried in order before dispatch. Available members within one
 stage share admissions by weight. Treat the installed policy as authoritative: it may contain

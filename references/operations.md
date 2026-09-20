@@ -12,7 +12,7 @@ delegate-opencode console --open
 delegate-opencode submit --directory /absolute/repo --urgency background \
   --title 'Map configuration' 'Locate configuration loading and summarize precedence with file/line evidence.'
 delegate-opencode submit --directory /absolute/repo --mode write --scope src/parser.py \
-  --profile fast-code --command 'python3 -m unittest -v tests.test_parser' \
+  --profile auto --command 'python3 -m unittest -v tests.test_parser' \
   --acceptance 'Preserve all existing behavior except the specified empty-input fix.' \
   'Fix the already-identified empty-input parser failure and run the authorized tests.'
 delegate-opencode status
@@ -24,7 +24,8 @@ delegate-opencode stats
 
 For complex text, use `submit --spec /absolute/task.json` or `--spec -` with a JSON
 object on stdin. Fields: `directory`, `objective`, `title`, `acceptance` (string array),
-`profile` (`auto` or a configured profile), `mode` (`read`/`write`), `scopes` (literal relative
+`profile` (`auto` or a configured profile), `profile_reason` (required for an explicit profile
+when ordered routing is enabled), `mode` (`read`/`write`), `scopes` (literal relative
 path array, repository-local), `targets` (operational target array such as `ssh:example.com:nginx`),
 `commands` (suggested checks; exact allowlist when Auto Approve is off), `resources` (shared lock-name array),
 `urgency` (`fast`/`background`), `complexity` (`normal`/`deep`), `workspace`
@@ -46,8 +47,10 @@ ordinary work follows the normal tier, while `--complexity deep` selects the dee
 large-repository mapping, ambiguous causes, architecture synthesis and consequential review.
 The first available policy stage wins; members in that stage share actual admissions by
 weight. See [routing and plan efficiency](routing.md) for the Ark/Kimi baseline, bounded
-quota-aware ratios, fallbacks and configuration. Explicit profiles pin one model and bypass the policy; use them when a
-specific model matters or the coordinator makes an informed recovery choice.
+quota-aware ratios, fallbacks and configuration. Explicit profiles pin one model and bypass the
+policy; use them only for a user-required model, controlled comparison or informed recovery, and
+record that concrete reason with `--profile-reason`. Urgent work remains automatic and uses
+`--urgency fast`; profile names and task size do not select a model.
 
 Without a policy, `auto` uses the legacy `routing` mapping based on urgency and complexity.
 It does not infer semantic properties from task text. Every tier is a general-purpose agent;
@@ -144,8 +147,9 @@ Queries are coalesced for 60 seconds, refreshed every 5 minutes while running or
 minute while waiting. Idle queues do not query. Transient errors preserve last successful
 data for 15 minutes with a stale marker; older data is unknown. Invalid credentials or known
 exhausted quota block dispatch; unknown telemetry does not impose a shared concurrency cap.
-Plan allowance is preferred for ordinary and deep work; fast-code is for tiny tasks or
-latency-critical urgent work. The optional Kimi deep-task reserve defaults to 0%, so ordinary
+Plan allowance is preferred for all automatically routed work; `fast-code` is a stable legacy
+ID for the direct paid DeepSeek fallback in the Agent Plan preset, not a small-task shortcut.
+The optional Kimi deep-task reserve defaults to 0%, so ordinary
 tasks can use available plan allowance. If configured higher, it holds ordinary tasks below
 that percentage while allowing deep work. Quota or billing failures never switch profiles automatically, including
 tasks submitted with `auto`. Codex receives the blockage and candidate profiles, then
