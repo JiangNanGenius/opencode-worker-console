@@ -88,7 +88,7 @@ python3 scripts/install.py --preset deepseek-kimi
 | `deep-research` | Kimi K3 | 大仓库、长上下文、复杂根因与审查 |
 | `fast-code` | DeepSeek V4.1 Flash | 很小且明确的任务，或速度优先的工作 |
 
-所有 profile 都能承担通用任务。名称是稳定路由标识，背后模型可在控台调整。预设使用 `max`；新增模型要选择供应商实际支持的思考档位。`auto` 按紧急程度和复杂度粗分流，不理解完整任务语义。
+所有 profile 都能承担通用任务。名称是稳定路由标识，背后模型可在控台调整。预设使用 `max`；新增模型要选择供应商实际支持的思考档位。`auto` 按任务层级选择路由，可配置派发前顺序接替与加权分配；显式 profile 固定模型。详见[路由与套餐利用率](references/routing.zh-CN.md)。
 
 ## 主要功能
 
@@ -107,7 +107,7 @@ python3 scripts/install.py --preset deepseek-kimi
 
 ```sh
 ~/.local/bin/delegate-opencode submit --directory /absolute/project \
-  --profile senior-code --group-title '了解项目' \
+  --profile auto --group-title '了解项目' \
   --title '整理项目结构' \
   --acceptance '返回入口、测试命令与文件证据，不修改文件。' \
   '阅读项目约定，说明目录组织、关键入口和测试方法。'
@@ -151,4 +151,4 @@ node --check web/setup.js
 
 测试使用临时目录和模拟 API，不发付费请求。Node 仅用于前端检查。CI 覆盖 macOS/Linux、Python 3.9/3.12。[贡献](CONTRIBUTING.md) · [安全](SECURITY.md)。
 
-MIT 协议。独立社区项目，与 OpenCode、OpenAI、Anthropic、DeepSeek、Moonshot 无隶属关系。
+MIT 协议。独立社区项目，与 OpenCode、OpenAI、Anthropic、DeepSeek、Moonshot、火山引擎无隶属关系。

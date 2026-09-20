@@ -88,7 +88,7 @@ These options initialize a **fresh** installation, not replace existing profiles
 | `deep-research` | Kimi K3 | Large repositories, long-context synthesis, ambiguous investigation and review |
 | `fast-code` | DeepSeek V4.1 Flash | Tiny specified tasks or latency-critical work |
 
-All profiles are general-purpose agents. Keep routing names while changing their models in the console. The preset uses `max` reasoning; other models need a variant their provider actually supports. `auto` uses urgency and complexity, not semantic interpretation of the entire objective.
+All profiles are general-purpose agents. Keep routing names while changing their models in the console. The preset uses `max` reasoning; other models need a variant their provider actually supports. `auto` uses the configured task tier; an optional policy adds ordered provider fallback and weighted pools before dispatch. Explicit profiles stay pinned. [Routing and plan efficiency](references/routing.md).
 
 ## What you can manage
 
@@ -107,7 +107,7 @@ This sends a real model request and can consume provider allowance. Use an exist
 
 ```sh
 ~/.local/bin/delegate-opencode submit --directory /absolute/project \
-  --profile senior-code --group-title 'Repository orientation' \
+  --profile auto --group-title 'Repository orientation' \
   --title 'Map the project' \
   --acceptance 'Return entry points, test commands and evidence; do not modify files.' \
   'Read the project guidance and summarize how this project is organized.'
@@ -151,4 +151,4 @@ node --check web/setup.js
 
 Tests use temporary fixtures and mocked provider APIs, not paid requests. Node is only needed for frontend checks. CI covers macOS/Linux and Python 3.9/3.12. [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md).
 
-MIT licensed. Independent community project; not affiliated with OpenCode, OpenAI, Anthropic, DeepSeek or Moonshot.
+MIT licensed. Independent community project; not affiliated with OpenCode, OpenAI, Anthropic, DeepSeek, Moonshot or Volcengine.

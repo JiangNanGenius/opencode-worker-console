@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import time
 from concurrent.futures import ThreadPoolExecutor
 from common import config, STATE, HttpFailure, auth_key, credential_identity, locked, read_json, redact, request, write_json
+import routing
 
 try:
     import zoneinfo
@@ -22,11 +23,21 @@ BILLING = 'billing.json'
 MONTHLY_REASON = 'monthly_usage_limit'
 BALANCE_REASON = 'insufficient_balance'
 GENERIC_REASON = 'billing_error'
+# Explicit short usage-window exhaustion (for example a 5-hour limit). It is a real,
+# self-resolving window, not a monthly plan block and not a durable billing circuit.
+WINDOW_REASON = 'usage_window_limit'
 REASON_SEVERITY = {GENERIC_REASON: 1, BALANCE_REASON: 2, MONTHLY_REASON: 3}
 MANUAL_RETRY_NOTE = ('Manual retry authorization: releases the block so new attempts may run until a further '
                      'billing error re-opens it. It is not proof the provider quota was restored. Seen message '
                      'IDs and recovery watermarks are preserved, and a retry that is still exhausted re-blocks.')
 MANUAL_RETRY_WARNING = 'Not proven recovery; new attempts may still fail while the provider is exhausted.'
+# Kimi's per-window usage ratios and the duration each one represents. Only these
+# known keys are accepted as a fallback, so an unknown key is never guessed into a
+# window; the duration also deduplicates the ratio against the same limits row.
+KNOWN_RATIO_WINDOWS = {'limit_5h': 300, 'limit_7d': 10080}
+# The overall usage aggregate already represents the weekly window in this endpoint.
+# A valid aggregate stays authoritative and suppresses the duplicate ratio card.
+WEEKLY_RATIO_KEYS = {'limit_7d'}
 MONTHLY_RESET_KEY = 'kimi_monthly_reset'
 MONTHLY_RESET_DEFAULTS = {'enabled': False, 'day': 1, 'time': '12:00', 'timezone': 'Asia/Shanghai'}
 SCHEDULED_RESET_RELEASE = 'scheduled_reset'
@@ -348,6 +359,13 @@ def number(x):
 
 def window(name, detail, duration=None):
     limit, remaining = number(detail.get('limit')), number(detail.get('remaining'))
+    if remaining is None and 'remaining' not in detail and limit is not None:
+        # The live endpoint omits remaining on an exhausted window and reports used
+        # instead. Derive remaining only from two valid numbers; malformed input stays
+        # unknown rather than silently reading as 0%.
+        used = number(detail.get('used'))
+        if used is not None and used >= 0:
+            remaining = max(0.0, limit - used)
     valid = limit is not None and limit > 0 and remaining is not None and 0 <= remaining <= limit
     resets = detail.get('resetTime')
     if isinstance(resets, (int, float)):
@@ -377,11 +395,36 @@ def normalize(provider, body):
     for i, row in enumerate(body.get('limits', [])):
         w = row.get('window') or {}
         duration = number(w.get('duration'))
-        minutes = duration * units[w['timeUnit']] if duration is not None and w.get('timeUnit') in units else None
+        minutes = duration * units[w.get('timeUnit')] if duration is not None and w.get('timeUnit') in units else None
         windows.append(window('window_' + str(i), row.get('detail') or {}, minutes))
     if isinstance(body.get('usage'), dict):
         windows.append(window('overall', body['usage']))
-    # Do not guess the units of usages.*.used_ratio, or turn missing fields into 0%.
+    # usages.<known key>.used_ratio is an explicit per-window fraction (0..1) and is a
+    # fallback only when that window is otherwise absent or unusable. Unknown keys, a
+    # ratio outside 0..1 (overage is not evidence of a specific exhausted window), a
+    # window already parsed from limits (same duration) and the weekly ratio duplicated
+    # by a valid overall aggregate are skipped. Malformed input stays unknown and the
+    # console never shows duplicate cards for one real window.
+    usages = body.get('usages')
+    if isinstance(usages, dict):
+        overall_valid = any(w['name'] == 'overall' and w['valid'] for w in windows)
+        known = {w['duration_minutes'] for w in windows
+                 if w['valid'] and w.get('duration_minutes') is not None}
+        for key, detail in usages.items():
+            duration = KNOWN_RATIO_WINDOWS.get(key)
+            if duration is None or not isinstance(detail, dict) or duration in known:
+                continue
+            if key in WEEKLY_RATIO_KEYS and overall_valid:
+                continue
+            ratio = number(detail.get('used_ratio'))
+            if ratio is None or not 0 <= ratio <= 1:
+                continue
+            derived = window('usages.' + key, {
+                'limit': 1, 'remaining': 1.0 - ratio,
+                'resetTime': detail.get('reset_time', detail.get('resetTime'))}, duration)
+            derived['derived'] = True
+            windows.append(derived)
+            known.add(duration)
     valid = [w for w in windows if w['valid']]
     return {'windows': windows, 'available': False if any(w['remaining'] == 0 for w in valid) else
             (True if windows and len(valid) == len(windows) else None), 'balances': []}
@@ -491,22 +534,43 @@ def allowed(provider, q, complexity, threshold=0, retry_monthly=False):
     return True, 'quota_unknown' if v.get('stale', True) or available is None else 'quota_available'
 
 
-def _tier(t):
+def tier_of(t):
+    """Work tier used by legacy routing and by an opt-in routing_policy."""
     return 'deep' if t.get('complexity') == 'deep' else 'fast' if t.get('urgency') == 'fast' else 'background'
+
+
+def _tier(t):  # Backward-compatible private alias.
+    return tier_of(t)
 
 
 def _profile_name(t, c):
     requested = t.get('requested_profile', 'auto')
-    routing = c.get('routing', {'fast': 'fast-code', 'background': 'senior-code', 'deep': 'deep-research'})
-    profile = requested if requested != 'auto' else routing.get(_tier(t))
+    legacy = c.get('routing', {'fast': 'fast-code', 'background': 'senior-code', 'deep': 'deep-research'})
+    profile = requested if requested != 'auto' else legacy.get(tier_of(t))
     return profile if profile in c['profiles'] else None
+
+
+def _preferred_name(t, c):
+    """Most preferred configured profile for a task, following policy order when set.
+
+    Guidance only: this never consumes admission counters and never switches a task.
+    """
+    requested = t.get('requested_profile', 'auto')
+    if requested != 'auto':
+        return _profile_name(t, c)
+    stages = (routing.configured(c) or {}).get(tier_of(t), [])
+    for entry in (e for stage in stages for e in stage):
+        p = c['profiles'].get(entry['profile'])
+        if isinstance(p, dict) and p.get('enabled') is not False and p.get('model'):
+            return entry['profile']
+    return _profile_name(t, c)
 
 
 def _task_provider(t, c):
     """Configured provider for the task's pinned or routed profile, with its name."""
     name = t.get('profile')
     if name not in c['profiles']:
-        name = _profile_name(t, c)
+        name = _preferred_name(t, c)
     if not name or name not in c['profiles'] or not c['profiles'][name].get('model'):
         return None, None
     return c['profiles'][name]['model'].split('/', 1)[0], name
@@ -542,19 +606,82 @@ def _task_billing_kind(t):
     return GENERIC_REASON
 
 
-def route(t, c, q):
+def _allowed_profile(name, t, c, q):
+    """(provider, ok, why) for one enabled profile, respecting quota and circuits."""
+    p = c.get('profiles', {}).get(name)
+    if not isinstance(p, dict) or p.get('enabled') is False or not p.get('model'):
+        return None, False, 'profile_disabled_or_missing'
+    provider = str(p['model']).split('/', 1)[0]
+    ok, why = allowed(provider, q, t.get('complexity', 'normal'), c.get('kimi_reserve_percent', 0))
+    return provider, ok, why
+
+
+def _policy_route(t, c, q, stages, batch=None):
+    """First stage with an admissible candidate, then a weighted choice within it.
+
+    Never consumes counters here: with a daemon batch the advance is only proposed and
+    choose_ready commits it after the owner/scope checks pass, while a preview call
+    (batch=None) reads the stored credits without writing them. Within one batch each
+    committed proposal moves the credits, so subsequent choices distribute correctly.
+    """
+    preview = None
+    first_reason = None
+    tier = tier_of(t)
+    for index, stage in enumerate(stages):
+        candidates = []
+        for entry in stage:
+            _, ok, why = _allowed_profile(entry['profile'], t, c, q)
+            if ok:
+                candidates.append((entry, why))
+            elif first_reason is None:
+                first_reason = why
+        if candidates:
+            entries = [entry for entry, _ in candidates]
+            if batch is not None:
+                chosen, credits = routing.advance(entries, batch.credits_for(tier))
+                batch.propose(tier, credits)
+            else:
+                if preview is None:
+                    preview = routing.Admissions.load().credits
+                chosen, _ = routing.advance(entries, preview.get(tier, {}))
+            why = next(reason for entry, reason in candidates if entry['profile'] == chosen)
+            return chosen, 'routing_policy:' + tier + ':stage' + str(index) + ':' + why
+    return None, 'routing_policy:' + (first_reason or 'no_enabled_candidate')
+
+
+def route(t, c, q, batch=None):
+    """Profile selection for a task. Previews never mutate durable admission counters.
+
+    An explicit requested_profile always pins the task and keeps the existing monthly
+    retry behavior. With requested_profile=auto and a configured routing_policy for the
+    task's tier, the first stage that has an enabled candidate passing provider
+    admission wins and the candidate is picked by weighted round robin. Without a
+    policy the legacy single-profile routing is unchanged.
+    """
+    requested = t.get('requested_profile', 'auto')
+    if requested != 'auto':
+        profile = _profile_name(t, c)
+        if not profile or c['profiles'][profile].get('enabled') is False:
+            return None, 'profile_disabled_or_missing'
+        provider = c['profiles'][profile]['model'].split('/', 1)[0]
+        ok, why = allowed(provider, q, t.get('complexity', 'normal'),
+                          c.get('kimi_reserve_percent', 0), retry_monthly=True)
+        if ok and why == 'explicit_profile_monthly_retry':
+            return profile, why
+        if ok:
+            return profile, 'explicit_profile:' + why
+        # Never silently switch profiles or models; the coordinator re-selects deliberately.
+        return None, why
+    stages = (routing.configured(c) or {}).get(tier_of(t))
+    if stages:
+        return _policy_route(t, c, q, stages, batch)
     profile = _profile_name(t, c)
     if not profile or c['profiles'][profile].get('enabled') is False:
         return None, 'profile_disabled_or_missing'
     provider = c['profiles'][profile]['model'].split('/', 1)[0]
-    requested = t.get('requested_profile', 'auto')
-    ok, why = allowed(provider, q, t.get('complexity', 'normal'),
-                      c.get('kimi_reserve_percent', 0), retry_monthly=requested != 'auto')
-    if ok and why == 'explicit_profile_monthly_retry':
-        return profile, why
+    ok, why = allowed(provider, q, t.get('complexity', 'normal'), c.get('kimi_reserve_percent', 0))
     if ok:
-        return profile, ('explicit_profile' if requested != 'auto' else _tier(t)) + ':' + why
-    # Never silently switch profiles or models; the coordinator re-selects deliberately.
+        return profile, tier_of(t) + ':' + why
     return None, why
 
 
@@ -582,19 +709,53 @@ def _unrecovered_provider(provider, kind):
     return provider
 
 
+def _profile_order(t, c, policy):
+    """Profiles in recovery preference order: the task tier's policy first, then the rest.
+
+    Without a policy this is exactly the configured profile order, preserving legacy
+    guidance. With a policy, the task's whole tier leads in declared stage order (so a
+    deep task prefers Ark K3 and then the deep tier's own DeepSeek fallback before
+    other tiers' candidates, and never direct DeepSeek before Ark K3), then the other
+    policy tiers in canonical order, then unlisted profiles.
+    """
+    names = list(c.get('profiles', {}))
+    if not policy:
+        return names
+    ordered, seen = [], set()
+
+    def add(name):
+        if name in c['profiles'] and name not in seen:
+            seen.add(name)
+            ordered.append(name)
+
+    tier = tier_of(t)
+    for entry in routing.tier_entries(policy, tier):
+        add(entry['profile'])
+    for other in routing.TIERS:
+        if other == tier:
+            continue
+        for entry in routing.tier_entries(policy, other):
+            add(entry['profile'])
+    for name in names:
+        add(name)
+    return ordered
+
+
 def alternatives(t, c, q, exclude=None):
     """Currently dispatchable profiles for deliberate coordinator re-selection.
 
     Provider-level billing blocks apply to every profile on that provider, so sibling
     Kimi profiles (K2.8 and K3) can never be alternatives to each other while blocked.
-    The configured variant is carried so a continuation preserves maximum reasoning.
+    Ordering follows routing_policy preference when configured; the configured variant
+    is carried so a continuation preserves maximum reasoning.
     """
     out = []
     threshold = c.get('kimi_reserve_percent', 0)
-    for name, p in c['profiles'].items():
+    for name in _profile_order(t, c, routing.configured(c)):
+        p = c['profiles'][name]
         if p.get('enabled') is False or not p.get('model'):
             continue
-        provider = p['model'].split('/', 1)[0]
+        provider = str(p['model']).split('/', 1)[0]
         if provider == exclude:
             continue
         ok, why = allowed(provider, q, t.get('complexity', 'normal'), threshold)
@@ -604,7 +765,8 @@ def alternatives(t, c, q, exclude=None):
     return out
 
 
-def _options(t, c, q, blocked_reason, partial_work=False, billing_reason=None, provider=None):
+def _options(t, c, q, blocked_reason, partial_work=False, billing_reason=None, provider=None,
+             exclude=None, window=False):
     """Machine-readable blockage options. Codex autonomously re-selects a viable
     alternative and continues; topping up is the fallback only when none exist.
 
@@ -612,12 +774,38 @@ def _options(t, c, q, blocked_reason, partial_work=False, billing_reason=None, p
     autonomous_reselection=True is the separate coordinator instruction to choose a
     candidate and continue without asking the user or waiting for quota.
     """
-    alts = alternatives(t, c, q, exclude=_unrecovered_provider(provider, billing_reason))
+    if exclude is None:
+        exclude = _unrecovered_provider(provider, billing_reason)
+    alts = alternatives(t, c, q, exclude=exclude)
     retry_command = 'delegate-opencode quota --retry-provider ' + provider if provider else None
-    retry_allowed = bool(provider and billing_reason == MONTHLY_REASON and
+    retry_allowed = bool(provider and not window and billing_reason == MONTHLY_REASON and
                          allowed(provider, q, t.get('complexity', 'normal'),
                                  c.get('kimi_reserve_percent', 0), retry_monthly=True)[0])
-    if alts:
+    if window:
+        action = 'inspect_partial_work_and_reselect_profile' if alts and partial_work else \
+            'reselect_profile_and_resubmit' if alts else 'retry_or_reselect_after_usage_window'
+        autonomous = {'action': 'reselect_profile_and_resubmit' if alts else
+                      'retry_or_reselect_after_usage_window',
+                      'requires_user_approval': False, 'wait_for_quota': False,
+                      'retry_command': None, 'retry_is_proof': False}
+        if alts:
+            preferred = alts[0]
+            autonomous.update(
+                instruction=('Continue autonomously: do not ask the user and do not wait for the '
+                             'provider window while a viable alternative exists. Review the partial work '
+                             'and submit a continuation as a new task with one of the candidate profiles '
+                             '(preferred: ' + preferred['profile'] + '), preserving the configured maximum '
+                             'reasoning variant. Never replay prompt text or deployed side effects; carry '
+                             'forward only the remaining authorized work.'),
+                preferred_profile=preferred['profile'], preferred_model=preferred['model'],
+                preferred_variant=preferred.get('variant'), candidates=alts)
+        else:
+            autonomous['instruction'] = (
+                'No viable alternative profile is currently dispatchable. The provider reported an '
+                'explicit short usage-window exhaustion. Do not infer a reset time and do not block '
+                'permanently: report the blockage, then retry later as a new task or continue with '
+                'another policy candidate when one becomes available.')
+    elif alts:
         action = 'inspect_partial_work_and_reselect_profile' if partial_work else 'reselect_profile'
         preferred = alts[0]
         autonomous = {
@@ -651,17 +839,28 @@ def _options(t, c, q, blocked_reason, partial_work=False, billing_reason=None, p
                       'requires_user_approval': False,
                       'wait_for_quota': not retry_allowed,
                       'retry_command': retry_command, 'retry_is_proof': False}
-    return {'blocked_reason': blocked_reason, 'billing_reason': billing_reason,
-            'explicit_retry_allowed': retry_allowed,
-            'blocked_provider': provider, 'suggested_action': action, 'alternatives': alts,
-            'automatic_fallback': False, 'autonomous_reselection': bool(alts),
-            'autonomous_next_action': autonomous,
-            'note': ('automatic_fallback=false means the bridge never switches or replays by itself; '
-                     'autonomous_reselection=' + ('true' if alts else 'false') + '. ' +
-                     ('Pick a candidate profile and continue without asking the user or waiting.' if alts else
-                      'Report the blockage; no candidate is dispatchable right now.') +
-                     ' Profiles are pinned and prompts are never replayed; submit a new task with an '
-                     'explicit alternative profile to continue authorized work.')}
+    out = {'blocked_reason': blocked_reason, 'billing_reason': billing_reason,
+           'explicit_retry_allowed': retry_allowed,
+           'blocked_provider': provider, 'suggested_action': action, 'alternatives': alts,
+           'automatic_fallback': False, 'autonomous_reselection': bool(alts),
+           'autonomous_next_action': autonomous,
+           'note': ('automatic_fallback=false means the bridge never switches or replays by itself; '
+                    'autonomous_reselection=' + ('true' if alts else 'false') + '. ' +
+                    ('Pick a candidate profile and continue without asking the user or waiting.' if alts else
+                     'Report the blockage; no candidate is dispatchable right now.') +
+                    ' Profiles are pinned and prompts are never replayed; submit a new task with an '
+                    'explicit alternative profile to continue authorized work.')}
+    if window:
+        # Explicit short-window exhaustion: never a durable circuit, never a monthly
+        # block, and never a guessed recovery time. It is coordinator guidance only.
+        out['usage_window_exhausted'] = True
+        out['note'] = ('automatic_fallback=false means the bridge never switches or replays by itself. '
+                       'The provider reported an explicit usage-window exhaustion, which is not a durable '
+                       'billing block and not a monthly plan block; no reset time is inferred and the '
+                       'provider is not blocked permanently. ' +
+                       ('Pick a policy-ordered candidate profile and continue without waiting.' if alts else
+                        'Report the blockage and retry later or with another provider.'))
+    return out
 
 
 def recovery(t, c, q):
@@ -680,13 +879,34 @@ def billing_failure_recovery(t, c, q):
                     billing_reason=_task_billing_kind(t), provider=provider)
 
 
+def _task_window_exhausted(t):
+    """True only for explicit short usage-window exhaustion recorded on the task."""
+    if str(t.get('reason') or '') == 'provider_usage_window_limit':
+        return True
+    return any(isinstance(e, dict) and e.get('source') == 'model' and e.get('usage_window')
+               for e in t.get('errors') or [])
+
+
+def window_failure_recovery(t, c, q):
+    """Guidance for a task stopped by an explicit usage-window exhaustion.
+
+    The failed provider is excluded from the offered candidates for this guidance only
+    (a sibling profile on the same provider shares the window), no circuit is tripped
+    and no reset time is inferred, so the provider is never blocked permanently.
+    """
+    provider, _ = _task_provider(t, c)
+    return _options(t, c, q, 'provider_usage_window_limit', partial_work=True,
+                    billing_reason=None, provider=provider, exclude=provider, window=True)
+
+
 def guidance(t, c, q):
-    """Read-only recovery options for a queued blockage or billing-failed task.
+    """Read-only recovery options for a queued blockage or failed task.
 
     Never mutates the billing circuit: historical compact billing evidence informs
-    guidance only, and a monthly failure stays sticky without any live mutation. Queued
-    tasks get live quota blockage options; other statuses are never marked blocked by
-    unrelated quota state.
+    guidance only, and a monthly failure stays sticky without any live mutation. An
+    explicit short usage-window exhaustion gets policy-ordered alternatives without a
+    durable block. Queued tasks get live quota blockage options; other statuses are
+    never marked blocked by unrelated quota state.
     """
     billing_kind = None
     reason = str(t.get('reason') or '')
@@ -700,6 +920,8 @@ def guidance(t, c, q):
                     break
     if billing_kind and t.get('status') in ('failed', 'needs_attention'):
         return billing_failure_recovery(t, c, q)
+    if _task_window_exhausted(t) and t.get('status') in ('failed', 'needs_attention'):
+        return window_failure_recovery(t, c, q)
     if t.get('status') == 'queued':
         return recovery(t, c, q)
     return None

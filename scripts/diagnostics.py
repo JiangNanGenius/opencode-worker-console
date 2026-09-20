@@ -1,4 +1,6 @@
 """Compact, credential-redacted errors returned across the coordinator bridge."""
+import re
+
 import common
 import quota
 
@@ -6,12 +8,21 @@ import quota
 MONTHLY_REASON = 'monthly_usage_limit'
 BALANCE_REASON = 'insufficient_balance'
 GENERIC_REASON = 'billing_error'
+# A real short usage window (for example the Kimi 5-hour limit) that will refresh on
+# its own. It is not a monthly plan block and must never open the durable circuit.
+WINDOW_REASON = 'usage_window_limit'
 # The monthly wording alone is not exhaustion: "permission to view monthly quota" or a
 # stated monthly allowance must never classify. Both a monthly reference and explicit
 # exhaustion/next-cycle wording are required.
 EXHAUSTION_MARKERS = ('reached', 'exhaust', 'exceed', 'used up', 'will be refreshed',
                       'refreshed in the next cycle', 'purchase extra usage',
                       'upgrade your plan', 'no remaining', 'out of quota')
+# Explicit duration wording identifies a real window instead of an indefinite plan
+# block. A bare "rate limit exceeded, retry in 5 hours" is throttling, not a usage
+# window, so 'usage', 'quota' or 'window' is also required below.
+_WINDOW_DURATION = re.compile(
+    r'\b(?:[1-9]\d?|one|two|three|four|five|six|seven|eight|nine|ten)[- ]?(?:hour|hours|h|day|days|week|weeks)\b'
+    r'|\b(?:hourly|daily|weekly)\b')
 
 
 def error(source, code, message, retryable=None, action='inspect', **details):
@@ -43,6 +54,40 @@ def billing_kind_message(status, message):
     if status == 402 or 'insufficient balance' in text or 'insufficient_balance' in text:
         return BALANCE_REASON
     return None
+
+
+def usage_window_kind(status, message):
+    """Explicit short usage-window exhaustion, else None.
+
+    Distinct in every direction: a monthly plan block is handled by billing_kind_message
+    and never reaches here; auth (401) and rate-limit (429) responses stay generic so
+    throttling behavior is preserved; and a duration alone (for example "rate limit
+    exceeded, retry in 5 hours") is throttling, not a usage window. Both a usage/quota
+    or window reference and exhaustion wording are required.
+    """
+    try:
+        status = int(status) if status is not None else None
+    except (TypeError, ValueError):
+        status = None
+    if status in (401, 429):
+        return None
+    text = str(message or '').lower()
+    if not text or _monthly_limit(text):
+        return None
+    if not ('usage' in text or 'quota' in text or 'window' in text):
+        return None
+    if _WINDOW_DURATION.search(text) and any(marker in text for marker in EXHAUSTION_MARKERS):
+        return WINDOW_REASON
+    return None
+
+
+def window_kind(raw):
+    """Classify a raw OpenCode model error payload for window exhaustion."""
+    if not isinstance(raw, dict):
+        return None
+    data = raw.get('data') if isinstance(raw.get('data'), dict) else {}
+    return usage_window_kind(data.get('statusCode', raw.get('statusCode')),
+                             data.get('message') or raw.get('message') or '')
 
 
 def billing_kind(raw):
@@ -88,15 +133,18 @@ def from_messages(messages):
         if isinstance(raw, dict):
             data = raw.get('data') if isinstance(raw.get('data'), dict) else {}
             kind = billing_kind(raw)
+            window = None if kind else window_kind(raw)
             errors.append(error('model', raw.get('name', 'model_error'),
                                 data.get('message') or raw.get('message') or raw.get('name', 'Model error'),
-                                retryable=False if kind else data.get('isRetryable'),
-                                action='inspect_partial_work_and_reselect_profile' if kind
+                                retryable=False if (kind or window) else data.get('isRetryable'),
+                                action='inspect_partial_work_and_reselect_profile' if (kind or window)
                                 else 'inspect_model_error',
                                 http_status=data.get('statusCode', raw.get('statusCode')),
                                 message_id=info.get('id'), provider=info.get('providerID'),
                                 **({'billing': True, 'billing_reason': kind,
-                                    'occurred_at': occurred_at(info)} if kind else {})))
+                                    'occurred_at': occurred_at(info)} if kind else
+                                   {'usage_window': True, 'usage_window_reason': window,
+                                    'occurred_at': occurred_at(info)} if window else {})))
         for part in message.get('parts', []):
             if part.get('type') != 'tool': continue
             state = part.get('state') or {}

@@ -155,6 +155,13 @@ def settings():
     out['kimi_monthly_reset'] = quota.normalize_monthly_schedule(c.get('kimi_monthly_reset'))
     if isinstance(c.get('routing'), dict):
         out['routing'] = c['routing']
+    # Expose the effective dispatch policy, not the raw record: a degraded reference is
+    # dropped the same way dispatch drops it, so settings and runtime agree. A
+    # structurally malformed record routes as if unset and is never echoed as active.
+    import routing
+    policy = routing.runtime_policy(c.get('routing_policy'), c.get('profiles'))
+    if policy:
+        out['routing_policy'] = policy
     out['cleanup'] = cleanup.policy()
     return out
 
@@ -226,6 +233,16 @@ def _validate_settings(body):
             if not isinstance(name, str) or name not in profiles or not profiles[name]['enabled']:
                 raise ValueError('routing.' + key + ' must reference an enabled profile')
         result['routing'] = {key: routing[key] for key in _ROUTING_KEYS}
+    # Optional opt-in ordered-fallback/weighted policy. An omitted key preserves the
+    # stored policy for old clients; null or an empty object (how the console clears an
+    # optional object field) disables it.
+    if 'routing_policy' in body:
+        value = body['routing_policy']
+        if value is None or value == {}:
+            result['routing_policy'] = None
+        else:
+            import routing as routing_policy
+            result['routing_policy'] = routing_policy.validate_policy(value, profiles)
     # Legacy per-task iteration caps in the body are ignored, never validated
     # and never re-persisted; workers have no default step or time cap.
     # Legacy global/provider cap fields sent by old clients are ignored, never
@@ -319,6 +336,8 @@ def save_settings(body):
     are written; the caller is responsible for restarting services.
     """
     candidate = _validate_settings(body)
+    explicit_policy = 'routing_policy' in body
+    policy_value = candidate.pop('routing_policy', None)
     with common.locked():
         existing = common.read_json(common.CONFIG)
         if not isinstance(existing, dict) or not existing:
@@ -334,6 +353,19 @@ def save_settings(body):
             revision = 0
         # Drop any legacy per-task iteration cap so an old max_steps cannot reappear.
         existing.pop('max_steps', None)
+        if explicit_policy:
+            # An omitted routing_policy preserves the stored opt-in policy for old
+            # clients; null or an empty object disables it.
+            if policy_value is None:
+                existing.pop('routing_policy', None)
+            else:
+                existing['routing_policy'] = policy_value
+        elif existing.get('routing_policy') not in (None, {}):
+            # A preserved policy must still validate against the submitted profiles:
+            # otherwise a settings save would silently retain a broken reference.
+            import routing as routing_policy
+            existing['routing_policy'] = routing_policy.validate_policy(
+                existing['routing_policy'], candidate['profiles'])
         existing.update(candidate)
         existing['revision'] = revision + 1
         existing['restart_required'] = True

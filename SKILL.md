@@ -1,6 +1,6 @@
 ---
 name: delegate-opencode
-description: Delegate complete authorized outcomes to general-purpose OpenCode agents, including SSH and remote administration, deployment, CLI/API workflows, investigation, data processing, writing, coding and testing. Prefer delegation for substantial execution and bulk context gathering; task examples and model profiles are not capability limits. Use available Kimi allowance for ordinary or deep work, DeepSeek for tiny or latency-critical work. Coordinate tasks, guidance, transcripts, sessions and recovery through the durable bridge.
+description: Delegate complete authorized outcomes to general-purpose OpenCode agents, including SSH and remote administration, deployment, CLI/API workflows, investigation, data processing, writing, coding and testing. Prefer delegation for substantial execution and bulk context gathering; task examples and model profiles are not capability limits. Use the configured subscription-first routing policy; choose task depth deliberately and pin a model only when required. Coordinate tasks, guidance, transcripts, sessions and recovery through the durable bridge.
 ---
 
 # Delegate OpenCode work
@@ -60,7 +60,7 @@ project conventions, runbooks and suitable methods. Do not require a command-by-
 A read-only example (adapt the objective and acceptance to the actual task):
 
 ```sh
-delegate-opencode submit --directory "$PWD" --profile senior-code \
+delegate-opencode submit --directory "$PWD" --profile auto \
   --group-title 'Main outcome' --title 'Investigate and recommend a fix' \
   --acceptance 'Return the cause, evidence, affected paths and uncertainties.' \
   'Investigate the reported problem and recommend a complete fix without changing systems.'
@@ -95,25 +95,39 @@ provisioning or an HTTPS reverse proxy, see [references/remote-access.md](refere
 ## Choose a profile by task fit
 
 All profiles are capable general-purpose agents. A profile selects a model/resource tier,
-not a permitted job category. Prefer usable subscription allowance. Check `quota` before a
-batch or after an availability error, and deliberately choose the model for each outcome.
+not a permitted job category. Check `quota` before a batch or after an availability error.
+When `routing_policy` is configured, prefer `--profile auto` and deliberately choose task
+**depth**. This lets the configured allowance priorities and weighted pools work. An explicit
+profile pins one model and bypasses the policy; use it for a real model requirement or an
+informed recovery decision, not by habit.
 
-| Task shape | Profile |
+| Task shape | Selection |
 | --- | --- |
-| Ordinary coherent implementation, SSH/operations, deployment, investigation, writing, testing or second opinion | `senior-code` while plan allowance is available |
-| Large-repository reading, long-context synthesis, ambiguous or cross-module causes, architecture/dependency mapping or consequential review | `deep-research` with `--complexity deep` |
-| Genuinely tiny specified task, or latency-critical work where speed materially matters | `fast-code` |
+| Ordinary coherent implementation, SSH/operations, deployment, investigation, writing, testing or second opinion | `--profile auto --complexity normal` |
+| Large-repository reading, long-context synthesis, ambiguous or cross-module causes, architecture/dependency mapping or consequential review | `--profile auto --complexity deep` |
+| A specific model, independent second opinion, or latency-critical exception | Explicit enabled profile, with a reason |
 
-Broad or ambiguous work stays deep even if its eventual patch is small. A bounded scope,
-cheap DeepSeek balance or Codex's own ability is not a reason to bypass useful Kimi capacity.
-Give K3 a complete investigation instead of several fragmented fast-code lookups. After a
-sustained batch, use `stats` to notice systematic misrouting; do not manufacture jobs to hit
-utilization quotas. When the cause is settled, a small follow-up can use a faster profile.
+Configured policy stages are tried in order before dispatch. Available members within one
+stage share admissions by weight. For example, ordinary work can use Kimi → Ark Auto →
+DeepSeek, while deep work uses either Kimi K3 → Ark K3 → DeepSeek or a 2:1 K3 pool.
+Without a policy, legacy routing maps fast/background/deep to the configured single profiles.
+Inspect the configured policy in Models & routing and use `quota` for provider availability;
+quota unknown is not unlimited.
 
-`auto` is a coarse convenience: urgent normal work maps to fast-code, ordinary background
-work to senior-code, and deep work to deep-research. It does not interpret the full objective.
-Keep the highest supported reasoning variant; all three preset models support `max`. Verify
-supported variants when adding a model rather than assuming the same name everywhere.
+Ark Auto (`ark-code-latest`) follows the model setting in the Ark console. Only a console
+setting of Auto enables provider-side automatic routing and its applicable discounts. It
+cannot guarantee K3 or a 1M window: the documented alias configuration is 256,000 tokens;
+explicit Ark `kimi-k3` supports 1,024,000. Use deep routing for genuinely large contexts.
+Never convert an Auto task into fixed K3 merely to increase K3 utilization: their allowance
+costs differ. Consult [routing and plan efficiency](references/routing.md) when configuring
+providers, weights or cost policy; discount dates and prices must be rechecked.
+
+Broad or ambiguous work stays deep even if its eventual patch is small. Give a capable worker
+one complete outcome instead of many tiny lookups. Do not replay large context across providers
+to chase a discount mid-session. Keep accepted work on its pinned model, reuse relevant sessions,
+and pass compact evidence to the coordinator. Use `stats` to assess actual task distribution;
+job counts are not token, money or quota ratios. Keep the highest **verified supported** reasoning
+variant; the built-in Kimi, DeepSeek and Ark profiles currently support `max`.
 
 Each owning Codex conversation has independent worker capacity (default four). There is no
 shared global/provider cap; K2.8 and K3 share account quota. Use independent jobs for truly
@@ -149,8 +163,8 @@ a prompt whose acceptance is uncertain, or duplicate side effects during a conti
 Errors, tool failures, command exits, questions and permission requests reach Codex through
 `status`, `wait` and `collect`. Inspect `recovery`, refresh quota and select an available
 profile autonomously within the user's model constraints. Review partial work and carry
-forward the remaining outcome with `--parent-task-id`; the bridge never blindly changes a
-model or replays operations. Do not request a top-up or wait on depleted allowance while a
+forward the remaining outcome with `--parent-task-id`; the bridge never changes an already dispatched model or blindly replays operations.
+Ordered fallback and weighted selection apply only before initial dispatch. Do not request a top-up or wait on depleted allowance while a
 suitable alternative can continue the authorized task.
 
 An endpoint-confirmed zero allowance is unavailable until a refreshed sample shows recovery.

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from common import STATE, config, init
 from worker import instructions
+from providers import ARK_PROVIDER, ark_provider
 
 
 def runtime_overlay(c):
@@ -38,6 +39,8 @@ def runtime_overlay(c):
             } for model, name, output in (
                 ('kimi-for-coding', 'Kimi for Coding', 32768), ('k3', 'Kimi K3', 131072))},
         }}
+    if any(p['model'].startswith(ARK_PROVIDER + '/') for p in c['profiles'].values()):
+        overlay.setdefault('provider', {})[ARK_PROVIDER] = ark_provider()
     return overlay
 
 

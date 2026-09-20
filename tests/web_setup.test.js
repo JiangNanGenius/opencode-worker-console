@@ -432,6 +432,18 @@ test('switching language mid-wizard keeps every selection and error keys stay st
   }
 });
 
+test('ordered routing survives setup and refreshed settings', () => {
+  const settings = settingsFixture();
+  settings.routing_policy = { background: [[{ profile: 'senior-code', weight: 1 }], [{ profile: 'fast-code', weight: 1 }]] };
+  const draft = Setup.createDraft(settings, catalogFixture());
+  assert.deepEqual(Setup.buildPayload(draft).routing_policy, settings.routing_policy);
+  const fresh = settingsFixture();
+  fresh.revision += 1;
+  fresh.routing_policy = { deep: [[{ profile: 'deep-research', weight: 2 }, { profile: 'senior-code', weight: 1 }]] };
+  Setup.mergeFreshSettings(draft, fresh);
+  assert.deepEqual(Setup.buildPayload(draft).routing_policy, fresh.routing_policy);
+});
+
 // -- summary ------------------------------------------------------------------
 
 process.on('exit', () => {

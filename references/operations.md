@@ -41,21 +41,19 @@ implementation, checks and a concise report. Use `steer` for refinements to that
 instead of creating a sequence of microtasks. Split tasks when deliverables or writable
 scopes are genuinely independent.
 
-Select `profile` deliberately when the coordinator can judge the task's semantic fit.
-Prefer available plan allowance: use `senior-code` for ordinary coherent work and
-`deep-research` for deep investigation. Use `fast-code` for genuinely tiny specified tasks
-or latency-critical urgent work. `deep-research` also suits large-repository mapping,
-cross-module or ambiguous root causes, architecture/dependency synthesis and consequential
-independent review. Every tier is a general-purpose execution agent: any authorized outcome
-supported by its tools is eligible. Examples and profile names do not restrict job roles.
-`auto` is a coarse convenience based only on
-`urgency` and `complexity`; it does not infer those semantic properties from task text.
-Deep criteria take precedence over a small final edit surface: broad repository reading,
-multiple subsystems, architecture/dependency mapping, an ambiguous root cause or a
-consequential challenge review should use `deep-research --complexity deep`. Do not split a
-coherent deep investigation into several fast lookups to avoid waiting. Periodically use
-`stats` to detect a persistently unused tier when qualifying work exists, then correct future
-profile choices without manufacturing tasks to meet a quota.
+Choose task depth deliberately. With a configured `routing_policy`, use `--profile auto`:
+ordinary work follows the normal tier, while `--complexity deep` selects the deep tier for
+large-repository mapping, ambiguous causes, architecture synthesis and consequential review.
+The first available policy stage wins; members in that stage share actual admissions by
+weight. See [routing and plan efficiency](routing.md) for Ark Auto, fixed K3, quota limitations
+and configuration. Explicit profiles pin one model and bypass the policy; use them when a
+specific model matters or the coordinator makes an informed recovery choice.
+
+Without a policy, `auto` uses the legacy `routing` mapping based on urgency and complexity.
+It does not infer semantic properties from task text. Every tier is a general-purpose agent;
+examples and names do not limit job roles. Do not split a coherent investigation into tiny
+fast lookups. Use `stats` to assess actual distribution without manufacturing tasks to hit a
+quota. Task counts are not token or cost ratios.
 
 Routine UI work is eligible for delegation. Workers may implement a specified interface and
 verify source/DOM structure, localization coverage, build/lint output and an existing headless
@@ -80,7 +78,7 @@ against the same remote system.
 For an already-authorized remote service repair, submit one complete outcome:
 
 ```sh
-delegate-opencode submit --directory "$PWD" --profile senior-code --mode write \
+delegate-opencode submit --directory "$PWD" --profile auto --mode write \
   --target ssh:staging-api:api --resource ssh:staging-api:api \
   --group-title 'Restore staging API' --title 'Repair and verify staging API' \
   --acceptance 'Report the cause, actual remote changes, running version and health.' \

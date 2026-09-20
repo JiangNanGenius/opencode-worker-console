@@ -297,10 +297,24 @@ def _finish(t, messages, forced_status=None, reason=None):
     observed = diagnostics.from_messages(messages)
     billing = record_billing_errors(t, observed)
     record_billing_success(t, messages)
-    kind = diagnostics.billing_kind(info.get('error')) if info.get('error') else None
-    if info.get('error') and not forced_status:
-        status = 'failed'
-        reason = 'provider_billing_' + kind if kind else info['error'].get('name', 'provider_or_model_error')
+    window = any(isinstance(e, dict) and e.get('usage_window') for e in observed) or \
+        any(isinstance(e, dict) and e.get('usage_window') for e in t.get('errors') or [])
+    raw_error = info.get('error')
+    kind = diagnostics.billing_kind(raw_error) if raw_error else None
+    window_error = None if kind or not raw_error else diagnostics.window_kind(raw_error)
+    if raw_error and not forced_status:
+        if kind:
+            status = 'failed'
+            reason = 'provider_billing_' + kind
+        elif window_error:
+            # A real short usage window refreshes on its own: needs coordinator
+            # re-selection, never a durable circuit and never a guessed reset time.
+            status = 'needs_attention'
+            reason = 'provider_usage_window_limit'
+            window = True
+        else:
+            status = 'failed'
+            reason = raw_error.get('name', 'provider_or_model_error')
         billing = billing or bool(kind)
     if not report and not forced_status:
         reason = reason or 'missing_structured_report'
@@ -318,12 +332,14 @@ def _finish(t, messages, forced_status=None, reason=None):
     summary = (report.get('summary', '') if isinstance(report, dict) else evidence['text'])[:8000]
     (art / 'summary.md').write_text(summary + '\n')
     extra = {'recovery': None, 'usage': usage}
-    if billing and status in ('failed', 'needs_attention'):
-        # Billing failure never replays or re-profiles this task; persist coordinator options.
+    if (billing or window) and status in ('failed', 'needs_attention'):
+        # A failure never replays or re-profiles this task; persist coordinator options.
+        # Window exhaustion gets policy-ordered alternatives without a durable circuit.
         try:
-            extra['recovery'] = quota.billing_failure_recovery(
-                dict(t, status=status, reason=reason, errors=errors), config(),
-                quota.view(read_json(STATE / 'quota.json', {})))
+            helper = quota.billing_failure_recovery if billing and not window else \
+                quota.window_failure_recovery
+            extra['recovery'] = helper(dict(t, status=status, reason=reason, errors=errors), config(),
+                                       quota.view(read_json(STATE / 'quota.json', {})))
         except Exception as e:
             errors.append(diagnostics.exception(e, 'billing_recovery'))
     return update(t['id'], status=status, reason=reason, finished_at=time.time(),
@@ -393,11 +409,37 @@ def run_task(task_id, shutdown):
                 observed_errors = diagnostics.from_messages(messages)
                 record_billing_errors(t, observed_errors)
                 record_billing_success(t, messages)
+                window = None
                 if native_status.get('type') == 'retry':
-                    observed_errors.append(diagnostics.error('model', 'retrying', native_status.get('message', 'OpenCode is retrying'),
-                                            retryable=True, action='wait', attempt=native_status.get('attempt'),
-                                            next_retry=native_status.get('next')))
+                    retry_message = native_status.get('message', 'OpenCode is retrying')
+                    # A reported 429 stays generic throttling even if its text mentions a
+                    # duration; only an explicit usage-window error stops the retry loop.
+                    window = diagnostics.usage_window_kind(native_status.get('statusCode'), retry_message)
+                    if window:
+                        # An explicit short usage-window exhaustion would be retried until
+                        # the window refreshes. Stop the native loop and surface coordinated
+                        # alternatives instead of retrying forever; nothing is replayed.
+                        observed_errors.append(diagnostics.error(
+                            'model', window, retry_message, retryable=False,
+                            action='inspect_partial_work_and_reselect_profile',
+                            usage_window=True, usage_window_reason=window))
+                    else:
+                        observed_errors.append(diagnostics.error('model', 'retrying', retry_message,
+                                                retryable=True, action='wait', attempt=native_status.get('attempt'),
+                                                next_retry=native_status.get('next')))
                 update(task_id, errors=observed_errors)
+                if window:
+                    if stop(t):
+                        try:
+                            messages = call(t, '/message')
+                        except HttpFailure:
+                            messages = []  # The observed window error already proves the stop.
+                        return finish(t, messages, 'needs_attention',
+                                      'provider_usage_window_limit')
+                    # Abort unconfirmed: retain ownership and keep observing, never replay.
+                    update(task_id, status='uncertain', reason='window_exhausted_abort_not_confirmed')
+                    shutdown.wait(3)
+                    continue
                 if seen:
                     assistants = [m for m in messages if m.get('info', {}).get('role') == 'assistant']
                     last = assistants[-1].get('info', {}) if assistants else {}

@@ -96,6 +96,7 @@
     var base = {
       profiles: clone(settings.profiles) || {},
       routing: clone(settings.routing) || null,
+      routingPolicy: clone(settings.routing_policy) || null,
       cleanup: clone(settings.cleanup) || null,
       kimiReservePercent: reserve == null ? 0 : reserve,
       monthlyReset: normalizeMonthly(settings.kimi_monthly_reset)
@@ -385,6 +386,7 @@
     // Untouched configuration round-trips exactly as loaded: the cleanup
     // policy is never rebuilt by the wizard.
     if (draft.base.cleanup) payload.cleanup = clone(draft.base.cleanup);
+    if (draft.base.routingPolicy) payload.routing_policy = clone(draft.base.routingPolicy);
     return payload;
   }
 
@@ -431,6 +433,7 @@
     draft.base = {
       profiles: clone(settings.profiles) || {},
       routing: clone(settings.routing) || null,
+      routingPolicy: clone(settings.routing_policy) || null,
       cleanup: clone(settings.cleanup) || null,
       kimiReservePercent: reserve == null ? 0 : reserve,
       monthlyReset: normalizeMonthly(settings.kimi_monthly_reset)
@@ -653,6 +656,9 @@
   }
 
   function routingSummaryHTML() {
+    if (draft.base.routingPolicy && Object.keys(draft.base.routingPolicy).length && typeof routingPolicySummary === 'function') {
+      return routingPolicySummary(draft.base.routingPolicy, draft.profiles) + '<p class="muted">' + esc(tr('routing.policyPreserved')) + '</p>';
+    }
     return '<ul class="setup-list">' + ROUTING_KEYS.map(function (key) {
       var target = draft.routing && draft.routing[key];
       var profile = target && draft.profiles[target];

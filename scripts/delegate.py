@@ -17,6 +17,7 @@ from common import (ACTIVE, CONFIG, STATE, TERMINAL, api, artifact_dir, config, 
                     public_task, read_json, redact, task, task_path, tasks, update, write_json)
 import quota
 import diagnostics
+import routing
 from workspace import conflicts, git_root, integrate, relative_scope
 from worker import run_task
 
@@ -60,6 +61,7 @@ def wait_result(t, waited_seconds):
     actionable = blocked or billing_terminal
     alternatives = recovery.get('alternatives') if isinstance(recovery, dict) else None
     monthly = isinstance(recovery, dict) and recovery.get('billing_reason') == 'monthly_usage_limit'
+    window = isinstance(recovery, dict) and recovery.get('usage_window_exhausted') is True
     result.update(
         terminal=terminal,
         continue_waiting=not terminal and not blocked,
@@ -67,6 +69,7 @@ def wait_result(t, waited_seconds):
         next_action=(
             'reselect_profile_and_resubmit' if actionable and alternatives else
             'top_up_or_authorize_manual_retry' if actionable and monthly else
+            'retry_or_reselect_after_usage_window' if actionable and window else
             'top_up_provider_account_then_resubmit' if billing_terminal else
             'top_up_provider_account_then_wait' if blocked else
             'call_wait_again' if not terminal else
@@ -162,13 +165,21 @@ def submit(spec):
     return public_task(t)
 
 
-def choose_ready(all_tasks, c, q):
+def choose_ready(all_tasks, c, q, admissions=None):
     """Select dispatchable queued tasks.
 
     No global or per-provider concurrency caps: independent Codex conversations run
     freely. Only the per-owner cap, true quota/billing blocks, and scope/resource
     overlap locks constrain dispatch. Profiles are pinned; billing/quota blockages are
     reported, never silently re-routed.
+
+    Weighted routing_policy credits are advanced only after a task passes every check,
+    so owner-cap, scope/resource and quota blocks never consume a turn. Explicit
+    requested_profile tasks bypass the policy entirely and are never charged even when
+    that profile also appears in a stage. ``admissions`` is the daemon's durable batch;
+    the daemon calls this under the shared state lock and saves the batch after the
+    admitted tasks are durable. When omitted, this is a read-only preview that neither
+    advances nor writes counters.
     """
     if (STATE / 'maintenance.json').exists():
         return []
@@ -183,13 +194,25 @@ def choose_ready(all_tasks, c, q):
         if sum(1 for a in active if owner_key(a) == owner_key(t)) >= cap:
             choices.append((t, None, 'owner_at_capacity'))
             continue
-        profile, why = quota.route(t, c, q)
+        explicit = (t.get('requested_profile') or 'auto') != 'auto'
+        profile, why = quota.route(t, c, q, admissions)
         if profile is None:
+            if admissions is not None:
+                admissions.discard()
             choices.append((t, None, why))
             continue
         if any(conflicts(t, a) for a in active):
+            if admissions is not None:
+                admissions.discard()
             choices.append((t, None, 'scope_or_resource_in_use'))
             continue
+        # Only a real admission consumes its weighted share; the batch sees prior
+        # committed choices so one scheduling pass distributes correctly.
+        if admissions is not None:
+            if explicit:
+                admissions.discard()
+            else:
+                admissions.commit()
         selected = dict(t, profile=profile, status='starting')
         active.append(selected)
         choices.append((t, profile, why))
@@ -231,7 +254,9 @@ def daemon():
                 q, last_refresh = quota.refresh(), time.time()
             threads = {k: th for k, th in threads.items() if th.is_alive()}
             with locked():
-                for t, profile, reason in choose_ready(tasks(), c, q):
+                policy = routing.configured(c)
+                admissions = routing.Admissions.load(policy) if policy else None
+                for t, profile, reason in choose_ready(tasks(), c, q, admissions):
                     if reason == 'cancelled':
                         t.update(status='cancelled', finished_at=time.time())
                     elif profile:
@@ -241,6 +266,13 @@ def daemon():
                         t['queue_reason'] = reason
                         t['recovery'] = quota.guidance(t, c, q)
                     write_json(task_path(t['id']), t)
+                if admissions is not None:
+                    # Persist consumed credits strictly after the admitted tasks are
+                    # durable. A crash in between leaves at most this batch's credits
+                    # undercounted for tasks already starting; they are never admitted
+                    # again, so nothing is double-charged and the bounded credits
+                    # self-correct instead of skewing indefinitely.
+                    admissions.save()
             for t in tasks():
                 if t['status'] in ACTIVE and t['id'] not in threads:
                     th = threading.Thread(target=run_task, args=(t['id'], stop),
