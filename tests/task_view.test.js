@@ -87,8 +87,10 @@ function appHarness(){
  const elements=new Map();const get=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);};
  const document={hidden:false,activeElement:null,getElementById:get,createElement:n=>new Element(n),querySelector:get,querySelectorAll:()=>[],addEventListener(){}};
  const fixtureTasks=['a','b','c'].map(id=>({id,title:id,group_id:'g',group_title:'Group',status:'running',mode:'read',usage:{total:10}}));
+ fixtureTasks[2].profile='ark-k3';fixtureTasks[2].tier='deep';fixtureTasks[2].actual_models=['volcengine-agent-plan/kimi-k3'];
  let revision=0;
- const fetch=async url=>({ok:true,json:async()=>url==='/console-api/state'?{tasks:fixtureTasks,quota:{},profiles:{},pool_healthy:true}:url==='/console-api/auth/status'?{authenticated:true,username:'fixture'}:{task:fixtureTasks.find(t=>url.endsWith(t.id)),activity:{source:'live',events:[{id:'e',text:'Update '+(++revision),status:'running'}]},usage:{total:20}}});
+ const profiles={'ark-k3':{label:'Ark Agent Plan · Kimi K3',model:'volcengine-agent-plan/kimi-k3'}};
+ const fetch=async url=>({ok:true,json:async()=>url==='/console-api/state'?{tasks:fixtureTasks,quota:{},profiles,pool_healthy:true}:url==='/console-api/auth/status'?{authenticated:true,username:'fixture'}:{task:fixtureTasks.find(t=>url.endsWith(t.id)),activity:{source:'live',events:[{id:'e',text:'Update '+(++revision),status:'running'}]},usage:{total:20}}});
  const ctx={document,window:{TaskView:View,getSelection:()=>null,location:{replace(){throw Error('unexpected redirect');}}},TaskView:View,fetch,setInterval(){},Date,Map,Set,AbortController,console};
  vm.createContext(ctx);vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/app.js'),'utf8'),ctx);
  return {ctx,get,run:source=>vm.runInContext(source,ctx)};
@@ -116,4 +118,13 @@ test('filtering away the selected row stops its detail and preserves the filtere
  assert.equal(h.run('selectedTask'),null);
  assert.equal(h.get('task-rows').children.length,1);
  assert.match(h.get('task-rows').children[0].innerHTML,/data-detail="c"/);
+});
+
+test('task tier labels custom and Ark profiles instead of assuming every unknown profile is general', async () => {
+ const h=appHarness();await tick();
+ const row=h.get('task-rows').children[2].innerHTML;
+ assert.match(row,/Ark Agent Plan · Kimi K3/);
+ assert.match(row,/profile\.deep/);
+ assert.match(row,/model-dot deep/);
+ assert.doesNotMatch(row,/profile\.generic/);
 });

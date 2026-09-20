@@ -4,6 +4,7 @@ const I18n = window.I18n;
 const tr = (key, vars) => (I18n ? I18n.t(key, vars) : key);
 const fixed2 = (value) => (I18n ? I18n.number(Number(value), {minimumFractionDigits:2, maximumFractionDigits:2}) : Number(value).toFixed(2));
 function profileMeta(id) { if(id==='fallback')return ['DeepSeek Flash',tr('profile.fallback'),'fast']; if(id==='fast-code')return ['DeepSeek Flash',tr('profile.fallback'),'fast']; if(id==='senior-code')return ['Kimi K2.8',tr('profile.generic'),'senior']; if(id==='deep-research')return ['Kimi K3',tr('profile.deep'),'deep']; return null; }
+function taskTierMeta(task) { const tier=task.tier||(task.complexity==='deep'?'deep':task.urgency==='fast'?'fast':null); if(tier==='deep')return [tr('profile.deep'),'deep']; if(tier==='fast')return [tr('profile.fast.generic'),'fast']; if(tier==='normal')return [tr('profile.generic'),'senior']; return null; }
 const activeStates = ['starting','running','stopping','uncertain'];
 const attentionStates = ['failed','needs_attention','timed_out','uncertain'];
 const terminalStates = new Set(['completed','failed','cancelled','timed_out','needs_attention']);
@@ -64,6 +65,7 @@ function renderTasks(){
  for(const [t,depth] of ordered(list)){
   const p=[...(profileMeta(t.profile)||(t.profile?[t.actual_models?.join(', ')||t.profile,tr('profile.generic'),'senior']:[tr('profile.awaiting'),tr('profile.auto'),'senior']))];
   if(data.profiles?.[t.profile]?.label)p[0]=data.profiles[t.profile].label;
+  const tier=taskTierMeta(t);if(tier){p[1]=tier[0];p[2]=tier[1];}
   const expanded=selectedTask===t.id;
   const usage=overrides.get(t.id)?.usage||TaskView.usageOf(t);
   let row=taskRows.get(t.id);
