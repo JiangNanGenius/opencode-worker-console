@@ -6,9 +6,11 @@ const fixed2 = (value) => (I18n ? I18n.number(Number(value), {minimumFractionDig
 function profileMeta(id) { if(id==='fast-code')return ['DeepSeek Flash',tr('profile.fast.generic'),'fast']; if(id==='senior-code')return ['Kimi K2.8',tr('profile.generic'),'senior']; if(id==='deep-research')return ['Kimi K3',tr('profile.deep'),'deep']; return null; }
 const activeStates = ['starting','running','stopping','uncertain'];
 const attentionStates = ['failed','needs_attention','timed_out','uncertain'];
+const terminalStates = new Set(['completed','failed','cancelled','timed_out','needs_attention']);
 const externalIcon = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3H3v10h10v-3M9 3h4v4M7 9l6-6"/></svg>';
 const folderIcon = '<svg viewBox="0 0 18 18" aria-hidden="true"><path d="M2 5h5l2 2h7v8H2zM2 5V3h5l2 2h7v2"/></svg>';
 let data = {tasks:[],quota:{}}, selectedGroup = '', selectedFilter = 'all', selectedTask = null, loading = false;
+let selectedTaskIds = new Set(), visibleSelectableIds = [];
 function setHTML(el, value) { if (el.innerHTML !== value) el.innerHTML = value; }
 function clock(seconds) { return seconds ? (I18n ? I18n.time(seconds,{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'}) : new Date(seconds * 1000).toLocaleTimeString('en-GB',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'})) : '—'; }
 function resetTime(value) { if (!value) return tr('reset.unknown'); const d = new Date(typeof value==='number' ? (value < 1e12 ? value*1000:value) : value); if(Number.isNaN(d.getTime()))return tr('reset.unknown'); const formatted = I18n ? I18n.date(d,{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}) : d.toLocaleString(); return formatted+' '+tr('reset.suffix'); }
@@ -36,8 +38,7 @@ const detailPanel = $('detail');
 const inlineDetailRow = document.createElement('tr');
 inlineDetailRow.className = 'task-detail-row';
 const inlineDetailCell = document.createElement('td');
-inlineDetailCell.colSpan = 6;
-inlineDetailCell.append(detailPanel);
+inlineDetailCell.colSpan = 7;
 inlineDetailRow.append(inlineDetailCell);
 const taskRows = new Map();
 const number = value => I18n ? I18n.number(value) : Number(value).toLocaleString();
@@ -53,6 +54,8 @@ function renderTasks(){
  $('tasks-heading').textContent=selectedGroup?(grouped().get(selectedGroup)?.name||tr('common.primaryTask')):tr('nav.allTasks');
  $('counts').textContent=tr('counts.summary',{active:list.filter(t=>activeStates.includes(t.status)).length,queued:list.filter(t=>t.status==='queued').length});
  list=list.filter(t=>(selectedFilter==='all'||selectedFilter==='active'&&activeStates.includes(t.status)||selectedFilter==='attention'&&attentionStates.includes(t.status)||selectedFilter==='completed'&&t.status==='completed')&&(!q||[t.title,t.profile,data.profiles?.[t.profile]?.label,data.profiles?.[t.profile]?.model,t.group_title,t.id].join(' ').toLowerCase().includes(q)));
+ selectedTaskIds=new Set([...selectedTaskIds].filter(id=>data.tasks.some(t=>t.id===id&&terminalStates.has(t.status))));
+ visibleSelectableIds=list.filter(t=>terminalStates.has(t.status)).map(t=>t.id);
  if(selectedTask&&!list.some(t=>t.id===selectedTask)){detailController.close();return;}
  const overrides=new Map();
  if(selectedTask&&detailController.state().detail)overrides.set(selectedTask,detailController.state().detail);
@@ -70,23 +73,36 @@ function renderTasks(){
   const focus=document.activeElement;
   const focusTarget=row.contains(focus)?focus.getAttribute('data-focus'):null;
   const toggle=`data-detail="${esc(t.id)}" aria-expanded="${expanded}"${expanded?' aria-controls="detail"':''}`;
-  setHTML(row,`<td><button class="task-title task-toggle" data-focus="title" ${toggle}>${depth?'<span class="parent-indicator">└</span>':''}${esc(t.title)}</button><div class="task-meta">${esc(t.group_title)}${t.parent_task_id?tr('common.subtask'):''} · ${t.mode==='write'?tr('mode.write'):tr('mode.read')}${t.workspace==='isolated'?tr('mode.isolated'):''}</div></td><td><div class="worker-name"><i class="model-dot ${p[2]}"></i><div>${esc(p[0])}<small>${esc(p[1])}</small></div></div></td><td>${status(t)}</td><td class="duration">${duration(t)}</td><td class="task-token-cell">${TaskView.numeric(usage.total)?esc(number(usage.total)):'—'}</td><td><div class="task-row-actions">${t.session_url?`<a class="native-task-link" data-focus="native" href="${esc(t.session_url)}" target="_blank" rel="noopener" aria-label="${esc(tr('detail.openTask'))}" title="${esc(tr('detail.openTask'))}">${externalIcon}</a>`:''}<button class="detail-button" data-focus="toggle" ${toggle} aria-label="${esc(tr(expanded?'detail.close':'task.viewDetails',{title:t.title}))}"><svg viewBox="0 0 18 18" aria-hidden="true"><path d="m7 4 5 5-5 5"/></svg></button></div></td>`);
+  const canDelete=terminalStates.has(t.status);
+  setHTML(row,`<td class="task-select-cell"><input type="checkbox" data-task-select="${esc(t.id)}" aria-label="${esc(tr('tasks.selectTask',{title:t.title}))}" ${selectedTaskIds.has(t.id)?'checked':''} ${canDelete?'':'disabled'}></td><td><button class="task-title task-toggle" data-focus="title" ${toggle}>${depth?'<span class="parent-indicator">└</span>':''}${esc(t.title)}</button><div class="task-meta">${esc(t.group_title)}${t.parent_task_id?tr('common.subtask'):''} · ${t.mode==='write'?tr('mode.write'):tr('mode.read')}${t.workspace==='isolated'?tr('mode.isolated'):''}</div></td><td><div class="worker-name"><i class="model-dot ${p[2]}"></i><div>${esc(p[0])}<small>${esc(p[1])}</small></div></div></td><td>${status(t)}</td><td class="duration">${duration(t)}</td><td class="task-token-cell">${TaskView.numeric(usage.total)?esc(number(usage.total)):'—'}</td><td><div class="task-row-actions">${t.session_url?`<a class="native-task-link" data-focus="native" href="${esc(t.session_url)}" target="_blank" rel="noopener" aria-label="${esc(tr('detail.openTask'))}" title="${esc(tr('detail.openTask'))}">${externalIcon}</a>`:''}${canDelete?`<button class="task-delete-button" data-delete-task="${esc(t.id)}" aria-label="${esc(tr('tasks.deleteOne',{title:t.title}))}" title="${esc(tr('tasks.deleteOne',{title:t.title}))}">×</button>`:''}<button class="detail-button" data-focus="toggle" ${toggle} aria-label="${esc(tr(expanded?'detail.close':'task.viewDetails',{title:t.title}))}"><svg viewBox="0 0 18 18" aria-hidden="true"><path d="m7 4 5 5-5 5"/></svg></button></div></td>`);
   if(focusTarget&&!row.contains(document.activeElement))row.querySelector('[data-focus="'+focusTarget+'"]').focus({preventScroll:true});
   rows.push(row);
-  if(expanded)rows.push(inlineDetailRow);
+  if(expanded){inlineDetailCell.append(detailPanel);rows.push(inlineDetailRow);}
  }
  const body=$('task-rows');
  const wanted=new Set(rows);
  for(const node of Array.from(body.children))if(!wanted.has(node))node.remove();
  let cursor=body.firstElementChild;
  for(const row of rows){if(row!==cursor)body.insertBefore(row,cursor);cursor=row.nextElementSibling;}
- if(!rows.length)setHTML(body,`<tr><td colspan="6" class="empty">${data.tasks.length?tr('tasks.emptyFiltered'):tr('tasks.emptyNone')}</td></tr>`);
+ if(!rows.length)setHTML(body,`<tr><td colspan="7" class="empty">${data.tasks.length?tr('tasks.emptyFiltered'):tr('tasks.emptyNone')}</td></tr>`);
  for(const id of taskRows.keys())if(!data.tasks.some(t=>t.id===id))taskRows.delete(id);
  detailPanel.hidden=!selectedTask;
+ if(!selectedTask&&detailPanel.parentNode!==$('view-tasks'))$('view-tasks').append(detailPanel);
  $('visible-count').textContent=tr('tasks.visibleCount',{visible:list.length,total});
+ const selectAll=$('select-visible-tasks');
+ const selectedVisible=visibleSelectableIds.filter(id=>selectedTaskIds.has(id)).length;
+ selectAll.checked=visibleSelectableIds.length>0&&selectedVisible===visibleSelectableIds.length;
+ selectAll.indeterminate=selectedVisible>0&&selectedVisible<visibleSelectableIds.length;
+ selectAll.disabled=!visibleSelectableIds.length;
+ $('delete-selected-tasks').disabled=!selectedTaskIds.size;
+ $('clear-completed-tasks').disabled=!data.tasks.some(t=>t.status==='completed');
+ $('selected-task-count').textContent=selectedTaskIds.size?tr('tasks.selected',{n:selectedTaskIds.size}):tr('tasks.selectedNone');
 }
 async function request(path,options){const response=await fetch(path,options);if(response.status===401){window.location.replace('/console-login');throw new Error(tr('auth.expired'));}if(!response.ok){let body={};try{body=await response.json();}catch{}throw new Error(body.error||tr('error.unavailable'));}return response.json();}
-async function refresh(){if(loading)return;loading=true;try{data=await request('/console-api/state');renderGroups();renderQuota();renderEconomics();renderTasks();$('health').classList.toggle('offline',!data.pool_healthy);$('health').innerHTML=`<i></i>${data.pool_healthy?tr('health.online'):tr('health.offline')}`;$('updated').textContent=tr('updated.at',{time:clock(data.updated_at)});$('pool-limit').textContent=tr('pool.limit',{n:data.max_parallel_per_owner});$('error').hidden=true;}catch(e){$('error').textContent=e.message;$('error').hidden=false;$('health').classList.add('offline');$('health').innerHTML='<i></i>'+tr('health.disconnected');}finally{loading=false;detailController.refresh();}}
+function showError(message){$('error').textContent=message;$('error').hidden=false;}
+window.addEventListener?.('error',event=>showError(tr('tasks.partialError',{message:event.message||tr('error.unavailable')})));
+window.addEventListener?.('unhandledrejection',event=>showError(tr('tasks.partialError',{message:event.reason?.message||String(event.reason||tr('error.unavailable'))})));
+async function refresh(){if(loading)return;loading=true;try{data=await request('/console-api/state');const errors=[];for(const [name,fn] of [['tasks',renderTasks],['groups',renderGroups],['quota',renderQuota],['economics',renderEconomics]]){try{fn();}catch(error){errors.push(name+': '+(error.message||String(error)));if(name==='tasks')setHTML($('task-rows'),`<tr><td colspan="7" class="empty">${esc(tr('tasks.renderError',{message:error.message||String(error)}))}</td></tr>`);}}$('health').classList.toggle('offline',!data.pool_healthy);$('health').innerHTML=`<i></i>${data.pool_healthy?tr('health.online'):tr('health.offline')}`;$('updated').textContent=tr('updated.at',{time:clock(data.updated_at)});$('pool-limit').textContent=tr('pool.limit',{n:data.max_parallel_per_owner});if(errors.length)showError(tr('tasks.partialError',{message:errors.join(' · ')}));else $('error').hidden=true;}catch(e){showError(e.message);$('health').classList.add('offline');$('health').innerHTML='<i></i>'+tr('health.disconnected');setHTML($('task-rows'),`<tr><td colspan="7" class="empty">${esc(tr('tasks.renderError',{message:e.message}))}</td></tr>`);}finally{loading=false;detailController.refresh();}}
 function listHTML(items,empty){return items?.length?'<ul>'+items.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul>':'<p class="muted">'+empty+'</p>';}
 function renderInlineDetail(state){
  if(!state.selected)return;
@@ -125,7 +141,12 @@ function renderInlineDetail(state){
 function details(id){detailController.open(id);}
 $('groups').addEventListener('click',e=>{const b=e.target.closest('[data-group]');if(!b)return;selectedGroup=b.dataset.group;renderGroups();renderTasks();});
 $('filters').addEventListener('click',e=>{const b=e.target.closest('[data-filter]');if(!b)return;selectedFilter=b.dataset.filter;for(const x of $('filters').querySelectorAll('button')){x.classList.toggle('selected',x===b);x.setAttribute('aria-pressed',String(x===b));}renderTasks();});
-$('search').addEventListener('input',renderTasks);$('task-rows').addEventListener('click',e=>{const b=e.target.closest('[data-detail]');if(b)details(b.dataset.detail);});
+$('search').addEventListener('input',renderTasks);
+$('select-visible-tasks').addEventListener('change',e=>{for(const id of visibleSelectableIds)e.target.checked?selectedTaskIds.add(id):selectedTaskIds.delete(id);renderTasks();});
+$('task-rows').addEventListener('change',e=>{const box=e.target.closest('[data-task-select]');if(!box)return;box.checked?selectedTaskIds.add(box.dataset.taskSelect):selectedTaskIds.delete(box.dataset.taskSelect);renderTasks();});
+$('task-rows').addEventListener('click',e=>{const remove=e.target.closest('[data-delete-task]');if(remove){const task=data.tasks.find(t=>t.id===remove.dataset.deleteTask);openAction(tr('dialog.deleteTasks'),`<p>${esc(tr('dialog.deleteTasksHint',{n:1}))}</p><p><strong>${esc(task?.title||remove.dataset.deleteTask)}</strong></p>`,async()=>{await mutate('/console-api/tasks/manage',{action:'delete',ids:[remove.dataset.deleteTask]});selectedTaskIds.delete(remove.dataset.deleteTask);await refresh();});return;}const b=e.target.closest('[data-detail]');if(b)details(b.dataset.detail);});
+$('delete-selected-tasks').addEventListener('click',()=>{const ids=[...selectedTaskIds];if(!ids.length)return;openAction(tr('dialog.deleteTasks'),`<p>${esc(tr('dialog.deleteTasksHint',{n:ids.length}))}</p>`,async()=>{await mutate('/console-api/tasks/manage',{action:'delete',ids});selectedTaskIds.clear();await refresh();});});
+$('clear-completed-tasks').addEventListener('click',()=>{const n=data.tasks.filter(t=>t.status==='completed').length;if(!n)return;openAction(tr('dialog.clearCompleted'),`<p>${esc(tr('dialog.clearCompletedHint',{n}))}</p>`,async()=>{await mutate('/console-api/tasks/manage',{action:'clear_completed'});selectedTaskIds.clear();await refresh();});});
 $('close-detail').addEventListener('click',()=>{const id=selectedTask;detailController.close();taskRows.get(id)?.querySelector('[data-focus=title]')?.focus({preventScroll:true});});
 $('refresh-detail').addEventListener('click',()=>detailController.refresh(true));
 $('refresh-quota').addEventListener('click',async()=>{const b=$('refresh-quota');b.disabled=true;try{await request('/console-api/quota',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});await refresh();}catch(e){$('error').textContent=e.message;$('error').hidden=false;}finally{b.disabled=false;}});

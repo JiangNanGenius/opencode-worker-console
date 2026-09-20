@@ -409,6 +409,41 @@ def save_settings(body):
     return result
 
 
+def delete_tasks(body):
+    """Remove terminal task records from the console without touching work products.
+
+    OpenCode sessions, artifacts and worktrees are deliberately retained. This keeps
+    task-list cleanup independent from evidence/session cleanup and makes a mistaken
+    selection recoverable from the retained underlying work.
+    """
+    if not isinstance(body, dict):
+        raise ValueError('JSON object required')
+    action = body.get('action')
+    if action not in ('delete', 'clear_completed'):
+        raise ValueError('Unknown task management action')
+    with common.locked():
+        current = common.tasks()
+        by_id = {item['id']: item for item in current}
+        if action == 'clear_completed':
+            selected = [item for item in current if item.get('status') == 'completed']
+        else:
+            ids = body.get('ids')
+            if not isinstance(ids, list) or not ids or len(ids) > 1000:
+                raise ValueError('ids must contain 1 to 1000 task IDs')
+            if any(not isinstance(item, str) for item in ids) or len(set(ids)) != len(ids):
+                raise ValueError('Task IDs must be unique strings')
+            missing = [item for item in ids if item not in by_id]
+            if missing:
+                raise ValueError('Unknown task ID')
+            selected = [by_id[item] for item in ids]
+        blocked = [item['id'] for item in selected if item.get('status') not in common.TERMINAL]
+        if blocked:
+            raise ValueError('Only terminal tasks can be deleted')
+        for item in selected:
+            common.task_path(item['id']).unlink()
+    return {'deleted': len(selected), 'retained': ['sessions', 'artifacts', 'worktrees']}
+
+
 def _archived_filter(value):
     if value is None or value == '':
         return None

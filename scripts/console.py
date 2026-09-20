@@ -458,6 +458,8 @@ class Handler(BaseHTTPRequestHandler):
                 result = steering.send(path.split('/')[-2], body.get('text'), body.get('request_id'))
             elif path == '/console-api/tasks':
                 result = delegate.submit(body)
+            elif path == '/console-api/tasks/manage':
+                result = management.delete_tasks(body)
             elif path == '/console-api/sessions':
                 result = management.create_session(body)
             elif path.startswith('/console-api/session/'):

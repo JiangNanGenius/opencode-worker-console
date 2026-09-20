@@ -111,3 +111,22 @@ class ConsoleOwnerTests(unittest.TestCase):
             self.assertNotIn('deadline', source.lower())
         self.assertNotIn('routing.maxSteps', i18n)
         self.assertNotIn('timeout', i18n.lower())
+
+    def test_console_exposes_safe_task_management_and_resilient_rendering(self):
+        project = Path(__file__).resolve().parents[1]
+        index = (project / 'web' / 'index.html').read_text()
+        app = (project / 'web' / 'app.js').read_text()
+        server = (project / 'scripts' / 'console.py').read_text()
+        self.assertIn('/console-api/tasks/manage', server)
+        self.assertIn('id="select-visible-tasks"', index)
+        self.assertIn('id="delete-selected-tasks"', index)
+        self.assertIn('id="clear-completed-tasks"', index)
+        self.assertIn("action:'clear_completed'", app)
+        self.assertIn("['tasks',renderTasks]", app)
+        self.assertLess(app.index("['tasks',renderTasks]"), app.index("['quota',renderQuota]"))
+        self.assertIn("if(name==='tasks')", app)
+        # The detail panel must stay in the document until a task expands; moving it
+        # into a detached row during startup made later getElementById calls return null.
+        setup = app[app.index("const detailPanel = $('detail')"):app.index('function renderTasks')]
+        self.assertNotIn('inlineDetailCell.append(detailPanel)', setup)
+        self.assertIn('if(expanded){inlineDetailCell.append(detailPanel)', app)
