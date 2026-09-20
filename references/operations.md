@@ -49,8 +49,9 @@ The first available policy stage wins; members in that stage share actual admiss
 weight. See [routing and plan efficiency](routing.md) for the Ark/Kimi baseline, bounded
 quota-aware ratios, fallbacks and configuration. Explicit profiles pin one model and bypass the
 policy; use them only for a user-required model, controlled comparison or informed recovery, and
-record that concrete reason with `--profile-reason`. Urgent work remains automatic and uses
-`--urgency fast`; profile names and task size do not select a model.
+record that concrete reason with `--profile-reason`. After deep complexity takes precedence,
+urgent work uses `--profile auto --urgency fast` to enter the Fast policy tier; profile names and
+task size never bypass that policy or pin a model.
 
 Without a policy, `auto` uses the legacy `routing` mapping based on urgency and complexity.
 It does not infer semantic properties from task text. Every tier is a general-purpose agent;

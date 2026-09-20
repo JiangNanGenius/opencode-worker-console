@@ -101,12 +101,12 @@ not a permitted job category. Check `quota` before a batch or after an availabil
 When `routing_policy` is configured, prefer `--profile auto` and deliberately choose task
 **depth**. This lets the configured allowance priorities and weighted pools work. An explicit
 profile pins one model and bypasses the policy; use it for a real model requirement or an
-informed recovery decision, not by habit. Urgency changes scheduling only: use
-`--profile auto --urgency fast` for quick feedback. Never select a profile because its stable
-ID or label contains `fast`, because the task is small, or because direct billing appears
-quicker. In the Agent Plan preset, `fast-code` is the legacy ID for direct paid DeepSeek and
-remains the final fallback. An explicit profile must carry a concrete `profile_reason`; if no
-such reason exists, use `auto`.
+informed recovery decision, not by habit. After deep complexity takes precedence,
+`--urgency fast` selects the policy's Fast automatic tier; it never justifies pinning a model.
+Never select a profile because its stable ID or label contains `fast`, because the task is
+small, or because direct billing appears quicker. In the Agent Plan preset, `fast-code` is the
+legacy ID for direct paid DeepSeek and remains the final fallback. An explicit profile must
+carry a concrete `profile_reason`; if no such reason exists, use `auto`.
 
 | Task shape | Selection |
 | --- | --- |

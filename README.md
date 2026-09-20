@@ -103,7 +103,7 @@ These options initialize a **fresh** installation, not replace existing profiles
 | `deep-research` | Kimi K3 | Large repositories, long-context synthesis, ambiguous investigation and review |
 | `fast-code` | DeepSeek V4.1 Flash | Direct model pin or final fallback in the Agent Plan preset |
 
-All profiles are general-purpose agents. Keep routing names while changing their models in the console. The preset uses `max` reasoning; other models need a variant their provider actually supports. `auto` uses the configured task tier; an optional policy adds ordered provider fallback and weighted pools before dispatch. Urgency affects scheduling, not model choice. Explicit profiles stay pinned and require a reason when ordered routing is enabled. [Routing and plan efficiency](references/routing.md).
+All profiles are general-purpose agents. Keep routing names while changing their models in the console. The preset uses `max` reasoning; other models need a variant their provider actually supports. `auto` uses the configured task tier; an optional policy adds ordered provider fallback and weighted pools before dispatch. Deep complexity takes precedence; otherwise fast urgency selects the Fast automatic tier without pinning a model. Explicit profiles stay pinned and require a reason when ordered routing is enabled. [Routing and plan efficiency](references/routing.md).
 
 ## What you can manage
 
