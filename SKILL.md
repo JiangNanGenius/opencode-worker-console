@@ -68,8 +68,26 @@ delegate-opencode submit --directory "$PWD" --profile auto \
   'Investigate the reported problem and recommend a complete fix without changing systems.'
 ```
 
-For writes add `--mode write` with `--scope` and/or `--target`. JSON specs can be supplied
-with `submit --spec /absolute/task.json` or `--spec -`. Read
+For writes add `--mode write` with `--scope` and/or `--target`. Prefer a private JSON file for
+complex specs: `submit --spec /absolute/private/task.json`. Use `--spec -` only when the caller
+actually writes JSON to the process stdin. In particular, a `functions.exec_command` call does
+not transfer an in-memory JavaScript object to stdin by itself; never issue `--spec -` from it
+without opening a TTY session and writing the payload. For independent in-memory specs, encode
+and submit them concurrently without shell interpolation of raw JSON:
+
+```js
+const submit = spec => {
+  const encoded = encodeURIComponent(JSON.stringify(spec)).replace(/'/g, "%27");
+  return tools.exec_command({
+    cmd: "~/.local/bin/delegate-opencode submit --spec-urlencoded '" + encoded + "'",
+    workdir: spec.directory,
+  });
+};
+const submitted = await Promise.allSettled(specs.map(submit));
+```
+
+Inspect every submission result and wait only on returned job IDs. Use a private file instead
+when a specification is too large for a command argument. Read
 [references/operations.md](references/operations.md) for SSH/remote task examples, CLI fields,
 resource coordination, service maintenance and evidence collection.
 

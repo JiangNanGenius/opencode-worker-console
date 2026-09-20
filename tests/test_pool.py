@@ -1,3 +1,4 @@
+import argparse
 import http.client
 import importlib
 import io
@@ -12,6 +13,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
+import urllib.parse
 from contextlib import redirect_stdout
 from http.server import ThreadingHTTPServer
 import unittest
@@ -336,6 +338,33 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(parsed['scopes'], [])
         self.assertEqual(common.task(parsed['id'])['targets'],
                          ['ssh:example.com:nginx', 'api:staging'])
+
+    def test_cli_urlencoded_spec_accepts_unicode_and_quotes(self):
+        import service
+        spec = self.spec(objective="检查 O'Reilly 的中文任务")
+        encoded = urllib.parse.quote(json.dumps(spec, ensure_ascii=False), safe='')
+        argv = ['delegate.py', 'submit', '--spec-urlencoded', encoded]
+        out = io.StringIO()
+        with patch.object(sys, 'argv', argv), patch.object(service, 'start', return_value={}), \
+                redirect_stdout(out):
+            self.assertIsNone(delegate.main())
+        parsed = json.loads(out.getvalue())
+        self.assertEqual(common.task(parsed['id'])['objective'], spec['objective'])
+
+    def test_cli_empty_spec_stdin_is_actionable_and_creates_no_task(self):
+        import service
+        before = [t['id'] for t in common.tasks()]
+        argv = ['delegate.py', 'submit', '--spec', '-']
+        with patch.object(sys, 'argv', argv), patch.object(sys, 'stdin', io.StringIO()), \
+                patch.object(service, 'start', return_value={}):
+            with self.assertRaisesRegex(ValueError, 'received empty stdin.*--spec-urlencoded'):
+                delegate.main()
+        self.assertEqual([t['id'] for t in common.tasks()], before)
+
+    def test_cli_spec_requires_one_json_object(self):
+        args = argparse.Namespace(spec=None, spec_urlencoded=urllib.parse.quote('[1, 2]', safe=''))
+        with self.assertRaisesRegex(ValueError, 'one JSON object'):
+            delegate.load_submit_spec(args)
 
     def test_same_target_writes_conflict_without_blocking_reads(self):
         a = self.new(mode='write', scopes=[], targets=['ssh:h:nginx'])

@@ -22,8 +22,14 @@ delegate-opencode cancel JOB_ID
 delegate-opencode stats
 ```
 
-For complex text, use `submit --spec /absolute/task.json` or `--spec -` with a JSON
-object on stdin. Fields: `directory`, `objective`, `title`, `acceptance` (string array),
+For complex text, prefer `submit --spec /absolute/private/task.json`. `--spec -` requires a
+JSON object on the process stdin; calling `functions.exec_command` with a command string alone
+does not supply it. For an in-memory JavaScript object use
+`encodeURIComponent(JSON.stringify(spec)).replace(/'/g, "%27")`, put that result inside one
+pair of shell single quotes, and pass it to `--spec-urlencoded`. This encoding avoids treating
+raw task text as shell code. Independent specs may be submitted with `Promise.allSettled`; inspect
+every result and wait only on successfully returned job IDs. Use a private file for very large
+specifications. Fields: `directory`, `objective`, `title`, `acceptance` (string array),
 `tier` (`fast`/`normal`/`deep`), `profile` (`auto` for ordinary use), `profile_reason`
 (required for the exceptional explicit profile), `mode` (`read`/`write`), `scopes` (literal relative
 path array, repository-local), `targets` (operational target array such as `ssh:example.com:nginx`),

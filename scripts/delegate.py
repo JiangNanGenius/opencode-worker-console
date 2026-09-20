@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import uuid
 from common import (ACTIVE, CONFIG, STATE, TERMINAL, api, artifact_dir, config, init, locked,
                     public_task, read_json, redact, task, task_path, tasks, update, write_json)
@@ -417,11 +418,46 @@ def stats():
     return groups
 
 
+def load_submit_spec(args):
+    """Load a JSON submit specification from a file, stdin or a shell-safe URI argument."""
+    if args.spec_urlencoded is not None:
+        source = '--spec-urlencoded'
+        try:
+            raw = urllib.parse.unquote_to_bytes(args.spec_urlencoded).decode('utf-8')
+        except UnicodeDecodeError as e:
+            raise ValueError('--spec-urlencoded must contain percent-encoded UTF-8 JSON') from e
+    elif args.spec == '-':
+        source = '--spec - stdin'
+        raw = sys.stdin.read()
+        if not raw.strip():
+            raise ValueError(
+                '--spec - received empty stdin; functions.exec_command does not send an '
+                'in-memory value as stdin. Use --spec /absolute/private/task.json, use '
+                '--spec-urlencoded with percent-encoded JSON, or open a TTY session and '
+                'write the JSON to its stdin.'
+            )
+    else:
+        source = '--spec file'
+        raw = Path(args.spec).read_text()
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            f'Invalid JSON from {source} at line {e.lineno}, column {e.colno}: {e.msg}'
+        ) from None
+    if not isinstance(value, dict):
+        raise ValueError('Task specification must be one JSON object')
+    return value
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest='cmd', required=True)
     s = sub.add_parser('submit')
-    s.add_argument('--spec', help='JSON task specification; use - for stdin')
+    spec_group = s.add_mutually_exclusive_group()
+    spec_group.add_argument('--spec', help='JSON task specification file; use - only when stdin is supplied')
+    spec_group.add_argument('--spec-urlencoded',
+                            help='Percent-encoded UTF-8 JSON task specification')
     s.add_argument('--directory', default=os.getcwd())
     s.add_argument('--profile', default='auto')
     s.add_argument('--profile-reason', help='Why this task must bypass automatic routing')
@@ -519,8 +555,8 @@ def main():
         import cleanup
         result = cleanup.run(apply=args.apply, force=args.force)
     elif args.cmd == 'submit':
-        if args.spec:
-            spec = json.loads(sys.stdin.read() if args.spec == '-' else Path(args.spec).read_text())
+        if args.spec is not None or args.spec_urlencoded is not None:
+            spec = load_submit_spec(args)
         else:
             spec = {key: value for key, value in vars(args).items() if value is not None}
             spec.update(scopes=args.scope, commands=args.command, resources=args.resource,
