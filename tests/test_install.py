@@ -130,6 +130,7 @@ class InstallTests(unittest.TestCase):
         c = json.loads(self.config.read_text())
         self.assertEqual(c['profiles'], install.PRESETS['ark-agent-plan'])
         self.assertEqual(c['routing_policy'], install.DEFAULT_ROUTING_POLICY)
+        self.assertEqual(c['routing_dynamics'], install.DEFAULT_ROUTING_DYNAMICS)
         self.assertEqual(c['routing_policy']['deep'][0], [
             {'profile': 'deep-research', 'weight': 2}, {'profile': 'ark-k3', 'weight': 1}])
         self.assertEqual(c['routing_policy']['background'][0], [

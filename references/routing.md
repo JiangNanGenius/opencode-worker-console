@@ -6,6 +6,41 @@ Prefer complete outcomes, usable subscription allowance and enough model/context
 Subscriptions are already paid for; direct DeepSeek balance is incremental spend. Do not split a
 coherent task or replay its context merely to change providers.
 
+## Generic routing patterns
+
+Worker Desk does not require any particular provider or number of plans. Configure profiles first,
+then choose one of these patterns in **Models & routing**:
+
+- **One model per tier:** the simple `routing` map selects one profile for fast, background and deep work.
+- **Primary + backup:** put each profile in its own ordered stage. The next stage is considered only when every model in the earlier stage is unavailable.
+- **Fixed weighted pool:** put two or more profiles in one stage and assign integer weights. The weights stay fixed.
+- **Quota-adaptive pool:** explicitly enable a bounded ratio ladder for one two-provider stage. Fresh quota runway may move one step from the saved baseline; missing or stale telemetry keeps the baseline.
+
+Ordered fallback and weighted sharing can be mixed independently for each task tier. A user with
+one subscription needs no policy at all; a user with one paid plan and one pay-as-you-go backup can
+use two one-model stages. The Ark/Kimi policy below is an optional example, not a platform default.
+
+The stored shape is deliberately provider-neutral:
+
+```json
+{
+  "routing_policy": {
+    "background": [
+      [{"profile": "plan-a", "weight": 2}, {"profile": "plan-b", "weight": 1}],
+      [{"profile": "backup", "weight": 1}]
+    ]
+  },
+  "routing_dynamics": {
+    "background": {
+      "0": {"ladder": [[3, 1], [2, 1], [1, 1]]}
+    }
+  }
+}
+```
+
+Adaptive records are opt-in and tied to a stage index. Ordinary weights never become dynamic just
+because they happen to be `1:1` or `2:1`.
+
 ## Ark Agent Plan
 
 Connect `volcengine-agent-plan` through OpenCode's private auth store. Never paste a credential
@@ -37,7 +72,7 @@ Sources: [OpenCode integration](https://www.volcengine.com/docs/82379/2373741),
 [GetAFPUsage](https://www.volcengine.com/docs/82379/2479847),
 [GetPersonalPlan](https://www.volcengine.com/docs/82379/2546382).
 
-## Default subscription-first policy
+## Optional Ark/Kimi subscription-first preset
 
 A fresh `--preset ark-agent-plan` installation creates:
 

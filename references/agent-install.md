@@ -40,6 +40,10 @@ the existing task context establishes it. The Ark preset adds the subscription-f
 policy; it requires native Kimi, Ark Agent Plan and direct DeepSeek access. A preset is not an
 account. Append `--no-start` if the user asked to provision without starting.
 
+Do not infer that multiple providers are required. `--model` is the normal complete installation
+for a single plan. The web console can later add an ordered backup, a fixed weighted pool or an
+explicit quota-adaptive pair without reinstalling.
+
 OpenCode is reused when available or installed at the pinned official version. The installer creates independent runtime/state directories and prints actual paths/URLs. There is no fixed port to hard-code. Explicit overrides: `DELEGATE_INSTALL`, `DELEGATE_STATE`, `DELEGATE_CONFIG`, `DELEGATE_BIN_DIR`; use the resulting wrapper consistently.
 
 An existing installation is updated with `python3 scripts/install.py`, preserving settings/account/evidence. Model/preset flags do not overwrite existing profiles. Do not invoke `--wizard` under a noninteractive tool or attempt to feed fabricated answers into a TTY.

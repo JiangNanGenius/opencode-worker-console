@@ -64,6 +64,10 @@ The wizard reviews choices before installation. Existing installations keep thei
 
 A fresh console starts with **admin / admin**; change it before network access. Connect your provider in OpenCode, then use **Setup wizard** to review models, routing and worker preferences. The bridge setup form does not collect provider API keys.
 
+One provider is enough. The console can later build a single-model route, an ordered primary/backup
+chain, a fixed weighted pool, or an explicitly quota-adaptive two-plan pool. The Ark/Kimi setup in
+this repository is an optional preset rather than a requirement.
+
 ### Noninteractive installation
 
 For an already chosen OpenCode `provider/model` identifier:
@@ -105,7 +109,7 @@ All profiles are general-purpose agents. Keep routing names while changing their
 
 - **Tasks:** expand details directly under a task; inspect live activity and input/output/reasoning/cache tokens without leaving the console. The current filter shows recorded worker totals; these exclude coordinator usage and are not a cost estimate. Parent/child ownership, live guidance, structured errors and full transcripts remain available.
 - **Sessions:** search, create, rename, fork, archive/restore, workspace binding, deletion and native OpenCode links. Forking alone sends no prompt.
-- **Models, usage and economics:** configurable profiles/routing; DeepSeek balance, Kimi plan windows and Ark AFP windows. The console shows live dynamic shares and a configurable cost ruler (`1 AFP-equivalent = ¥0.002` by default); AFP-equivalent is not Kimi quota.
+- **Models, usage and economics:** visual profiles and route stages for one provider, primary/backup, fixed pools or opt-in quota adaptation; DeepSeek balance, Kimi plan windows and Ark AFP windows. The console shows live dynamic shares and a configurable cost ruler (`1 AFP-equivalent = ¥0.002` by default); AFP-equivalent is not Kimi quota.
 - **Parallel work:** four running workers per owning Codex conversation by default; independent capacity across conversations. Conflicting files/resources and provider availability still govern dispatch.
 - **Workspaces:** disjoint shared scopes, remote operational targets or isolated Git worktrees; review patches before integration.
 - **Long jobs:** no artificial model-step, tool-call or total-runtime cap. Observe and guide through completion; never blindly replay uncertain operations.

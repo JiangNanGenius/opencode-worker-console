@@ -164,6 +164,9 @@ def settings():
     policy = routing.runtime_policy(c.get('routing_policy'), c.get('profiles'))
     if policy:
         out['routing_policy'] = policy
+        dynamics = routing.runtime_dynamics(c.get('routing_dynamics'), policy, c.get('profiles'))
+        if dynamics:
+            out['routing_dynamics'] = dynamics
     out['cleanup'] = cleanup.policy()
     return out
 
@@ -248,6 +251,16 @@ def _validate_settings(body):
         else:
             import routing as routing_policy
             result['routing_policy'] = routing_policy.validate_policy(value, profiles)
+    if 'routing_dynamics' in body:
+        value = body['routing_dynamics']
+        if value is None or value == {}:
+            result['routing_dynamics'] = None
+        else:
+            policy = result.get('routing_policy')
+            if not policy:
+                raise ValueError('routing_dynamics requires routing_policy in the same request')
+            import routing as routing_policy
+            result['routing_dynamics'] = routing_policy.validate_dynamics(value, policy, profiles)
     # Legacy per-task iteration caps in the body are ignored, never validated
     # and never re-persisted; workers have no default step or time cap.
     # Legacy global/provider cap fields sent by old clients are ignored, never
@@ -343,6 +356,8 @@ def save_settings(body):
     candidate = _validate_settings(body)
     explicit_policy = 'routing_policy' in body
     policy_value = candidate.pop('routing_policy', None)
+    explicit_dynamics = 'routing_dynamics' in body
+    dynamics_value = candidate.pop('routing_dynamics', None)
     with common.locked():
         existing = common.read_json(common.CONFIG)
         if not isinstance(existing, dict) or not existing:
@@ -371,6 +386,20 @@ def save_settings(body):
             import routing as routing_policy
             existing['routing_policy'] = routing_policy.validate_policy(
                 existing['routing_policy'], candidate['profiles'])
+        effective_policy = existing.get('routing_policy')
+        if not effective_policy:
+            # Disabling the policy also disables its optional adaptive records.
+            # Validate no stale ladder against a policy that no longer exists.
+            existing.pop('routing_dynamics', None)
+        elif explicit_dynamics:
+            if dynamics_value is None:
+                existing.pop('routing_dynamics', None)
+            else:
+                existing['routing_dynamics'] = dynamics_value
+        elif existing.get('routing_dynamics') not in (None, {}):
+            import routing as routing_policy
+            existing['routing_dynamics'] = routing_policy.validate_dynamics(
+                existing['routing_dynamics'], effective_policy, candidate['profiles'])
         existing.update(candidate)
         existing['revision'] = revision + 1
         existing['restart_required'] = True

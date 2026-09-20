@@ -81,6 +81,10 @@ subscription-first weighted policy described in [routing](routing.md). Both use 
 A preset does not create provider accounts or grant model access. Existing configurations are
 preserved even when model/preset flags are supplied.
 
+After installation, **Models & routing** can express one plan, a primary with one backup, a fixed
+multi-model pool or opt-in quota adaptation. Start with `--model` when the user has only one
+provider; presets are examples for users who already have the corresponding accounts.
+
 The installer prints its actual paths and loopback URLs; **ports are selected locally, not fixed**. It installs a CLI wrapper and copies runtime/skill files outside the source checkout.
 
 ## 4. Connect your provider in OpenCode

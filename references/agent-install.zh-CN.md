@@ -40,6 +40,9 @@ python3 scripts/install.py --model YOUR_PROVIDER/YOUR_MODEL
 和 DeepSeek 直连访问权；预设不创建账号，也不授予模型访问权。用户只要求安装文件时追加
 `--no-start`。
 
+不要推断用户必须有多个供应商。只有一个套餐时，`--model` 就是完整安装；以后可在网页控台增加
+顺序备用、固定比例池或显式额度自适应，无需重装。
+
 已有 OpenCode 复用，缺少时安装固定官方版本。安装器创建独立运行时/状态并输出实际地址，不能硬编码端口。覆盖变量为 `DELEGATE_INSTALL`、`DELEGATE_STATE`、`DELEGATE_CONFIG`、`DELEGATE_BIN_DIR`，后续统一使用生成的 wrapper。
 
 已有安装用 `python3 scripts/install.py` 更新，保留配置、账号和证据；模型/预设参数不覆盖已有 profiles。非交互工具不要运行 `--wizard`，也不要伪造 TTY 回答。

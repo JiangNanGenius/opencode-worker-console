@@ -59,6 +59,30 @@ class RoutingPolicyTests(unittest.TestCase):
         value = {'deep': [[{'profile': 'ark-k3', 'weight': 3}]]}
         self.assertEqual(routing.validate_policy(value, profiles()), value)
 
+    def test_adaptive_ladder_is_explicit_generic_and_bounded(self):
+        policy = {'deep': [[{'profile': 'deep-research', 'weight': 2},
+                            {'profile': 'ark-k3', 'weight': 1}],
+                           [{'profile': 'fast-code', 'weight': 1}]]}
+        value = {'deep': {'0': {'ladder': [[3, 1], [2, 1], [1, 1]]}}}
+        self.assertEqual(routing.validate_dynamics(value, policy, profiles()), value)
+        config = {'profiles': profiles(), 'routing_policy': policy, 'routing_dynamics': value}
+        self.assertEqual(routing.dynamic_stage(config, 'deep', 0, policy), value['deep']['0'])
+        self.assertIsNone(routing.dynamic_stage(config, 'deep', 1, policy))
+
+    def test_adaptive_ladder_rejects_implicit_or_unsafe_shapes(self):
+        policy = {'deep': [[{'profile': 'deep-research', 'weight': 2},
+                            {'profile': 'ark-k3', 'weight': 1}]]}
+        cases = [
+            {'deep': {'1': {'ladder': [[2, 1], [1, 1]]}}},
+            {'deep': {'0': {'ladder': [[3, 1], [1, 1]]}}},  # baseline missing
+            {'deep': {'0': {'ladder': [[1, 1], [2, 1]]}}},  # wrong order
+            {'deep': {'0': {'ladder': [[4, 2], [2, 1]]}}},  # duplicate reduced ratio
+            {'deep': {'0': {'ladder': [[2, 1]]}}},
+        ]
+        for value in cases:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                routing.validate_dynamics(value, policy, profiles())
+
     def test_malformed_policies_are_rejected_and_fail_closed(self):
         cases = [
             ('none', None), ('empty', {}), ('list', []), ('text', 'deep'),
@@ -570,6 +594,53 @@ class ManagementPolicyTests(unittest.TestCase):
         self.assertEqual(self.stored()['routing_policy'], body['routing_policy'])
         self.assertEqual(management.settings()['routing_policy'], body['routing_policy'])
 
+    def test_policy_dynamics_save_export_and_round_trip(self):
+        body = self.body()
+        body['routing_policy'] = {'deep': DEEP_POLICY}
+        body['routing_dynamics'] = {
+            'deep': {'0': {'ladder': [[3, 1], [2, 1], [1, 1]]}}}
+        with patch.object(common, 'api', return_value={}):
+            result = management.save_settings(body)
+        self.assertEqual(result['routing_dynamics'], body['routing_dynamics'])
+        self.assertEqual(self.stored()['routing_dynamics'], body['routing_dynamics'])
+        self.assertEqual(management.settings()['routing_dynamics'], body['routing_dynamics'])
+
+    def test_old_client_preserves_valid_dynamics(self):
+        body = self.body()
+        body['routing_policy'] = {'deep': DEEP_POLICY}
+        body['routing_dynamics'] = {
+            'deep': {'0': {'ladder': [[3, 1], [2, 1], [1, 1]]}}}
+        with patch.object(common, 'api', return_value={}):
+            management.save_settings(body)
+            result = management.save_settings(self.body())
+        self.assertEqual(result['routing_dynamics'], body['routing_dynamics'])
+
+    def test_clearing_policy_also_clears_dynamics(self):
+        body = self.body()
+        body['routing_policy'] = {'deep': DEEP_POLICY}
+        body['routing_dynamics'] = {
+            'deep': {'0': {'ladder': [[3, 1], [2, 1], [1, 1]]}}}
+        with patch.object(common, 'api', return_value={}):
+            management.save_settings(body)
+            clear = self.body()
+            clear['routing_policy'] = {}
+            result = management.save_settings(clear)
+        self.assertNotIn('routing_policy', result)
+        self.assertNotIn('routing_dynamics', result)
+        self.assertNotIn('routing_dynamics', self.stored())
+
+    def test_invalid_dynamics_are_rejected_without_writing(self):
+        original = self.config.read_text()
+        body = self.body()
+        body['routing_policy'] = {'deep': DEEP_POLICY}
+        body['routing_dynamics'] = {
+            'deep': {'0': {'ladder': [[4, 1], [3, 1], [1, 1]]}}}
+        with patch.object(common, 'api') as api:
+            with self.assertRaises(ValueError):
+                management.save_settings(body)
+            api.assert_not_called()
+        self.assertEqual(self.config.read_text(), original)
+
     def test_old_client_body_preserves_stored_policy(self):
         body = self.body()
         body['routing_policy'] = {'deep': DEEP_POLICY}
@@ -911,6 +982,9 @@ class WorkerWindowRecoveryTests(unittest.TestCase):
 
 
 class DynamicRunwayTests(unittest.TestCase):
+    deep_adaptive = {'ladder': [[3, 1], [2, 1], [1, 1]]}
+    mid_adaptive = {'ladder': [[2, 1], [1, 1], [1, 2]]}
+
     def sample(self, remaining_percent):
         return {'state': 'ok', 'available': True, 'stale': False,
                 'windows': [{'valid': True, 'remaining_percent': remaining_percent}]}
@@ -919,36 +993,42 @@ class DynamicRunwayTests(unittest.TestCase):
         q = {'kimi-for-coding': self.sample(50), 'volcengine-agent-plan': self.sample(50)}
         deep = [{'profile': 'native', 'weight': 2}, {'profile': 'ark', 'weight': 1}]
         effective, reason, info = routing.dynamics(
-            deep, {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q, now=1)
+            deep, {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q,
+            now=1, adaptive=self.deep_adaptive)
         self.assertEqual(effective, deep)
         self.assertEqual(reason, 'baseline_balanced')
         self.assertAlmostEqual(info['native']['share'], 2 / 3)
         mid = [{'profile': 'native', 'weight': 1}, {'profile': 'ark', 'weight': 1}]
         effective, _, _ = routing.dynamics(
-            mid, {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q, now=1)
+            mid, {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q,
+            now=1, adaptive=self.mid_adaptive)
         self.assertEqual([e['weight'] for e in effective], [1, 1])
 
     def test_kimi_pressure_moves_only_one_bounded_step_toward_ark(self):
         q = {'kimi-for-coding': self.sample(20), 'volcengine-agent-plan': self.sample(100)}
         deep, reason, _ = routing.dynamics(
             [{'profile': 'native', 'weight': 2}, {'profile': 'ark', 'weight': 1}],
-            {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q, now=1)
+            {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q,
+            now=1, adaptive=self.deep_adaptive)
         self.assertEqual([e['weight'] for e in deep], [1, 1])
         self.assertEqual(reason, 'runway_shift_right')
         mid, _, _ = routing.dynamics(
             [{'profile': 'native', 'weight': 1}, {'profile': 'ark', 'weight': 1}],
-            {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q, now=1)
+            {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q,
+            now=1, adaptive=self.mid_adaptive)
         self.assertEqual([e['weight'] for e in mid], [1, 2])
 
     def test_ark_pressure_moves_only_one_bounded_step_toward_native_kimi(self):
         q = {'kimi-for-coding': self.sample(100), 'volcengine-agent-plan': self.sample(20)}
         deep, _, _ = routing.dynamics(
             [{'profile': 'native', 'weight': 2}, {'profile': 'ark', 'weight': 1}],
-            {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q, now=1)
+            {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q,
+            now=1, adaptive=self.deep_adaptive)
         self.assertEqual([e['weight'] for e in deep], [3, 1])
         mid, _, _ = routing.dynamics(
             [{'profile': 'native', 'weight': 1}, {'profile': 'ark', 'weight': 1}],
-            {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q, now=1)
+            {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q,
+            now=1, adaptive=self.mid_adaptive)
         self.assertEqual([e['weight'] for e in mid], [2, 1])
 
     def test_unknown_or_stale_telemetry_never_changes_baseline(self):
@@ -956,7 +1036,8 @@ class DynamicRunwayTests(unittest.TestCase):
         q = {'kimi-for-coding': self.sample(20),
              'volcengine-agent-plan': dict(self.sample(100), stale=True)}
         effective, reason, _ = routing.dynamics(
-            entries, {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q, now=1)
+            entries, {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q,
+            now=1, adaptive=self.deep_adaptive)
         self.assertEqual(effective, entries)
         self.assertEqual(reason, 'telemetry_unknown')
 
@@ -964,9 +1045,17 @@ class DynamicRunwayTests(unittest.TestCase):
         entries = [{'profile': 'ark-a', 'weight': 2}, {'profile': 'ark-b', 'weight': 1}]
         effective, reason, _ = routing.dynamics(
             entries, {'ark-a': 'volcengine-agent-plan', 'ark-b': 'volcengine-agent-plan'},
-            {'volcengine-agent-plan': self.sample(80)}, now=1)
+            {'volcengine-agent-plan': self.sample(80)}, now=1, adaptive=self.deep_adaptive)
         self.assertEqual(effective, entries)
         self.assertEqual(reason, 'single_provider')
+
+    def test_fixed_pool_never_changes_without_explicit_adaptive_ladder(self):
+        entries = [{'profile': 'primary', 'weight': 1}, {'profile': 'reviewer', 'weight': 1}]
+        q = {'first': self.sample(5), 'second': self.sample(100)}
+        effective, reason, _ = routing.dynamics(
+            entries, {'primary': 'first', 'reviewer': 'second'}, q, now=1)
+        self.assertEqual(effective, entries)
+        self.assertEqual(reason, 'fixed_weights')
 
 
 if __name__ == '__main__':

@@ -21,6 +21,7 @@ Every credit stays within one total-weight span, so the durable file cannot grow
 without bound across restarts.
 """
 from common import STATE, read_json, write_json
+import math
 
 TIERS = ('fast', 'background', 'deep')
 COUNTERS = 'routing.json'
@@ -29,6 +30,7 @@ MAX_STAGE_ENTRIES = 8
 MAX_TIER_PROFILES = 16
 MAX_WEIGHT = 100
 MAX_CREDIT = MAX_WEIGHT * MAX_STAGE_ENTRIES
+MAX_LADDER_STEPS = 7
 
 # Quota-aware dynamic admission weights inside one same-capability stage.
 # Stored policy weights stay the baseline preference; only the in-memory advance
@@ -47,30 +49,95 @@ RUNWAY_MAX = 4.0            # Runway pressure cap: surplus beyond 4x on-track st
 RUNWAY_STEP = 0.15          # Material normalized runway-signal gap that moves one ratio step.
 RUNWAY_HOLD = RUNWAY_STEP / 2  # Smaller drift than this stays at baseline (hysteresis).
 
-# Economic invariant, encoded as policy — not a generic symmetric max-scale.
-#
-# Native Kimi subscription is always the PRIMARY source for Kimi models: Ark
-# Kimi K3 bills the same models through expensive AFP, so Ark K3 must NEVER
-# exceed the native Kimi share. Runway may relax the deep pair from 2:1 toward
-# 1:1 when native Kimi is constrained, but never to 1:2 (Ark K3 leading). The
-# mid pool compares two DIFFERENT models — native K2.8 versus the cheaper Ark
-# Evolving — so after capability validation it may shift from 1:1 toward
-# Evolving, but only to 1:2. Ark Auto is a separate discounted/uncertain-routing
-# ordered stage and is never priced as fixed Ark K3.
-#
-# Each ladder is keyed by the stored (left, right) baseline weights, ordered
-# from most-left-leaning to most-right-leaning. The baseline sits at index 1 and
-# only ONE step either way is reachable; recovery moves back toward baseline.
-# There is deliberately no 1:4/1:8 or arbitrary DYNAMIC_MAX_SCALE blowup.
-_RATIO_LADDERS = {
-    # deep: native Kimi K3 (left) vs Ark Kimi K3 (right). Ark K3 may catch up to
-    # parity (1:1) under Kimi constraint but never lead; 3:1 leans harder into
-    # the cheaper native subscription when Kimi has surplus runway.
-    (2, 1): [(3, 1), (2, 1), (1, 1)],
-    # background: native Kimi K2.8 (left) vs Ark Evolving (right). Evolving is
-    # cheaper, so it may take the lead to 1:2; 2:1 leans back to native K2.8.
-    (1, 1): [(2, 1), (1, 1), (1, 2)],
-}
+def _ratio(value, field='routing_dynamics ladder'):
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ValueError(field + ' entries must be [left, right]')
+    left, right = value
+    if any(isinstance(x, bool) or not isinstance(x, int) or not 1 <= x <= MAX_WEIGHT
+           for x in (left, right)):
+        raise ValueError(field + ' weights must be integers between 1 and ' + str(MAX_WEIGHT))
+    divisor = math.gcd(left, right)
+    return (left // divisor, right // divisor)
+
+
+def validate_dynamics(value, policy, profiles):
+    """Validate optional, explicit quota-adaptive ladders for two-provider stages.
+
+    The policy stays completely generic. A stage is fixed-weight unless its tier/index
+    appears here, so a public installation with one plan, a plain backup, or an ordinary
+    1:1 review pool never changes merely because its weights resemble this project's
+    Ark/Kimi setup.
+
+    Shape: ``{tier: {"stage_index": {"ladder": [[2,1],[1,1],[1,2]]}}}``.
+    Ratios run from left-leaning to right-leaning and must include the stage's stored
+    baseline ratio. Runtime moves at most one entry away from that baseline.
+    """
+    if value in (None, {}):
+        return None
+    if not isinstance(value, dict):
+        raise ValueError('routing_dynamics must be an object')
+    if not isinstance(policy, dict) or not policy:
+        raise ValueError('routing_dynamics requires routing_policy')
+    unknown = [key for key in value if key not in TIERS]
+    if unknown:
+        raise ValueError('routing_dynamics keys must be fast, background or deep')
+    profiles = profiles if isinstance(profiles, dict) else {}
+    out = {}
+    for tier, records in value.items():
+        if not isinstance(records, dict) or not records:
+            raise ValueError('routing_dynamics.' + tier + ' must map stage indexes')
+        stages = policy.get(tier) or []
+        cleaned = {}
+        for raw_index, record in records.items():
+            if not isinstance(raw_index, str) or not raw_index.isdigit() or str(int(raw_index)) != raw_index:
+                raise ValueError('routing_dynamics stage indexes must be canonical strings')
+            index = int(raw_index)
+            if index >= len(stages):
+                raise ValueError('routing_dynamics.' + tier + ' references a missing stage')
+            stage = stages[index]
+            if len(stage) != 2:
+                raise ValueError('adaptive routing requires exactly two profiles in the stage')
+            providers = []
+            for entry in stage:
+                model = (profiles.get(entry['profile']) or {}).get('model', '')
+                providers.append(str(model).split('/', 1)[0])
+            if not all(providers) or providers[0] == providers[1]:
+                raise ValueError('adaptive routing requires two different providers')
+            if not isinstance(record, dict) or set(record) != {'ladder'}:
+                raise ValueError('routing_dynamics entries require only ladder')
+            ladder = record.get('ladder')
+            if not isinstance(ladder, list) or not 2 <= len(ladder) <= MAX_LADDER_STEPS:
+                raise ValueError('routing_dynamics ladder must contain 2 to ' + str(MAX_LADDER_STEPS) + ' ratios')
+            ratios = [_ratio(item) for item in ladder]
+            if len(set(ratios)) != len(ratios):
+                raise ValueError('routing_dynamics ladder ratios must be unique')
+            shares = [left / (left + right) for left, right in ratios]
+            if any(shares[i] <= shares[i + 1] for i in range(len(shares) - 1)):
+                raise ValueError('routing_dynamics ladder must run from left-leaning to right-leaning')
+            baseline = _ratio([stage[0]['weight'], stage[1]['weight']], 'routing_policy baseline')
+            if baseline not in ratios:
+                raise ValueError('routing_dynamics ladder must include the stage baseline ratio')
+            cleaned[raw_index] = {'ladder': [list(ratio) for ratio in ratios]}
+        out[tier] = cleaned
+    return out or None
+
+
+def runtime_dynamics(value, policy, profiles):
+    """Fail closed to fixed weights when optional adaptive configuration is invalid."""
+    try:
+        return validate_dynamics(value, policy, profiles)
+    except (ValueError, TypeError):
+        return None
+
+
+def configured_dynamics(c, policy=None):
+    policy = policy if policy is not None else configured(c)
+    return runtime_dynamics(c.get('routing_dynamics'), policy, c.get('profiles'))
+
+
+def dynamic_stage(c, tier, index, policy=None):
+    configured_value = configured_dynamics(c, policy)
+    return ((configured_value or {}).get(tier) or {}).get(str(index))
 
 
 def _weight(value):
@@ -286,7 +353,7 @@ def _runway(provider_view, now):
     return min(signals)
 
 
-def dynamics(entries, provider_by_profile, quota_view=None, now=None):
+def dynamics(entries, provider_by_profile, quota_view=None, now=None, adaptive=None):
     """Effective admission weights and a safe reason for one available stage.
 
     entries are the stage's already-admissible candidates in policy order with
@@ -295,19 +362,16 @@ def dynamics(entries, provider_by_profile, quota_view=None, now=None):
     is one deterministic timestamp for the whole decision (default: current
     time), so a stage never mixes samples from different instants.
 
-    Provider grouping is load-bearing: every profile on one provider (Ark Auto,
-    K3, Evolving, the manual DeepSeek copy) shares a single AFP allowance and a
-    single runway signal. Auto consumption lowers the same Ark pressure that
-    later K3/Evolving admissions use, so the bounded adjustment naturally shifts
-    those pools back toward Kimi. The signal is never counted once per profile,
-    and Auto does not create a separate allowance.
+    Provider grouping is load-bearing: profiles on one provider share one quota
+    runway signal, so several models never make one subscription appear to have
+    extra allowance. Dynamic balancing is explicitly opt-in per stage through an
+    ``adaptive`` ladder. Without it the configured weights are fixed, including
+    ordinary 1:1 review pools and primary/fallback setups.
 
-    Kimi stays the primary baseline: the discrete ladders below only move one
-    step from the stored ratio on material runway imbalance and return toward
-    baseline on recovery. The mid 1:1 pool is a same-capability baseline, not a
-    1:1 total provider-spend target, and the adjustment never forces
-    simultaneous depletion at the expense of Kimi-primary economics. The stored
-    policy itself is never touched; this is an in-memory dispatch input.
+    An adaptive stage moves at most one discrete ladder step away from its stored
+    baseline on material runway imbalance and returns to baseline on recovery.
+    The ladder itself expresses the user's economic boundary; the runtime never
+    invents ratios or rewrites the saved policy.
     """
     import time as _time
     now = _time.time() if now is None else now
@@ -319,6 +383,8 @@ def dynamics(entries, provider_by_profile, quota_view=None, now=None):
             for name, weight in base.items()}
     if len(entries) < 2:
         return list(entries), 'single_candidate', info
+    if not isinstance(adaptive, dict):
+        return list(entries), 'fixed_weights', info
     quota_view = quota_view if isinstance(quota_view, dict) else {}
     # One runway sample per provider, shared across all of its profiles.
     providers = []
@@ -363,12 +429,14 @@ def dynamics(entries, provider_by_profile, quota_view=None, now=None):
     # Discrete bounded ratio for a two-provider subscription pool. Ordered by
     # policy, left is the first provider, right the second.
     left, right = providers[0], providers[1]
-    ladder = _RATIO_LADDERS.get((group_base[left], group_base[right]))
-    if ladder is None:
-        # Not a recognized two-provider baseline: stay at stored weights rather
-        # than inventing an unbounded ratio.
-        return list(entries), 'baseline_unsupported', info
-    baseline_index = ladder.index((group_base[left], group_base[right]))
+    try:
+        ladder = [_ratio(value) for value in adaptive.get('ladder', [])]
+        baseline = _ratio((group_base[left], group_base[right]))
+        baseline_index = ladder.index(baseline)
+    except (ValueError, TypeError):
+        # Runtime is fail-closed: malformed optional dynamics never change the
+        # ordinary stored weights.
+        return list(entries), 'adaptive_invalid', info
     # Positive advantage means the left provider has more runway than baseline
     # implies; negative means the right provider does. One step per material
     # imbalance; hysteresis keeps small gaps at baseline.

@@ -5,6 +5,37 @@
 优先分配完整任务、利用可用套餐，同时满足模型能力和上下文需求。订阅套餐已经支付，DeepSeek
 直连余额属于增量支出。不要为了换渠道拆碎任务，也不要重复发送整个上下文。
 
+## 通用路由模式
+
+Worker Desk 不要求特定供应商，也不要求用户同时购买多个套餐。先建立 profiles，再在
+**模型与路由**中选择：
+
+- **每档单模型**：只用基础 `routing`，分别为快速、普通、深度任务选择一个 profile。
+- **主模型 + 备用**：把模型放进前后两个独立阶段；前一阶段全部不可用时才进入下一阶段。
+- **固定比例池**：把两个或更多 profile 放在同一阶段，使用整数权重，比例不会自动改变。
+- **额度自适应池**：只为某个双供应商阶段显式开启有限比例阶梯。新鲜额度续航最多让比例偏移一档；额度未知或过期时保持基准。
+
+每个任务档位可以独立混合顺序回退和加权分配。只有一个套餐时完全不需要策略；一个套餐加一个
+按量备用时，配置两个单模型阶段即可。下面的 Ark/Kimi 方案只是可选示例，不是平台默认要求。
+
+```json
+{
+  "routing_policy": {
+    "background": [
+      [{"profile": "plan-a", "weight": 2}, {"profile": "plan-b", "weight": 1}],
+      [{"profile": "backup", "weight": 1}]
+    ]
+  },
+  "routing_dynamics": {
+    "background": {
+      "0": {"ladder": [[3, 1], [2, 1], [1, 1]]}
+    }
+  }
+}
+```
+
+额度自适应必须按阶段主动开启。普通固定池即使刚好使用 `1:1` 或 `2:1`，也不会被系统暗中改变。
+
 ## 方舟 Agent Plan
 
 通过 OpenCode 的私有凭据存储连接 `volcengine-agent-plan`。Key 不进入任务、仓库、命令参数或
@@ -32,7 +63,7 @@ Worker Desk 在进程内签名固定的 `GetAFPUsage` 与 `GetPersonalPlan` 请�
 [GetAFPUsage](https://www.volcengine.com/docs/82379/2479847)、
 [GetPersonalPlan](https://www.volcengine.com/docs/82379/2546382)。
 
-## 默认套餐优先策略
+## 可选 Ark/Kimi 套餐优先预设
 
 全新安装使用 `--preset ark-agent-plan` 会建立：
 

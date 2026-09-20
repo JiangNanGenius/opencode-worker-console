@@ -694,7 +694,9 @@ def _policy_route(t, c, q, stages, batch=None):
             for entry, _ in candidates:
                 profile = c['profiles'].get(entry['profile']) or {}
                 provider_by_profile[entry['profile']] = str(profile.get('model', '')).split('/', 1)[0]
-            entries, dynamic_reason, _ = routing.dynamics(base_entries, provider_by_profile, q)
+            adaptive = routing.dynamic_stage(c, tier, index)
+            entries, dynamic_reason, _ = routing.dynamics(
+                base_entries, provider_by_profile, q, adaptive=adaptive)
             if batch is not None:
                 chosen, credits = routing.advance(entries, batch.credits_for(tier))
                 batch.propose(tier, credits)
@@ -973,7 +975,7 @@ def routing_status(c, q):
         if not stages:
             continue
         stage_views = []
-        for stage in stages:
+        for index, stage in enumerate(stages):
             candidates = []
             for entry in stage:
                 profile = c.get('profiles', {}).get(entry['profile'])
@@ -988,7 +990,9 @@ def routing_status(c, q):
             for entry in candidates:
                 profile = c['profiles'].get(entry['profile']) or {}
                 provider_by_profile[entry['profile']] = str(profile.get('model', '')).split('/', 1)[0]
-            _, reason, info = routing.dynamics(candidates, provider_by_profile, q)
+            adaptive = routing.dynamic_stage(c, tier, index, policy)
+            _, reason, info = routing.dynamics(
+                candidates, provider_by_profile, q, adaptive=adaptive)
             if info:
                 stage_views.append({'reason': reason, 'members': info})
         if stage_views:

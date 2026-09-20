@@ -77,6 +77,16 @@ DEFAULT_ROUTING_POLICY = {
         [{'profile': 'fast-code', 'weight': 1}],
     ],
 }
+# Adaptive quota balancing is separate from ordinary weighting. This preset opts
+# in only for its two subscription pairs; every other install keeps fixed policy
+# weights unless the user explicitly enables a ladder in the console.
+DEFAULT_ROUTING_DYNAMICS = {
+    'background': {'0': {'ladder': [[2, 1], [1, 1], [1, 2]]}},
+    'deep': {
+        '0': {'ladder': [[3, 1], [2, 1], [1, 1]]},
+        '1': {'ladder': [[2, 1], [1, 1], [1, 2]]},
+    },
+}
 # Concurrency is capped per owning Codex conversation (owner_thread_id), never
 # globally or per provider; the scheduler reads max_parallel_per_owner (default 4).
 # kimi_reserve_percent is optional (0 = no reservation); plan-backed Kimi is
@@ -286,6 +296,7 @@ def load_or_build_config(args, opencode):
     c.setdefault('routing', {tier: name if name in enabled else enabled[0] for tier, name in zip(('fast', 'background', 'deep'), PROFILE_NAMES)})
     if fresh and args.preset == 'ark-agent-plan':
         c['routing_policy'] = DEFAULT_ROUTING_POLICY
+        c['routing_dynamics'] = DEFAULT_ROUTING_DYNAMICS
     # Legacy global/provider cap fields (max_parallel, max_kimi_parallel,
     # provider_limits) are never written for new installs and are left inert
     # on disk for existing configs; max_parallel_per_owner is the only cap.
