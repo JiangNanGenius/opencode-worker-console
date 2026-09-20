@@ -137,7 +137,7 @@ def from_messages(messages):
             errors.append(error('model', raw.get('name', 'model_error'),
                                 data.get('message') or raw.get('message') or raw.get('name', 'Model error'),
                                 retryable=False if (kind or window) else data.get('isRetryable'),
-                                action='inspect_partial_work_and_reselect_profile' if (kind or window)
+                                action='inspect_partial_work_and_resubmit_same_tier_auto' if (kind or window)
                                 else 'inspect_model_error',
                                 http_status=data.get('statusCode', raw.get('statusCode')),
                                 message_id=info.get('id'), provider=info.get('providerID'),

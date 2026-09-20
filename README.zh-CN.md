@@ -93,15 +93,15 @@ python3 scripts/install.py --preset ark-agent-plan
 
 这些选项只初始化**全新安装**，不会覆盖已有 profiles。`--no-start` 表示安装后不启动。登录、托管 OpenCode 路径、密码、验证、升级和排障见[完整安装指引](references/installation.zh-CN.md)。
 
-## Profile 是模型选择，不是能力限制
+## Agent 只选层级，桥接层负责选模型
 
-| Profile | 可选预设模型 | 常见场景 |
+| 内部 Profile | 可选预设模型 | 桥接层用途 |
 | --- | --- | --- |
-| `senior-code` | Kimi K2.8 Preview | 套餐可用时的完整通用任务 |
-| `deep-research` | Kimi K3 | 大仓库、长上下文、复杂根因与审查 |
-| `fast-code` | DeepSeek V4.1 Flash | 显式指定模型，或 Agent Plan 预设的最终兜底 |
+| `senior-code` | Kimi K2.8 Preview | Normal 层套餐池 |
+| `deep-research` | Kimi K3 | Deep 层套餐池 |
+| `fallback` | DeepSeek V4.1 Flash | 前置阶段均不可用后的最终兜底 |
 
-所有 profile 都能承担通用任务。名称是稳定路由标识，背后模型可在控台调整。预设使用 `max`；新增模型要选择供应商实际支持的思考档位。`auto` 按任务层级选择路由，可配置派发前顺序接替与加权分配；深度复杂度优先，否则快速紧急度进入 Fast 自动层，但不会固定某个模型。启用顺序路由时，显式 profile 固定模型且必须说明原因。详见[路由与套餐利用率](references/routing.zh-CN.md)。
+Codex 只选择 Fast、Normal 或 Deep，并以 `profile=auto` 提交；具体 profile、供应商、套餐比例和兜底均由桥接层决定。上表是管理员配置视图，不是 Agent 的角色清单。预设使用 `max`；新增模型要选择供应商实际支持的思考档位。只有用户明确要求指定模型或进行受控对比时才固定 profile。详见[路由与套餐利用率](references/routing.zh-CN.md)。
 
 ## 主要功能
 
@@ -120,7 +120,7 @@ python3 scripts/install.py --preset ark-agent-plan
 
 ```sh
 ~/.local/bin/delegate-opencode submit --directory /absolute/project \
-  --profile auto --group-title '了解项目' \
+  --profile auto --tier deep --group-title '了解项目' \
   --title '整理项目结构' \
   --acceptance '返回入口、测试命令与文件证据，不修改文件。' \
   '阅读项目约定，说明目录组织、关键入口和测试方法。'

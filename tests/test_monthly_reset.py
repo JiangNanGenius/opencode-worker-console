@@ -36,7 +36,7 @@ class MonthlyResetTests(unittest.TestCase):
         self.state = self.root / 'state'
         self.config = self.root / 'config.json'
         self.c = {'server_url': 'http://127.0.0.1:1', 'auto_approve': False, 'kimi_reserve_percent': 0,
-                  'profiles': {'fast-code': {'model': 'deepseek/deepseek-flash'},
+                  'profiles': {'fallback': {'model': 'deepseek/deepseek-flash'},
                                'senior-code': {'model': 'kimi-for-coding/kimi-for-coding'},
                                'deep-research': {'model': 'kimi-for-coding/k3'}}}
         self.write_config(self.c)
@@ -383,7 +383,7 @@ class MonthlyResetTests(unittest.TestCase):
         deep = {'profile': 'deep-research', 'requested_profile': 'deep-research', 'complexity': 'deep'}
         self.assertEqual(quota.route(deep, self.c, self.q)[0], 'deep-research')
         # Candidate alternatives still avoid the exhausted provider.
-        self.assertEqual([a['profile'] for a in quota.alternatives(explicit, self.c, self.q)], ['fast-code'])
+        self.assertEqual([a['profile'] for a in quota.alternatives(explicit, self.c, self.q)], ['fallback'])
         # A non-monthly block stays an absolute prohibition even for an explicit profile.
         common.write_json(self.state / 'billing.json', {'kimi-for-coding': {
             'credential': self.ident, 'opened_at': time.time() - 100, 'message': 'Insufficient Balance',
@@ -486,7 +486,7 @@ class MonthlyResetTests(unittest.TestCase):
         t = self.historical_task()
         rec = quota.guidance(t, self.c, self.q)
         self.assertEqual(rec['billing_reason'], 'monthly_usage_limit')
-        self.assertEqual([a['profile'] for a in rec['alternatives']], ['fast-code'])
+        self.assertEqual([a['profile'] for a in rec['alternatives']], ['fallback'])
         # A recorded scheduled release is recognized historical recovery.
         self.schedule()
         boundary = self.recent_boundary()
@@ -494,18 +494,18 @@ class MonthlyResetTests(unittest.TestCase):
         self.assertTrue(quota.scheduled_release('kimi-for-coding'))
         rec = quota.guidance(t, self.c, self.q)
         self.assertEqual([a['profile'] for a in rec['alternatives']],
-                         ['fast-code', 'senior-code', 'deep-research'])
+                         ['fallback', 'senior-code', 'deep-research'])
         # A verified model success is recognized the same way.
         self.open_block(time.time() - 30)
         quota.observe_model_success('kimi-for-coding', self.ident, time.time() - 20, time.time() - 10)
         rec = quota.guidance(t, self.c, self.q)
         self.assertEqual([a['profile'] for a in rec['alternatives']],
-                         ['fast-code', 'senior-code', 'deep-research'])
+                         ['fallback', 'senior-code', 'deep-research'])
         # An unrelated balance release is not proof for monthly evidence.
         quota.trip('kimi-for-coding', 'Insufficient Balance', 'm-bal', reason='insufficient_balance')
         quota.clear('kimi-for-coding', evidence='quota')
         rec = quota.guidance(t, self.c, self.q)
-        self.assertEqual([a['profile'] for a in rec['alternatives']], ['fast-code'])
+        self.assertEqual([a['profile'] for a in rec['alternatives']], ['fallback'])
 
 
 if __name__ == '__main__':

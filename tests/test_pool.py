@@ -35,7 +35,7 @@ class PoolTests(unittest.TestCase):
         self.config = self.root / 'config.json'
         self.c = {'auto_approve': False, 'max_parallel': 3, 'max_kimi_parallel': 1, 'kimi_reserve_percent': 20,
                   'server_url': 'http://127.0.0.1:1', 'profiles': {
-                      'fast-code': {'model': 'deepseek/deepseek-flash'},
+                      'fallback': {'model': 'deepseek/deepseek-flash'},
                       'senior-code': {'model': 'kimi-for-coding/kimi-for-coding'},
                       'deep-research': {'model': 'kimi-for-coding/k3'}}}
         self.config.write_text(json.dumps(self.c))
@@ -69,7 +69,7 @@ class PoolTests(unittest.TestCase):
 
     def spec(self, **kw):
         s = {'directory': str(self.repo), 'objective': 'bounded task', 'mode': 'write', 'scopes': ['a.txt'],
-             'profile': 'fast-code'}
+             'profile': 'fallback'}
         s.update(kw)
         return s
 
@@ -82,11 +82,24 @@ class PoolTests(unittest.TestCase):
             with self.subTest(spec=spec):
                 t = self.new(**spec)
                 self.assertNotIn('timeout_seconds', t)
+                self.assertEqual(t['tier'], 'deep' if spec.get('complexity') == 'deep' else 'normal')
+
+    def test_tier_is_canonical_and_legacy_fields_are_normalized(self):
+        fast = self.new(profile='auto', tier='fast')
+        self.assertEqual((fast['tier'], fast['urgency'], fast['complexity']),
+                         ('fast', 'fast', 'normal'))
+        deep = self.new(profile='auto', tier='deep')
+        self.assertEqual((deep['tier'], deep['urgency'], deep['complexity']),
+                         ('deep', 'background', 'deep'))
+        legacy = self.new(profile='auto', urgency='fast')
+        self.assertEqual(legacy['tier'], 'fast')
+        with self.assertRaisesRegex(ValueError, 'conflicts'):
+            self.new(profile='auto', tier='normal', urgency='fast')
 
     def test_ordered_routing_requires_a_reason_for_an_explicit_profile(self):
         self.c['routing_policy'] = {
             'background': [[{'profile': 'senior-code', 'weight': 1}],
-                           [{'profile': 'fast-code', 'weight': 1}]]}
+                           [{'profile': 'fallback', 'weight': 1}]]}
         self.config.write_text(json.dumps(self.c))
         with self.assertRaisesRegex(ValueError, 'requires profile_reason'):
             self.new()
@@ -128,10 +141,36 @@ class PoolTests(unittest.TestCase):
     def test_normal_background_prefers_kimi_fast_prefers_deepseek(self):
         t = self.new(profile='auto')
         self.assertEqual(quota.route(t, self.c, self.q)[0], 'senior-code')
-        t['urgency'] = 'fast'
-        self.assertEqual(quota.route(t, self.c, self.q)[0], 'fast-code')
-        t['complexity'] = 'deep'
+        t['tier'] = 'fast'
+        self.assertEqual(quota.route(t, self.c, self.q)[0], 'fallback')
+        t['tier'] = 'deep'
         self.assertEqual(quota.route(t, self.c, self.q)[0], 'deep-research')
+
+    def test_final_fallback_is_disclosed_but_primary_fallback_profile_is_not(self):
+        task = self.new(profile='auto', tier='fast')
+        fields = delegate.routing_assignment(
+            task, 'fallback', 'routing_policy:fast:stage1:quota_available:single_candidate')
+        self.assertTrue(fields['fallback_used'])
+        self.assertIn('fallback', fields['routing_notice'])
+        self.assertTrue(common.public_task(dict(task, **fields))['fallback_used'])
+        primary = delegate.routing_assignment(
+            task, 'fallback', 'routing_policy:fast:stage0:quota_available:single_candidate')
+        self.assertNotIn('fallback_used', primary)
+
+    def test_continuation_inherits_failed_provider_exclusion_and_keeps_tier_auto(self):
+        self.c['routing_policy'] = {
+            'background': [[{'profile': 'senior-code', 'weight': 1}],
+                           [{'profile': 'fallback', 'weight': 1}]]}
+        self.config.write_text(json.dumps(self.c))
+        parent = self.new(profile='auto', tier='normal')
+        parent = common.update(
+            parent['id'], status='failed',
+            recovery={'blocked_provider': 'kimi-for-coding', 'alternatives': [
+                {'profile': 'fallback', 'provider': 'deepseek'}]},
+        )
+        child = self.new(profile='auto', tier='normal', parent_task_id=parent['id'])
+        self.assertEqual(child['excluded_providers'], ['kimi-for-coding'])
+        self.assertEqual(quota.route(child, self.c, self.q)[0], 'fallback')
 
     def test_low_quota_blocks_without_fallback_and_keeps_pins(self):
         self.q['kimi-for-coding']['windows'][0]['remaining_percent'] = 10
@@ -140,9 +179,9 @@ class PoolTests(unittest.TestCase):
         self.assertIsNone(profile)
         self.assertEqual(why, 'reserve_kimi_for_complex_work')
         alts = quota.alternatives(t, self.c, self.q)
-        self.assertEqual([a['profile'] for a in alts], ['fast-code'])
+        self.assertEqual([a['profile'] for a in alts], ['fallback'])
         rec = quota.recovery(t, self.c, self.q)
-        self.assertEqual(rec['suggested_action'], 'reselect_profile')
+        self.assertEqual(rec['suggested_action'], 'resubmit_same_tier_auto')
         self.assertFalse(rec['automatic_fallback'])
         t['requested_profile'] = 'senior-code'
         self.assertIsNone(quota.route(t, self.c, self.q)[0])
@@ -171,10 +210,10 @@ class PoolTests(unittest.TestCase):
         a = self.new(scopes=['src'])
         b = self.new(scopes=['src/x.py'])
         c = self.new(scopes=['docs'])
-        a.update(status='running', profile='fast-code')
+        a.update(status='running', profile='fallback')
         choices = delegate.choose_ready([a, b, c], self.c, self.q)
         self.assertEqual(choices[0][2], 'scope_or_resource_in_use')
-        self.assertEqual(choices[1][1], 'fast-code')
+        self.assertEqual(choices[1][1], 'fallback')
 
     def test_provider_caps_removed_kimi_profiles_dispatch_freely(self):
         a = self.new(profile='senior-code', scopes=['a'])
@@ -231,7 +270,7 @@ class PoolTests(unittest.TestCase):
         import service
         argv = ['delegate.py', 'submit', '--directory', str(self.repo), '--mode', 'write',
                 '--target', 'ssh:example.com:nginx', '--target', 'api:staging',
-                '--profile', 'fast-code', 'Restart nginx on the staging host']
+                '--profile', 'fallback', 'Restart nginx on the staging host']
         out = io.StringIO()
         with patch.object(sys, 'argv', argv), patch.object(service, 'start', return_value={}), \
                 redirect_stdout(out):
@@ -375,8 +414,8 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(a['resets_at'], b['resets_at'])
 
     def test_billing_circuit_blocks_stale_positive_and_pins_explicit(self):
-        t = self.new()  # explicit fast-code on deepseek
-        self.assertEqual(quota.route(t, self.c, self.q)[0], 'fast-code')
+        t = self.new()  # explicit fallback on deepseek
+        self.assertEqual(quota.route(t, self.c, self.q)[0], 'fallback')
         quota.trip('deepseek', 'Insufficient Balance', 'm1')
         # The circuit overrides the fresh cached positive sample.
         profile, why = quota.route(t, self.c, self.q)
@@ -384,7 +423,7 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(why, 'provider_billing_blocked')
         rec = quota.recovery(t, self.c, self.q)
         self.assertEqual(rec['blocked_reason'], 'provider_billing_blocked')
-        self.assertEqual(rec['suggested_action'], 'reselect_profile')
+        self.assertEqual(rec['suggested_action'], 'resubmit_same_tier_auto')
         self.assertEqual([a['profile'] for a in rec['alternatives']], ['senior-code', 'deep-research'])
         self.assertFalse(rec['automatic_fallback'])
         # The explicitly pinned task stays queued; nothing is switched automatically.
@@ -400,7 +439,7 @@ class PoolTests(unittest.TestCase):
         self.assertIsNone(profile)
         self.assertEqual(why, 'provider_billing_blocked')
         rec = quota.recovery(t, self.c, self.q)
-        self.assertEqual([a['profile'] for a in rec['alternatives']], ['fast-code'])
+        self.assertEqual([a['profile'] for a in rec['alternatives']], ['fallback'])
 
     def test_topup_recovers_and_old_errors_never_relatch(self):
         quota.trip('deepseek', 'Insufficient Balance', 'm1', occurred_at=time.time() - 100)
@@ -457,7 +496,7 @@ class PoolTests(unittest.TestCase):
             {'source': 'model', 'http_status': 402, 'message': 'Insufficient Balance'}])
         g = quota.guidance(t, self.c, self.q)
         self.assertEqual(g['blocked_reason'], 'provider_billing_error')
-        self.assertEqual(g['suggested_action'], 'inspect_partial_work_and_reselect_profile')
+        self.assertEqual(g['suggested_action'], 'inspect_partial_work_and_resubmit_same_tier_auto')
         self.assertIsNone(quota.billing_block('deepseek'))  # read-only, never re-arms
         # Completed or running jobs are never marked blocked by unrelated quota state.
         self.assertIsNone(quota.guidance(dict(t, status='completed', errors=[]), self.c, self.q))
@@ -470,7 +509,7 @@ class PoolTests(unittest.TestCase):
         result = delegate.wait_result(common.task(t['id']), 1)
         self.assertFalse(result['terminal'])
         self.assertFalse(result['continue_waiting'])
-        self.assertEqual(result['next_action'], 'reselect_profile_and_resubmit')
+        self.assertEqual(result['next_action'], 'resubmit_same_tier_auto')
         self.assertTrue(result['attention'])
         self.assertEqual(result['recovery']['blocked_reason'], 'provider_billing_blocked')
         self.assertEqual([a['profile'] for a in result['recovery']['alternatives']],
@@ -515,7 +554,7 @@ class PoolTests(unittest.TestCase):
                 'windows': [], 'sampled_at': time.time()}
 
     def test_hidden_monthly_limit_blocks_kimi_and_offers_deepseek_max_variant(self):
-        self.c['profiles']['fast-code']['variant'] = 'max'
+        self.c['profiles']['fallback']['variant'] = 'max'
         self.config.write_text(json.dumps(self.c))
         t, result = self.fail_monthly()
         self.assertEqual(result['status'], 'failed')
@@ -541,13 +580,13 @@ class PoolTests(unittest.TestCase):
         rec = quota.recovery(auto, self.c, self.q)
         self.assertEqual(rec['blocked_reason'], 'provider_billing_blocked')
         self.assertEqual(rec['billing_reason'], 'monthly_usage_limit')
-        self.assertEqual([a['profile'] for a in rec['alternatives']], ['fast-code'])
+        self.assertEqual([a['profile'] for a in rec['alternatives']], ['fallback'])
         self.assertEqual(rec['alternatives'][0]['variant'], 'max')
         self.assertFalse(rec['automatic_fallback'])
         self.assertTrue(rec['autonomous_reselection'])
         action = rec['autonomous_next_action']
-        self.assertEqual(action['action'], 'reselect_profile_and_resubmit')
-        self.assertEqual(action['preferred_variant'], 'max')
+        self.assertEqual(action['action'], 'resubmit_same_tier_auto')
+        self.assertEqual((action['tier'], action['profile']), ('normal', 'auto'))
         self.assertFalse(action['requires_user_approval'])
         self.assertFalse(action['wait_for_quota'])
         self.assertIn('do not ask the user', action['instruction'])
@@ -557,7 +596,7 @@ class PoolTests(unittest.TestCase):
         # requested profile may still try, while candidates keep avoiding the provider.
         self.assertEqual(quota.route(deep, self.c, self.q),
                          ('deep-research', 'explicit_profile_monthly_retry'))
-        self.assertEqual([a['profile'] for a in quota.alternatives(deep, self.c, self.q)], ['fast-code'])
+        self.assertEqual([a['profile'] for a in quota.alternatives(deep, self.c, self.q)], ['fallback'])
         explicit = self.new(profile='senior-code')
         self.assertEqual(quota.route(explicit, self.c, self.q),
                          ('senior-code', 'explicit_profile_monthly_retry'))
@@ -570,11 +609,11 @@ class PoolTests(unittest.TestCase):
         before = billing_path.read_bytes()
         status = delegate.task_status(common.task(t['id']))
         self.assertEqual(status['recovery']['billing_reason'], 'monthly_usage_limit')
-        self.assertEqual([a['profile'] for a in status['recovery']['alternatives']], ['fast-code'])
+        self.assertEqual([a['profile'] for a in status['recovery']['alternatives']], ['fallback'])
         waited = delegate.wait_result(common.task(t['id']), 1)
         self.assertTrue(waited['terminal'])
         self.assertFalse(waited['continue_waiting'])
-        self.assertEqual(waited['next_action'], 'reselect_profile_and_resubmit')
+        self.assertEqual(waited['next_action'], 'resubmit_same_tier_auto')
         self.assertTrue(waited['attention'])
         self.assertTrue(waited['recovery']['autonomous_reselection'])
         collected = diagnostics.collect(t['id'])
@@ -696,7 +735,7 @@ class PoolTests(unittest.TestCase):
         self.assertIsNotNone(quota.billing_block('kimi-for-coding'))
 
     def test_historical_balance_failure_excludes_provider_until_release(self):
-        t = self.new(profile='fast-code', mode='read', scopes=[])
+        t = self.new(profile='fallback', mode='read', scopes=[])
         t = common.update(t['id'], status='failed', reason='APIError', errors=[
             {'source': 'model', 'http_status': 402, 'message': 'Insufficient Balance'}])
         rec = quota.guidance(common.task(t['id']), self.c, self.q)
@@ -707,7 +746,7 @@ class PoolTests(unittest.TestCase):
         quota.clear('deepseek', evidence='quota')
         rec = quota.guidance(common.task(t['id']), self.c, self.q)
         self.assertEqual([a['profile'] for a in rec['alternatives']],
-                         ['fast-code', 'senior-code', 'deep-research'])
+                         ['fallback', 'senior-code', 'deep-research'])
 
     def test_historical_monthly_error_guides_away_from_same_provider_read_only(self):
         t = self.new(profile='senior-code', mode='read', scopes=[])
@@ -719,7 +758,7 @@ class PoolTests(unittest.TestCase):
         rec = quota.guidance(common.task(t['id']), self.c, self.q)
         self.assertEqual(rec['billing_reason'], 'monthly_usage_limit')
         self.assertEqual(rec['blocked_provider'], 'kimi-for-coding')
-        self.assertEqual([a['profile'] for a in rec['alternatives']], ['fast-code'])
+        self.assertEqual([a['profile'] for a in rec['alternatives']], ['fallback'])
         self.assertIsNone(quota.billing_block('kimi-for-coding'))
         self.assertEqual((self.state / 'billing.json').read_bytes()
                          if (self.state / 'billing.json').exists() else b'', before)
@@ -728,16 +767,16 @@ class PoolTests(unittest.TestCase):
                    reason='insufficient_balance')
         quota.clear('kimi-for-coding', evidence='quota')
         rec = quota.guidance(common.task(t['id']), self.c, self.q)
-        self.assertEqual([a['profile'] for a in rec['alternatives']], ['fast-code'])
+        self.assertEqual([a['profile'] for a in rec['alternatives']], ['fallback'])
         # After explicit manual retry authorization, the provider is a candidate again.
         quota.trip('kimi-for-coding', self.MONTHLY, 'm-manual', reason='monthly_usage_limit')
         quota.retry_provider('kimi-for-coding')
         rec = quota.guidance(common.task(t['id']), self.c, self.q)
         self.assertEqual([a['profile'] for a in rec['alternatives']],
-                         ['fast-code', 'senior-code', 'deep-research'])
+                         ['fallback', 'senior-code', 'deep-research'])
 
     def test_monthly_without_alternative_reports_specific_blockage(self):
-        self.c['profiles']['fast-code']['enabled'] = False
+        self.c['profiles']['fallback']['enabled'] = False
         self.config.write_text(json.dumps(self.c))
         # Auto routing (requested_profile='auto') still avoids the exhausted provider.
         t, result = self.fail_monthly(requested='auto')
@@ -757,7 +796,7 @@ class PoolTests(unittest.TestCase):
         self.assertTrue(waited['attention'])
         self.assertEqual(waited['next_action'], 'top_up_or_authorize_manual_retry')
 
-    def running(self, owner, scope, profile='fast-code', group=None):
+    def running(self, owner, scope, profile='fallback', group=None):
         t = self.new(scopes=[scope], profile=profile)
         t.update(status='running', profile=profile, owner_thread_id=owner,
                  group_id=group if group is not None else t['group_id'])
@@ -771,8 +810,8 @@ class PoolTests(unittest.TestCase):
         common.write_json(self.state / 'quota.json', q)
         blocked = delegate.wait_result(t, 0)
         self.assertFalse(blocked['continue_waiting'])
-        self.assertEqual(blocked['next_action'], 'reselect_profile_and_resubmit')
-        self.assertEqual([p['profile'] for p in blocked['recovery']['alternatives']], ['fast-code'])
+        self.assertEqual(blocked['next_action'], 'resubmit_same_tier_auto')
+        self.assertEqual([p['profile'] for p in blocked['recovery']['alternatives']], ['fallback'])
         t = common.update(t['id'], recovery=blocked['recovery'])
         common.write_json(self.state / 'quota.json', self.q)
         self.assertNotIn('recovery', delegate.task_status(t))
@@ -796,7 +835,7 @@ class PoolTests(unittest.TestCase):
         # Eight actives far exceed the legacy max_parallel=3 fixture; no global cap applies.
         queued = self.new(scopes=['c.txt'])
         queued['owner_thread_id'] = 'thread-c'
-        self.assertEqual(delegate.choose_ready(acts + [queued], self.c, self.q)[0][1], 'fast-code')
+        self.assertEqual(delegate.choose_ready(acts + [queued], self.c, self.q)[0][1], 'fallback')
         blocked = self.new(scopes=['a5.txt'])
         blocked['owner_thread_id'] = 'thread-a'
         self.assertEqual(delegate.choose_ready(acts + [blocked], self.c, self.q)[0][2],
@@ -814,13 +853,13 @@ class PoolTests(unittest.TestCase):
         acts = [self.running('thread-a', 'g%d.txt' % i, group='shared') for i in range(4)]
         other = self.new(scopes=['g9.txt'])
         other.update(owner_thread_id='thread-b', group_id='shared')
-        self.assertEqual(delegate.choose_ready(acts + [other], self.c, self.q)[0][1], 'fast-code')
+        self.assertEqual(delegate.choose_ready(acts + [other], self.c, self.q)[0][1], 'fallback')
 
     def test_legacy_owner_fallback_group_then_source(self):
         acts = []
         for i in range(4):
             t = self.new(scopes=['h%d.txt' % i])
-            t.update(status='running', profile='fast-code', owner_thread_id=None, group_id='legacy-group')
+            t.update(status='running', profile='fallback', owner_thread_id=None, group_id='legacy-group')
             acts.append(t)
         fifth = self.new(scopes=['h5.txt'])
         fifth.update(owner_thread_id=None, group_id='legacy-group')
@@ -829,7 +868,7 @@ class PoolTests(unittest.TestCase):
         bare = []
         for i in range(4):
             t = self.new(scopes=['s%d.txt' % i])
-            t.update(status='running', profile='fast-code', owner_thread_id=None, group_id=None)
+            t.update(status='running', profile='fallback', owner_thread_id=None, group_id=None)
             bare.append(t)
         sixth = self.new(scopes=['s5.txt'])
         sixth.update(owner_thread_id=None, group_id=None)
@@ -842,14 +881,14 @@ class PoolTests(unittest.TestCase):
             self.assertEqual(delegate.per_owner_cap(dict(self.c, max_parallel_per_owner=bad)), 4)
         c = dict(self.c, max_parallel_per_owner=1)
         a = self.new(scopes=['x1.txt'])
-        a.update(status='running', profile='fast-code')
+        a.update(status='running', profile='fallback')
         b = self.new(scopes=['x2.txt'])
         self.assertEqual(delegate.choose_ready([a, b], c, self.q)[0][2], 'owner_at_capacity')
 
     def test_recovery_never_replays_prompt(self):
         t = self.new(mode='read', scopes=[])
         t = common.update(t['id'], directory=str(self.repo), session_id='ses_test', message_id='msg_test',
-                          profile='fast-code', status='uncertain', started_at=time.time() - 100,
+                          profile='fallback', status='uncertain', started_at=time.time() - 100,
                           dispatch_attempted_at=time.time() - 60)
         stop = threading.Event()
         with patch.object(worker, 'call', return_value=[]) as call, patch.object(worker, 'api', return_value={}), \

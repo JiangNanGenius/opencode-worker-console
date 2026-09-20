@@ -1,6 +1,6 @@
 ---
 name: delegate-opencode
-description: Delegate complete authorized outcomes to general-purpose OpenCode agents. Every task category is eligible; decide only from the concrete tools, access and verification the outcome needs, never its domain or importance. Prefer delegation for substantial execution and bulk context gathering. Use the configured subscription-first routing policy, choose task depth deliberately and pin a model only for a concrete model requirement. Coordinate tasks, guidance, transcripts, sessions and recovery through the durable bridge.
+description: Delegate complete authorized outcomes to general-purpose OpenCode agents. Every task category is eligible; decide only from the concrete tools, access and verification the outcome needs, never its domain or importance. Prefer delegation for substantial execution and bulk context gathering. Choose Fast, Normal or Deep; the subscription-first bridge selects the provider and model. Coordinate tasks, guidance, transcripts, sessions and recovery through the durable bridge.
 ---
 
 # Delegate OpenCode work
@@ -94,25 +94,23 @@ Never include raw credentials in prompts, arguments, task JSON, guidance, report
 The console's administrator login is separate from CLI delegation. For LAN access, account
 provisioning or an HTTPS reverse proxy, see [references/remote-access.md](references/remote-access.md).
 
-## Choose a profile by task fit
+## Choose one task tier
 
-All profiles are capable general-purpose agents. A profile selects a model/resource tier,
-not a permitted job category. Check `quota` before a batch or after an availability error.
-When `routing_policy` is configured, prefer `--profile auto` and deliberately choose task
-**depth**. This lets the configured allowance priorities and weighted pools work. An explicit
-profile pins one model and bypasses the policy; use it for a real model requirement or an
-informed recovery decision, not by habit. After deep complexity takes precedence,
-`--urgency fast` selects the policy's Fast automatic tier; it never justifies pinning a model.
-Never select a profile because its stable ID or label contains `fast`, because the task is
-small, or because direct billing appears quicker. In the Agent Plan preset, `fast-code` is the
-legacy ID for direct paid DeepSeek and remains the final fallback. An explicit profile must
-carry a concrete `profile_reason`; if no such reason exists, use `auto`.
+For every ordinary handoff, choose exactly one capability tier and keep `--profile auto`.
+The bridge owns profile, provider, allowance balancing and fallback selection. Profile IDs are
+configuration details, not roles for Codex to choose. Check `quota` after an availability error,
+not to manually reproduce the bridge's routing decision.
 
 | Task shape | Selection |
 | --- | --- |
-| Ordinary coherent implementation, SSH/operations, deployment, investigation, writing, testing or second opinion | `--profile auto --complexity normal` |
-| Large-repository reading, long-context synthesis, ambiguous or cross-module causes, architecture/dependency mapping or consequential review | `--profile auto --complexity deep` |
-| A user-required model, controlled model comparison, or informed recovery after the policy reports a provider unavailable | Explicit enabled profile with `profile_reason` |
+| Bounded, well-understood work where fast feedback matters | `--profile auto --tier fast` |
+| Ordinary coherent work; use this default when neither other row applies | `--profile auto --tier normal` |
+| Large-context, ambiguous, cross-module, architectural or consequential work | `--profile auto --tier deep` |
+
+Task size alone does not make a task Fast, and importance alone does not make it Deep. Keep a
+capable worker on one coherent outcome. Only a direct user requirement for a named model or a
+controlled model comparison may bypass tier routing; then use the explicit profile with a
+concrete `profile_reason`.
 
 Configured policy stages are tried in order before dispatch. Available members within one
 stage share admissions by weight. Treat the installed policy as authoritative: it may contain
@@ -180,11 +178,16 @@ a prompt whose acceptance is uncertain, or duplicate side effects during a conti
 ## Availability and recovery
 
 Errors, tool failures, command exits, questions and permission requests reach Codex through
-`status`, `wait` and `collect`. Inspect `recovery`, refresh quota and select an available
-profile autonomously within the user's model constraints. Review partial work and carry
+`status`, `wait` and `collect`. Inspect `recovery`, refresh quota and keep the task's capability
+tier unless the work itself changed. Resubmit with `profile=auto`; the bridge excludes the known
+unavailable provider and selects the next configured stage. Review partial work and carry
 forward the remaining outcome with `--parent-task-id`; the bridge never changes an already dispatched model or blindly replays operations.
 Ordered fallback and weighted selection apply only before initial dispatch. Do not request a top-up or wait on depleted allowance while a
 suitable alternative can continue the authorized task.
+
+When `status`, `wait` or `collect` returns `fallback_used: true`, tell the user once that all
+preferred routing stages were unavailable or exhausted and the configured fallback was used.
+Do not announce ordinary provider/model choices or ask before using them.
 
 An endpoint-confirmed zero allowance is unavailable until a refreshed sample shows recovery.
 Kimi can separately report HTTP 403 “monthly usage limit” despite positive usage windows:

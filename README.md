@@ -95,15 +95,15 @@ step without rewriting the saved baseline.
 
 These options initialize a **fresh** installation, not replace existing profiles. `--no-start` installs without launching services. [Full installation guide](references/installation.md): provider login, managed binary path, passwords, verification, updates and recovery.
 
-## Profiles select models, not job restrictions
+## Agents choose tiers; the bridge chooses models
 
-| Profile | Optional preset model | Typical selection |
+| Internal profile | Optional preset model | Bridge role |
 | --- | --- | --- |
-| `senior-code` | Kimi K2.8 Preview | Complete general tasks while subscription allowance is usable |
-| `deep-research` | Kimi K3 | Large repositories, long-context synthesis, ambiguous investigation and review |
-| `fast-code` | DeepSeek V4.1 Flash | Direct model pin or final fallback in the Agent Plan preset |
+| `senior-code` | Kimi K2.8 Preview | Normal-tier subscription pool |
+| `deep-research` | Kimi K3 | Deep-tier subscription pool |
+| `fallback` | DeepSeek V4.1 Flash | Final fallback after preferred stages are unavailable |
 
-All profiles are general-purpose agents. Keep routing names while changing their models in the console. The preset uses `max` reasoning; other models need a variant their provider actually supports. `auto` uses the configured task tier; an optional policy adds ordered provider fallback and weighted pools before dispatch. Deep complexity takes precedence; otherwise fast urgency selects the Fast automatic tier without pinning a model. Explicit profiles stay pinned and require a reason when ordered routing is enabled. [Routing and plan efficiency](references/routing.md).
+Codex chooses Fast, Normal or Deep and submits with `profile=auto`; the bridge owns the profile, provider, allowance balance and fallback. The profile table above is an operator configuration view, not an agent role list. The preset uses `max` reasoning; other models need a variant their provider actually supports. Only a user-required named model or controlled comparison should pin a profile. [Routing and plan efficiency](references/routing.md).
 
 ## What you can manage
 
@@ -122,7 +122,7 @@ This sends a real model request and can consume provider allowance. Use an exist
 
 ```sh
 ~/.local/bin/delegate-opencode submit --directory /absolute/project \
-  --profile auto --group-title 'Repository orientation' \
+  --profile auto --tier deep --group-title 'Repository orientation' \
   --title 'Map the project' \
   --acceptance 'Return entry points, test commands and evidence; do not modify files.' \
   'Read the project guidance and summarize how this project is organized.'

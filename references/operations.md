@@ -9,7 +9,7 @@ The entrypoint is `~/.local/bin/delegate-opencode`. The skill also works via
 delegate-opencode doctor
 delegate-opencode quota
 delegate-opencode console --open
-delegate-opencode submit --directory /absolute/repo --urgency background \
+delegate-opencode submit --directory /absolute/repo --tier normal \
   --title 'Map configuration' 'Locate configuration loading and summarize precedence with file/line evidence.'
 delegate-opencode submit --directory /absolute/repo --mode write --scope src/parser.py \
   --profile auto --command 'python3 -m unittest -v tests.test_parser' \
@@ -24,12 +24,12 @@ delegate-opencode stats
 
 For complex text, use `submit --spec /absolute/task.json` or `--spec -` with a JSON
 object on stdin. Fields: `directory`, `objective`, `title`, `acceptance` (string array),
-`profile` (`auto` or a configured profile), `profile_reason` (required for an explicit profile
-when ordered routing is enabled), `mode` (`read`/`write`), `scopes` (literal relative
+`tier` (`fast`/`normal`/`deep`), `profile` (`auto` for ordinary use), `profile_reason`
+(required for the exceptional explicit profile), `mode` (`read`/`write`), `scopes` (literal relative
 path array, repository-local), `targets` (operational target array such as `ssh:example.com:nginx`),
 `commands` (suggested checks; exact allowlist when Auto Approve is off), `resources` (shared lock-name array),
-`urgency` (`fast`/`background`), `complexity` (`normal`/`deep`), `workspace`
-(`auto`/`shared`/`isolated`), `large`, and `web`.
+`workspace` (`auto`/`shared`/`isolated`), `large`, and `web`. Legacy `urgency` and
+`complexity` remain accepted and are normalized into a tier.
 Do not put API keys or other secrets in tasks. With Auto Approve enabled (the default),
 all native tools, including web fetching, run without prompts. In restricted mode,
 `web: true` explicitly allows the `webfetch` tool and, as in Auto Approve mode, never
@@ -42,18 +42,16 @@ implementation, checks and a concise report. Use `steer` for refinements to that
 instead of creating a sequence of microtasks. Split tasks when deliverables or writable
 scopes are genuinely independent.
 
-Choose task depth deliberately. With a configured `routing_policy`, use `--profile auto`:
-ordinary work follows the normal tier, while `--complexity deep` selects the deep tier for
-large-repository mapping, ambiguous causes, architecture synthesis and consequential review.
+Choose one tier and keep `--profile auto`: Fast for bounded well-understood work needing quick
+feedback, Normal for ordinary coherent outcomes, and Deep for large-context, ambiguous,
+cross-module, architectural or consequential work.
 The first available policy stage wins; members in that stage share actual admissions by
 weight. See [routing and plan efficiency](routing.md) for the Ark/Kimi baseline, bounded
-quota-aware ratios, fallbacks and configuration. Explicit profiles pin one model and bypass the
-policy; use them only for a user-required model, controlled comparison or informed recovery, and
-record that concrete reason with `--profile-reason`. After deep complexity takes precedence,
-urgent work uses `--profile auto --urgency fast` to enter the Fast policy tier; profile names and
-task size never bypass that policy or pin a model.
+quota-aware ratios, fallbacks and configuration. A direct user requirement for a named model or
+a controlled comparison may pin one model with an explicit profile and `--profile-reason`;
+ordinary coordination never chooses a profile.
 
-Without a policy, `auto` uses the legacy `routing` mapping based on urgency and complexity.
+Without a policy, `auto` uses the legacy single-profile mapping for the selected tier.
 It does not infer semantic properties from task text. Every tier is a general-purpose agent;
 examples and names do not limit job roles. Do not split a coherent investigation into tiny
 fast lookups. Use `stats` to assess actual distribution without manufacturing tasks to hit a
@@ -148,14 +146,16 @@ Queries are coalesced for 60 seconds, refreshed every 5 minutes while running or
 minute while waiting. Idle queues do not query. Transient errors preserve last successful
 data for 15 minutes with a stale marker; older data is unknown. Invalid credentials or known
 exhausted quota block dispatch; unknown telemetry does not impose a shared concurrency cap.
-Plan allowance is preferred for all automatically routed work; `fast-code` is a stable legacy
-ID for the direct paid DeepSeek fallback in the Agent Plan preset, not a small-task shortcut.
+Plan allowance is preferred for all automatically routed work; `fallback` is the direct paid
+DeepSeek fallback in the Agent Plan preset, not a task tier or a small-task shortcut.
 The optional Kimi deep-task reserve defaults to 0%, so ordinary
 tasks can use available plan allowance. If configured higher, it holds ordinary tasks below
-that percentage while allowing deep work. Quota or billing failures never switch profiles automatically, including
-tasks submitted with `auto`. Codex receives the blockage and candidate profiles, then
-autonomously selects a suitable alternative and continues authorized work without asking the
-user to approve the switch or recharge. If none is suitable, it reports that specific blockage.
+that percentage while allowing deep work. Before dispatch, an automatic task skips unavailable
+stages and the bridge chooses the next configured stage. It returns `fallback_used: true` and a
+routing notice only when every preferred stage was unavailable or exhausted and the final
+fallback was dispatched. A running task is never silently migrated after a model failure;
+continue the remaining outcome with the same tier and `profile=auto`, so the recorded provider
+block lets the bridge choose the next stage. If none is suitable, it reports that blockage.
 Fresh telemetry also permits later use of a replenished account. Queue status records
 the reason. Unknown quota is not a promise of availability.
 

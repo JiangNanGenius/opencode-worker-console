@@ -70,7 +70,7 @@ For custom overrides, direct maintenance commands need the same environment. The
 
 Inspect returned data: a CLI exit code of zero is not sufficient. `doctor` may contain `server_error`; check server health, registered profiles and daemon heartbeat. A provider without a quota adapter may still work. Quota samples and model catalog entries do not prove an inference request will succeed.
 
-If end-to-end model verification is within the user's request and account usage is authorized, submit one small read-only task in an explicitly safe directory. Select a suitable configured profile; collect the result and check the actual model/error evidence. Wait to completion with bounded `wait` calls. Do not cancel because a job takes several minutes or end by asking the user to say “continue.” Do not spawn an expensive full-repository investigation as an installation smoke test.
+If end-to-end model verification is within the user's request and account usage is authorized, submit one small read-only task in an explicitly safe directory with `--tier fast --profile auto`; the bridge selects the profile. Collect the result and check the actual model/error evidence. Wait to completion with bounded `wait` calls. Do not cancel because a job takes several minutes or end by asking the user to say “continue.” Do not spawn an expensive full-repository investigation as an installation smoke test.
 
 No real request is required merely to render the wizard or run fixture tests. Report a skipped model check as unverified, not successful. If login is the only remaining blocker, state it precisely and retain completed installation.
 
@@ -80,7 +80,7 @@ No real request is required merely to render the wizard or run fixture tests. Re
 - A normal install/update waits for idle work. Do not cancel another conversation's tasks.
 - `python3 scripts/install.py --live` is for compatible code-only updates. It retains OpenCode while restarting observer/console; it cannot change model/binary configuration. Never assume every migration is live-compatible.
 - An uncertain dispatch must be inspected through the existing task/session before retrying. Never blindly replay side effects.
-- For provider billing failure, inspect recovery and partial work before selecting another available profile. Endpoint-confirmed zero remains unavailable; Kimi hidden monthly errors have a separate explicit-retry recovery flow.
+- For provider billing failure, inspect recovery and partial work, then continue with the same tier and `profile=auto`; the bridge selects the next available stage. Endpoint-confirmed zero remains unavailable; Kimi hidden monthly errors have a separate explicit-retry recovery flow.
 - Do not delete task ledgers, auth state, worktrees or artifacts to “start clean.” Existing runtime backups live under private state `releases/`; restoration should preserve current config/state and respect active tasks.
 
 ## Coordinator handoff
@@ -102,7 +102,7 @@ Return only necessary non-secret facts:
 
 - Source and installed runtime/CLI paths.
 - Local console URL; whether it was actually opened.
-- Profiles selected or existing profiles preserved.
+- Task tier submitted with automatic routing, or existing operator profiles preserved.
 - Installation, service health, provider connection and real model execution as separate statuses.
 - Any pending user login or model choice, with the exact next step.
 - For updates, whether OpenCode was retained and whether running work was affected.

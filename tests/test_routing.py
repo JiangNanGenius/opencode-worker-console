@@ -28,17 +28,17 @@ COUNTERS = 'routing.json'
 BACKGROUND_POLICY = [
     [{'profile': 'senior-code', 'weight': 1}],
     [{'profile': 'ark-auto', 'weight': 1}],
-    [{'profile': 'fast-code', 'weight': 1}],
+    [{'profile': 'fallback', 'weight': 1}],
 ]
 DEEP_POLICY = [
     [{'profile': 'deep-research', 'weight': 2}, {'profile': 'ark-k3', 'weight': 1}],
-    [{'profile': 'fast-code', 'weight': 1}],
+    [{'profile': 'fallback', 'weight': 1}],
 ]
 
 
 def profiles():
     return {
-        'fast-code': {'model': 'deepseek/deepseek-flash', 'enabled': True},
+        'fallback': {'model': 'deepseek/deepseek-flash', 'enabled': True},
         'senior-code': {'model': 'kimi-for-coding/kimi-for-coding', 'enabled': True},
         'deep-research': {'model': 'kimi-for-coding/k3', 'enabled': True},
         'ark-auto': {'model': 'ark/ark-code-latest', 'enabled': True, 'variant': 'max'},
@@ -62,7 +62,7 @@ class RoutingPolicyTests(unittest.TestCase):
     def test_adaptive_ladder_is_explicit_generic_and_bounded(self):
         policy = {'deep': [[{'profile': 'deep-research', 'weight': 2},
                             {'profile': 'ark-k3', 'weight': 1}],
-                           [{'profile': 'fast-code', 'weight': 1}]]}
+                           [{'profile': 'fallback', 'weight': 1}]]}
         value = {'deep': {'0': {'ladder': [[3, 1], [2, 1], [1, 1]]}}}
         self.assertEqual(routing.validate_dynamics(value, policy, profiles()), value)
         config = {'profiles': profiles(), 'routing_policy': policy, 'routing_dynamics': value}
@@ -119,12 +119,12 @@ class RoutingPolicyTests(unittest.TestCase):
 
     def test_runtime_policy_drops_degraded_references_but_keeps_order(self):
         stored = {'background': [[{'profile': 'ghost', 'weight': 1},
-                                  {'profile': 'fast-code', 'weight': 1}],
+                                  {'profile': 'fallback', 'weight': 1}],
                                  [{'profile': 'disabled', 'weight': 1}],
                                  [{'profile': 'ark-auto', 'weight': 1}]],
                   'deep': [[{'profile': 'ark-k3', 'weight': 1}]]}
         runtime = routing.runtime_policy(stored, profiles())
-        self.assertEqual(runtime['background'], [[{'profile': 'fast-code', 'weight': 1}],
+        self.assertEqual(runtime['background'], [[{'profile': 'fallback', 'weight': 1}],
                                                  [{'profile': 'ark-auto', 'weight': 1}]])
         self.assertEqual(runtime['deep'], [[{'profile': 'ark-k3', 'weight': 1}]])
         # A structurally malformed policy still routes as if unset.
@@ -176,7 +176,7 @@ class WeightedAdmissionTests(unittest.TestCase):
             admissions.credits['deep'].update(credits)
         # The single remaining candidate paid its own weight each time: no debt.
         self.assertEqual(admissions.credits['deep'].get('ark-k3', 0), 0)
-        self.assertNotIn('fast-code', admissions.credits.get('deep', {}))
+        self.assertNotIn('fallback', admissions.credits.get('deep', {}))
         # The provider returns and immediately gets its configured 2:1 share.
         sequence = []
         for _ in range(6):
@@ -247,7 +247,7 @@ class RoutePolicyTests(unittest.TestCase):
         self.c = {
             'auto_approve': False, 'kimi_reserve_percent': 20,
             'profiles': profiles(),
-            'routing': {'fast': 'fast-code', 'background': 'senior-code', 'deep': 'deep-research'},
+            'routing': {'fast': 'fallback', 'background': 'senior-code', 'deep': 'deep-research'},
             'routing_policy': {'background': BACKGROUND_POLICY, 'deep': DEEP_POLICY},
         }
         self.config.write_text(json.dumps(self.c))
@@ -280,7 +280,7 @@ class RoutePolicyTests(unittest.TestCase):
         profile, why = quota.route(self.task(), self.c, self.q)
         self.assertEqual(profile, 'senior-code')
         self.assertTrue(why.startswith('routing_policy:background:stage0:'))
-        self.assertEqual(quota.route(self.task(urgency='fast'), self.c, self.q)[0], 'fast-code')
+        self.assertEqual(quota.route(self.task(urgency='fast'), self.c, self.q)[0], 'fallback')
 
     def test_stage_falls_through_when_preferred_provider_is_unavailable(self):
         self.q['kimi-for-coding']['available'] = False
@@ -289,7 +289,7 @@ class RoutePolicyTests(unittest.TestCase):
         self.assertTrue(why.startswith('routing_policy:background:stage1:'))
         self.q['ark']['available'] = False
         profile, why = quota.route(self.task(), self.c, self.q)
-        self.assertEqual(profile, 'fast-code')
+        self.assertEqual(profile, 'fallback')
         self.assertTrue(why.startswith('routing_policy:background:stage2:'))
 
     def test_deep_stage_advances_by_weight(self):
@@ -347,7 +347,7 @@ class RoutePolicyTests(unittest.TestCase):
         c.pop('routing_policy')
         self.assertEqual(quota.route(self.task(), c, self.q), ('senior-code', 'background:quota_available'))
         self.assertEqual(quota.route(self.task(urgency='fast'), c, self.q),
-                         ('fast-code', 'fast:quota_available'))
+                         ('fallback', 'fast:quota_available'))
         self.assertEqual(quota.route(self.task(complexity='deep'), c, self.q),
                          ('deep-research', 'deep:quota_available'))
 
@@ -366,7 +366,7 @@ class RoutePolicyTests(unittest.TestCase):
         alts = quota.alternatives(t, self.c, self.q, exclude='kimi-for-coding')
         # Deep tier first (Ark K3, then its DeepSeek fallback), then the background tier.
         self.assertEqual([a['profile'] for a in alts],
-                         ['ark-k3', 'fast-code', 'ark-auto'])
+                         ['ark-k3', 'fallback'])
 
     def test_window_recovery_prefers_policy_order_and_excludes_provider(self):
         t = self.task(requested_profile='deep-research', complexity='deep')
@@ -378,15 +378,16 @@ class RoutePolicyTests(unittest.TestCase):
         self.assertIsNone(rec['billing_reason'])
         self.assertEqual(rec['blocked_provider'], 'kimi-for-coding')
         self.assertEqual([a['profile'] for a in rec['alternatives']],
-                         ['ark-k3', 'fast-code', 'ark-auto'])
-        self.assertEqual(rec['autonomous_next_action']['preferred_profile'], 'ark-k3')
+                         ['ark-k3', 'fallback'])
+        self.assertEqual((rec['autonomous_next_action']['tier'],
+                          rec['autonomous_next_action']['profile']), ('deep', 'auto'))
         self.assertFalse(rec['autonomous_next_action']['wait_for_quota'])
         # Read-only: no durable circuit was armed for a self-resolving window.
         self.assertIsNone(quota.billing_block('kimi-for-coding'))
 
     def test_window_recovery_without_alternatives_never_blocks_permanently(self):
         c = json.loads(json.dumps(self.c))
-        for name in ('fast-code', 'ark-auto', 'ark-k3'):
+        for name in ('fallback', 'ark-auto', 'ark-k3'):
             c['profiles'][name]['enabled'] = False
         t = dict(self.task(requested_profile='deep-research', complexity='deep'), status='failed',
                  reason='provider_usage_window_limit', errors=[])
@@ -464,8 +465,8 @@ class ChooseReadyAdmissionTests(RoutePolicyTests):
         for i in range(20):
             queued = [self.task(owner_thread_id='t%d' % i, group_id='t%d' % i, scopes=['f%d' % i],
                                 complexity='deep')]
-            self.assertEqual(self.admit(queued)[0][1], 'fast-code')
-        self.assertEqual(self.stored_credits()['deep'].get('fast-code', 0), 0)
+            self.assertEqual(self.admit(queued)[0][1], 'fallback')
+        self.assertEqual(self.stored_credits()['deep'].get('fallback', 0), 0)
         self.assertEqual(self.stored_credits()['deep'].get('deep-research', 0), 0)
         self.q['kimi-for-coding']['available'] = True
         self.q['ark']['available'] = True
@@ -564,7 +565,7 @@ class ManagementPolicyTests(unittest.TestCase):
         self.config = self.root / 'config.json'
         base = {'version': 1, 'server_url': 'http://127.0.0.1:1', 'max_parallel_per_owner': 4,
                 'kimi_reserve_percent': 20, 'profiles': profiles(),
-                'routing': {'fast': 'fast-code', 'background': 'senior-code', 'deep': 'deep-research'}}
+                'routing': {'fast': 'fallback', 'background': 'senior-code', 'deep': 'deep-research'}}
         self.config.write_text(json.dumps(base))
         self.patchers = [patch.object(common, 'STATE', self.root / 'state'),
                          patch.object(common, 'CONFIG', self.config)]
@@ -580,7 +581,7 @@ class ManagementPolicyTests(unittest.TestCase):
     def body(self):
         return {'profiles': profiles(),
                 'max_parallel_per_owner': 4, 'kimi_reserve_percent': 20,
-                'routing': {'fast': 'fast-code', 'background': 'senior-code', 'deep': 'deep-research'}}
+                'routing': {'fast': 'fallback', 'background': 'senior-code', 'deep': 'deep-research'}}
 
     def stored(self):
         return json.loads(self.config.read_text())
@@ -758,7 +759,7 @@ class WindowClassificationTests(unittest.TestCase):
         self.assertEqual(error['usage_window_reason'], diagnostics.WINDOW_REASON)
         self.assertNotIn('billing', error)
         self.assertFalse(error['retryable'])
-        self.assertEqual(error['suggested_action'], 'inspect_partial_work_and_reselect_profile')
+        self.assertEqual(error['suggested_action'], 'inspect_partial_work_and_resubmit_same_tier_auto')
 
 
 class KimiWindowNormalizationTests(unittest.TestCase):
@@ -872,7 +873,7 @@ class WorkerWindowRecoveryTests(unittest.TestCase):
         self.state = self.root / 'state'
         self.config = self.root / 'config.json'
         self.c = {'auto_approve': False, 'kimi_reserve_percent': 0, 'profiles': profiles(),
-                  'routing': {'fast': 'fast-code', 'background': 'senior-code', 'deep': 'deep-research'},
+                  'routing': {'fast': 'fallback', 'background': 'senior-code', 'deep': 'deep-research'},
                   'routing_policy': {'background': BACKGROUND_POLICY, 'deep': DEEP_POLICY}}
         self.config.write_text(json.dumps(self.c))
         self.patchers = [patch.object(common, 'STATE', self.state), patch.object(worker, 'STATE', self.state),
@@ -965,7 +966,7 @@ class WorkerWindowRecoveryTests(unittest.TestCase):
         self.assertEqual(result['reason'], 'provider_usage_window_limit')
         self.assertTrue(result['recovery']['usage_window_exhausted'])
         self.assertEqual([a['profile'] for a in result['recovery']['alternatives']],
-                         ['ark-k3', 'fast-code', 'ark-auto'])
+                         ['ark-k3', 'fallback'])
         self.assertIsNone(quota.billing_block('kimi-for-coding'))
         self.assertFalse(any(e.get('billing') for e in result['errors']))
 
@@ -976,7 +977,7 @@ class WorkerWindowRecoveryTests(unittest.TestCase):
                 'errors': [{'source': 'model', 'message': WINDOW_5H, 'usage_window': True}]}
         rec = quota.window_failure_recovery(task, self.c, {})
         waited = delegate.wait_result(dict(task, recovery=rec), 5)
-        self.assertEqual(waited['next_action'], 'reselect_profile_and_resubmit')
+        self.assertEqual(waited['next_action'], 'resubmit_same_tier_auto')
         self.assertTrue(waited['attention'])
         self.assertEqual(waited['recovery']['blocked_provider'], 'kimi-for-coding')
 

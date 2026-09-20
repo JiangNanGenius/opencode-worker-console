@@ -206,7 +206,7 @@ class ErrorBridgeTests(unittest.TestCase):
         err = compact['result']['errors'][0]
         self.assertTrue(err['billing'])
         self.assertFalse(err['retryable'])
-        self.assertEqual(err['suggested_action'], 'inspect_partial_work_and_reselect_profile')
+        self.assertEqual(err['suggested_action'], 'inspect_partial_work_and_resubmit_same_tier_auto')
         rec = compact['recovery']
         self.assertEqual(rec['blocked_reason'], 'provider_billing_error')
         self.assertFalse(rec['automatic_fallback'])
@@ -218,7 +218,7 @@ class ErrorBridgeTests(unittest.TestCase):
         self.assertIsNone(quota.billing_block('test'))
         compact = diagnostics.collect('job-error')
         self.assertEqual(compact['recovery']['suggested_action'],
-                         'inspect_partial_work_and_reselect_profile')
+                         'inspect_partial_work_and_resubmit_same_tier_auto')
         self.assertEqual([a['profile'] for a in compact['recovery']['alternatives']], ['fast'])
         self.assertIsNone(quota.billing_block('test'))
 

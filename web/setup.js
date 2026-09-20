@@ -19,14 +19,14 @@
 
   var STEPS = ['providers', 'models', 'preferences', 'review'];
   var ROUTING_KEYS = ['fast', 'background', 'deep'];
-  var WIZARD_PROFILE_IDS = ['fast-code', 'senior-code', 'deep-research'];
+  var WIZARD_PROFILE_IDS = ['fallback', 'senior-code', 'deep-research'];
   var MONTHLY_FIELDS = ['enabled', 'day', 'time', 'timezone'];
-  var DEFAULT_ROUTING = { fast: 'fast-code', background: 'senior-code', deep: 'deep-research' };
+  var DEFAULT_ROUTING = { fast: 'fallback', background: 'senior-code', deep: 'deep-research' };
   // Mirrors install.py's documented DeepSeek + Kimi preset. The 'max' variant
   // is kept only when the catalog confirms it or lists no variant information;
   // it is never invented for models whose catalog entry excludes it.
   var PRESET_PROFILES = {
-    'fast-code': { model: 'deepseek/deepseek-flash', label: 'DeepSeek V4.1 Flash', variant: 'max' },
+    'fallback': { model: 'deepseek/deepseek-flash', label: 'Fallback · DeepSeek V4.1 Flash', variant: 'max' },
     'senior-code': { model: 'kimi-for-coding/kimi-for-coding', label: 'Kimi K2.8 Preview', variant: 'max' },
     'deep-research': { model: 'kimi-for-coding/k3', label: 'Kimi K3', variant: 'max' }
   };

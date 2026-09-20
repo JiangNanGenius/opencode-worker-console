@@ -584,6 +584,8 @@ def allowed(provider, q, complexity, threshold=0, retry_monthly=False):
 
 def tier_of(t):
     """Work tier used by legacy routing and by an opt-in routing_policy."""
+    if t.get('tier') in ('fast', 'normal', 'deep'):
+        return 'background' if t['tier'] == 'normal' else t['tier']
     return 'deep' if t.get('complexity') == 'deep' else 'fast' if t.get('urgency') == 'fast' else 'background'
 
 
@@ -593,7 +595,7 @@ def _tier(t):  # Backward-compatible private alias.
 
 def _profile_name(t, c):
     requested = t.get('requested_profile', 'auto')
-    legacy = c.get('routing', {'fast': 'fast-code', 'background': 'senior-code', 'deep': 'deep-research'})
+    legacy = c.get('routing', {'fast': 'fallback', 'background': 'senior-code', 'deep': 'deep-research'})
     profile = requested if requested != 'auto' else legacy.get(tier_of(t))
     return profile if profile in c['profiles'] else None
 
@@ -660,6 +662,8 @@ def _allowed_profile(name, t, c, q):
     if not isinstance(p, dict) or p.get('enabled') is False or not p.get('model'):
         return None, False, 'profile_disabled_or_missing'
     provider = str(p['model']).split('/', 1)[0]
+    if provider in (t.get('excluded_providers') or []):
+        return provider, False, 'continuation_excluded_provider'
     ok, why = allowed(provider, q, t.get('complexity', 'normal'), c.get('kimi_reserve_percent', 0))
     return provider, ok, why
 
@@ -770,13 +774,11 @@ def _unrecovered_provider(provider, kind):
 
 
 def _profile_order(t, c, policy):
-    """Profiles in recovery preference order: the task tier's policy first, then the rest.
+    """Profiles in recovery preference order for the selected task tier.
 
     Without a policy this is exactly the configured profile order, preserving legacy
-    guidance. With a policy, the task's whole tier leads in declared stage order (so a
-    deep task prefers Ark K3 and then the deep tier's own DeepSeek fallback before
-    other tiers' candidates, and never direct DeepSeek before Ark K3), then the other
-    policy tiers in canonical order, then unlisted profiles.
+    guidance. With a policy, only the task's declared stages participate; recovery
+    never changes capability tier merely to reach another profile.
     """
     names = list(c.get('profiles', {}))
     if not policy:
@@ -791,13 +793,6 @@ def _profile_order(t, c, policy):
     tier = tier_of(t)
     for entry in routing.tier_entries(policy, tier):
         add(entry['profile'])
-    for other in routing.TIERS:
-        if other == tier:
-            continue
-        for entry in routing.tier_entries(policy, other):
-            add(entry['profile'])
-    for name in names:
-        add(name)
     return ordered
 
 
@@ -827,62 +822,34 @@ def alternatives(t, c, q, exclude=None):
 
 def _options(t, c, q, blocked_reason, partial_work=False, billing_reason=None, provider=None,
              exclude=None, window=False):
-    """Machine-readable blockage options. Codex autonomously re-selects a viable
-    alternative and continues; topping up is the fallback only when none exist.
-
-    automatic_fallback=False always means the bridge itself never switches or replays;
-    autonomous_reselection=True is the separate coordinator instruction to choose a
-    candidate and continue without asking the user or waiting for quota.
-    """
+    """Machine-readable recovery that preserves the task tier and bridge routing."""
     if exclude is None:
         exclude = _unrecovered_provider(provider, billing_reason)
     alts = alternatives(t, c, q, exclude=exclude)
+    task_tier = 'normal' if tier_of(t) == 'background' else tier_of(t)
     retry_command = 'delegate-opencode quota --retry-provider ' + provider if provider else None
     retry_allowed = bool(provider and not window and billing_reason == MONTHLY_REASON and
                          allowed(provider, q, t.get('complexity', 'normal'),
                                  c.get('kimi_reserve_percent', 0), retry_monthly=True)[0])
-    if window:
-        action = 'inspect_partial_work_and_reselect_profile' if alts and partial_work else \
-            'reselect_profile_and_resubmit' if alts else 'retry_or_reselect_after_usage_window'
-        autonomous = {'action': 'reselect_profile_and_resubmit' if alts else
-                      'retry_or_reselect_after_usage_window',
-                      'requires_user_approval': False, 'wait_for_quota': False,
-                      'retry_command': None, 'retry_is_proof': False}
-        if alts:
-            preferred = alts[0]
-            autonomous.update(
-                instruction=('Continue autonomously: do not ask the user and do not wait for the '
-                             'provider window while a viable alternative exists. Review the partial work '
-                             'and submit a continuation as a new task with one of the candidate profiles '
-                             '(preferred: ' + preferred['profile'] + '), preserving the configured maximum '
-                             'reasoning variant. Never replay prompt text or deployed side effects; carry '
-                             'forward only the remaining authorized work.'),
-                preferred_profile=preferred['profile'], preferred_model=preferred['model'],
-                preferred_variant=preferred.get('variant'), candidates=alts)
-        else:
-            autonomous['instruction'] = (
-                'No viable alternative profile is currently dispatchable. The provider reported an '
-                'explicit short usage-window exhaustion. Do not infer a reset time and do not block '
-                'permanently: report the blockage, then retry later as a new task or continue with '
-                'another policy candidate when one becomes available.')
-    elif alts:
-        action = 'inspect_partial_work_and_reselect_profile' if partial_work else 'reselect_profile'
-        preferred = alts[0]
+    if alts:
+        action = ('inspect_partial_work_and_resubmit_same_tier_auto' if partial_work else
+                  'resubmit_same_tier_auto')
         autonomous = {
-            'action': 'reselect_profile_and_resubmit',
+            'action': 'resubmit_same_tier_auto',
             'instruction': ('Continue autonomously: do not ask the user and do not wait for quota while a '
-                            'viable alternative exists. Review the partial work and submit a continuation as '
-                            'a new task with one of the candidate profiles (preferred: ' +
-                            preferred['profile'] + '), preserving the configured maximum reasoning variant. '
-                            'Never replay prompt text or deployed side effects; carry forward only the '
-                            'remaining authorized work.'),
-            'preferred_profile': preferred['profile'], 'preferred_model': preferred['model'],
-            'preferred_variant': preferred.get('variant'), 'candidates': alts,
-            'requires_user_approval': False, 'wait_for_quota': False}
+                            'viable alternative exists. Review partial work and submit a continuation with '
+                            'the same tier, profile=auto and this failed task as parent. The bridge inherits '
+                            'the failed provider exclusion and chooses the next configured stage. Never '
+                            'replay prompt text or deployed side effects; carry forward only the remaining '
+                            'authorized work.'),
+            'tier': task_tier, 'profile': 'auto',
+            'requires_user_approval': False, 'wait_for_quota': False,
+            'retry_command': None, 'retry_is_proof': False}
     else:
-        action = 'top_up_provider_account_then_resubmit' if partial_work else \
-            'top_up_provider_account_or_wait_for_quota'
-        instruction = ('No viable alternative profile is currently dispatchable. Report this specific '
+        action = ('retry_or_reselect_after_usage_window' if window else
+                  'top_up_provider_account_then_resubmit' if partial_work else
+                  'top_up_provider_account_or_wait_for_quota')
+        instruction = ('No viable route in this task tier is currently dispatchable. Report this specific '
                        'blockage; do not expect this task to resume automatically.')
         if billing_reason == MONTHLY_REASON and retry_allowed:
             # Waiting on window telemetry cannot prove a monthly cycle recovered.
@@ -897,7 +864,7 @@ def _options(t, c, q, blocked_reason, partial_work=False, billing_reason=None, p
                            ' can release the block for new attempts.')
         autonomous = {'action': action, 'instruction': instruction,
                       'requires_user_approval': False,
-                      'wait_for_quota': not retry_allowed,
+                      'wait_for_quota': False if window else not retry_allowed,
                       'retry_command': retry_command, 'retry_is_proof': False}
     out = {'blocked_reason': blocked_reason, 'billing_reason': billing_reason,
            'explicit_retry_allowed': retry_allowed,
@@ -906,10 +873,10 @@ def _options(t, c, q, blocked_reason, partial_work=False, billing_reason=None, p
            'autonomous_next_action': autonomous,
            'note': ('automatic_fallback=false means the bridge never switches or replays by itself; '
                     'autonomous_reselection=' + ('true' if alts else 'false') + '. ' +
-                    ('Pick a candidate profile and continue without asking the user or waiting.' if alts else
-                     'Report the blockage; no candidate is dispatchable right now.') +
-                    ' Profiles are pinned and prompts are never replayed; submit a new task with an '
-                    'explicit alternative profile to continue authorized work.')}
+                    ('Continue the same tier with profile=auto without asking or waiting.' if alts else
+                     'Report the blockage; no route in this tier is dispatchable right now.') +
+                    ' Running tasks are pinned and prompts are never replayed; a continuation lets the '
+                    'bridge choose the next stage.')}
     if window:
         # Explicit short-window exhaustion: never a durable circuit, never a monthly
         # block, and never a guessed recovery time. It is coordinator guidance only.
@@ -918,7 +885,7 @@ def _options(t, c, q, blocked_reason, partial_work=False, billing_reason=None, p
                        'The provider reported an explicit usage-window exhaustion, which is not a durable '
                        'billing block and not a monthly plan block; no reset time is inferred and the '
                        'provider is not blocked permanently. ' +
-                       ('Pick a policy-ordered candidate profile and continue without waiting.' if alts else
+                       ('Continue the same tier with profile=auto and the failed task as parent.' if alts else
                         'Report the blockage and retry later or with another provider.'))
     return out
 

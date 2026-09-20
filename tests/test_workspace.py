@@ -18,7 +18,7 @@ class WorkspaceTests(unittest.TestCase):
         self.state = self.root / 'state'
         self.config = self.root / 'config.json'
         self.c = {'server_url': 'http://127.0.0.1:1', 'profiles': {
-            'fast-code': {'model': 'deepseek/deepseek-flash'}}}
+            'fallback': {'model': 'deepseek/deepseek-flash'}}}
         self.config.write_text(json.dumps(self.c))
         self.work = self.root / 'plain-dir'
         self.work.mkdir()
@@ -38,7 +38,7 @@ class WorkspaceTests(unittest.TestCase):
     def remote_write(self, **kw):
         spec = {'directory': str(self.work), 'objective': 'restart the remote service',
                 'mode': 'write', 'scopes': [], 'targets': ['ssh:example.com:nginx'],
-                'profile': 'fast-code'}
+                'profile': 'fallback'}
         spec.update(kw)
         return common.task(delegate.submit(spec)['id'])
 
@@ -81,7 +81,7 @@ class WorkspaceTests(unittest.TestCase):
         (self.work / 'a.txt').write_text('original\n')
         t = common.task(delegate.submit({'directory': str(self.work), 'objective': 'edit',
                                          'mode': 'write', 'scopes': ['a.txt'],
-                                         'profile': 'fast-code'})['id'])
+                                         'profile': 'fallback'})['id'])
         directory = workspace.prepare(t)
         self.assertEqual(directory, str(self.work))
         baseline = common.read_json(common.artifact_dir(t['id']) / 'baseline.json', {})

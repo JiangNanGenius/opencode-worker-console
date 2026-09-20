@@ -83,7 +83,7 @@ class WizardTests(unittest.TestCase):
         existing = {'version': 1, 'server_url': 'http://127.0.0.1:41234',
                     'console_url': 'http://127.0.0.1:41235', 'opencode_binary': '/old/opencode',
                     'max_parallel': 5, 'kimi_reserve_percent': 10,
-                    'profiles': {'fast-code': {'model': 'acme/one', 'label': 'Mine'}}}
+                    'profiles': {'fallback': {'model': 'acme/one', 'label': 'Mine'}}}
         self.config.parent.mkdir(parents=True)
         self.config.write_text(json.dumps(existing))
         return existing

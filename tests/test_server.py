@@ -21,7 +21,7 @@ def profile(model='acme/worker', variant=None):
 
 class RuntimeOverlayTests(unittest.TestCase):
     def overlay(self, auto_approve=True, max_steps=None):
-        c = {'profiles': {'fast-code': profile(),
+        c = {'profiles': {'fallback': profile(),
                           'deep-research': profile('acme/deep', variant='max')},
              'auto_approve': auto_approve}
         if max_steps is not None:
@@ -29,7 +29,7 @@ class RuntimeOverlayTests(unittest.TestCase):
         return server.runtime_overlay(c)
 
     def assert_no_steps(self, overlay):
-        self.assertEqual(set(overlay['agent']), {'fast-code', 'deep-research'})
+        self.assertEqual(set(overlay['agent']), {'fallback', 'deep-research'})
         for name, agent in overlay['agent'].items():
             self.assertNotIn('steps', agent, name + ' must omit the upstream step cap')
 
@@ -55,7 +55,7 @@ class RuntimeOverlayTests(unittest.TestCase):
 
     def test_variant_and_overlay_defaults_preserved(self):
         overlay = self.overlay(max_steps=80)
-        fast = overlay['agent']['fast-code']
+        fast = overlay['agent']['fallback']
         deep = overlay['agent']['deep-research']
         self.assertEqual(fast['model'], 'acme/worker')
         self.assertNotIn('variant', fast)

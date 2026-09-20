@@ -240,7 +240,7 @@ class ConsoleAuthUnitTests(unittest.TestCase):
         config_path = self.root / 'config.json'
         config_path.write_text(json.dumps({'server_url': 'http://127.0.0.1:1',
                                            'console_url': 'http://127.0.0.1:2',
-                                           'profiles': {'fast-code': {'model': 'acme/worker'}},
+                                           'profiles': {'fallback': {'model': 'acme/worker'}},
                                            'custom': {'keep': True}}))
         console_auth.set_user('admin', 'synthetic-pass', self.state)
         result = console_auth.configure(bind='0.0.0.0', origins=['https://desk.example.test'],
@@ -249,7 +249,7 @@ class ConsoleAuthUnitTests(unittest.TestCase):
         self.assertEqual(result['console_allowed_origins'], ['https://desk.example.test'])
         stored = json.loads(config_path.read_text())
         self.assertEqual(stored['custom'], {'keep': True})
-        self.assertEqual(stored['profiles'], {'fast-code': {'model': 'acme/worker'}})
+        self.assertEqual(stored['profiles'], {'fallback': {'model': 'acme/worker'}})
         self.assertTrue(console_auth.verify_credentials('admin', 'synthetic-pass', self.state))
         trusted = console_auth.configure(trusted_proxies=['127.0.0.1', '10.0.0.0/8'], config_path=config_path)
         self.assertEqual(trusted['console_trusted_proxies'], ['127.0.0.1/32', '10.0.0.0/8'])
@@ -356,7 +356,7 @@ class ConsoleHttpTests(unittest.TestCase):
                        'console_url': 'http://127.0.0.1:9',
                        'console_bind': '127.0.0.1',
                        'console_allowed_origins': ['http://127.0.0.1:9'],
-                       'profiles': {'fast-code': {'model': 'acme/worker'}}}
+                       'profiles': {'fallback': {'model': 'acme/worker'}}}
         self.write_config()
         (self.state / 'server-password').write_text('synthetic-server-password')
         console_auth.set_user('admin', 'synthetic-pass', self.state)

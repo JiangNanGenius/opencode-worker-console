@@ -30,7 +30,7 @@ class BillingClassificationTests(unittest.TestCase):
         self.assertEqual(error['code'], 'APIError')
         self.assertEqual(error['http_status'], 403)
         self.assertFalse(error['retryable'])
-        self.assertEqual(error['suggested_action'], 'inspect_partial_work_and_reselect_profile')
+        self.assertEqual(error['suggested_action'], 'inspect_partial_work_and_resubmit_same_tier_auto')
         self.assertEqual(error['provider'], 'kimi-for-coding')
         self.assertAlmostEqual(error['occurred_at'], 1789683956)
 

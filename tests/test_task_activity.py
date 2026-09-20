@@ -68,7 +68,7 @@ class IsolatedCase(unittest.TestCase):
         self.config_path = self.root / 'config.json'
         self.config_path.write_text(json.dumps({
             'server_url': 'http://127.0.0.1:9', 'console_url': 'http://127.0.0.1:9',
-            'profiles': {'fast-code': {'model': 'acme/worker', 'label': 'Acme'}},
+            'profiles': {'fallback': {'model': 'acme/worker', 'label': 'Acme'}},
         }))
         self.patchers = [patch.object(common, 'STATE', self.state), patch.object(common, 'CONFIG', self.config_path)]
         for item in self.patchers:
@@ -517,11 +517,11 @@ class WorkerSnapshotTests(IsolatedCase):
             assistant('msg_a', sample_tokens(50, 10, 5, 5, 30, 0), cost=0.02,
                       parts=[text_part('prt_a', json.dumps(report))], completed=DAY_MS + 1000),
         ]
-        task = self.task(task_id, status='running', session_deleted=False, profile='fast-code',
+        task = self.task(task_id, status='running', session_deleted=False, profile='fallback',
                          started_at=1000.0, session_id='ses_demo')
         self.write_task(task)
         with patch.object(worker, 'collect_changes', return_value={}), \
-             patch.object(worker, 'config', return_value={'profiles': {'fast-code': {'model': 'acme/worker'}}}):
+             patch.object(worker, 'config', return_value={'profiles': {'fallback': {'model': 'acme/worker'}}}):
             worker._finish(common.task(task_id), messages)
         stored = common.task(task_id)
         self.assertEqual(stored['status'], 'completed')

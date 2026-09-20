@@ -141,7 +141,7 @@ class InstallTests(unittest.TestCase):
     def test_existing_config_unchanged_except_missing_defaults(self):
         existing = {'version': 1, 'server_url': 'http://127.0.0.1:41234',
                     'opencode_binary': '/old/opencode', 'max_parallel': 5, 'max_kimi_parallel': 2,
-                    'kimi_reserve_percent': 10, 'profiles': {'fast-code': {'model': 'acme/one', 'label': 'Mine'}}}
+                    'kimi_reserve_percent': 10, 'profiles': {'fallback': {'model': 'acme/one', 'label': 'Mine'}}}
         self.config.parent.mkdir(parents=True)
         self.config.write_text(json.dumps(existing))
         self.run_install()
@@ -158,10 +158,39 @@ class InstallTests(unittest.TestCase):
         self.assertTrue(c['console_url'].startswith('http://127.0.0.1:'))
         self.assertNotEqual(c['console_url'], c['server_url'])
 
+    def test_upgrade_renames_legacy_fast_code_profile_and_all_routes(self):
+        existing = {
+            'version': 1,
+            'server_url': 'http://127.0.0.1:41234',
+            'console_url': 'http://127.0.0.1:41235',
+            'opencode_binary': '/old/opencode',
+            'profiles': {
+                'fast-code': {
+                    'model': 'deepseek/deepseek-flash',
+                    'label': 'DeepSeek V4.1 Flash',
+                },
+                'senior-code': {'model': 'acme/normal', 'label': 'Normal'},
+            },
+            'routing': {'fast': 'fast-code', 'background': 'senior-code', 'deep': 'fast-code'},
+            'routing_policy': {
+                'fast': [[{'profile': 'senior-code', 'weight': 1}],
+                         [{'profile': 'fast-code', 'weight': 1}]],
+            },
+        }
+        self.config.parent.mkdir(parents=True)
+        self.config.write_text(json.dumps(existing))
+        self.run_install()
+        c = json.loads(self.config.read_text())
+        self.assertNotIn('fast-code', c['profiles'])
+        self.assertEqual(c['profiles']['fallback']['label'], 'Fallback · DeepSeek V4.1 Flash')
+        self.assertEqual(c['routing']['fast'], 'fallback')
+        self.assertEqual(c['routing']['deep'], 'fallback')
+        self.assertEqual(c['routing_policy']['fast'][1][0]['profile'], 'fallback')
+
     def test_legacy_max_steps_is_dropped_on_update(self):
         existing = {'version': 1, 'server_url': 'http://127.0.0.1:41234',
                     'console_url': 'http://127.0.0.1:41235', 'opencode_binary': '/old/opencode',
-                    'max_steps': 80, 'profiles': {'fast-code': {'model': 'acme/one', 'label': 'Mine'}}}
+                    'max_steps': 80, 'profiles': {'fallback': {'model': 'acme/one', 'label': 'Mine'}}}
         self.config.parent.mkdir(parents=True)
         self.config.write_text(json.dumps(existing))
         self.run_install()
@@ -174,7 +203,7 @@ class InstallTests(unittest.TestCase):
         existing = {'version': 1, 'server_url': 'http://127.0.0.1:41234',
                     'console_url': 'http://127.0.0.1:41235', 'opencode_binary': '/old/opencode',
                     'max_parallel': 2, 'provider_limits': {'kimi-for-coding': 1},
-                    'profiles': {'fast-code': {'model': 'kimi-for-coding/k2', 'label': 'Kimi'}}}
+                    'profiles': {'fallback': {'model': 'kimi-for-coding/k2', 'label': 'Kimi'}}}
         self.config.parent.mkdir(parents=True)
         self.config.write_text(json.dumps(existing))
         self.run_install()
@@ -206,7 +235,7 @@ class InstallTests(unittest.TestCase):
                     'console_url': 'http://127.0.0.1:41235', 'opencode_binary': '/old/opencode',
                     'console_bind': '0.0.0.0', 'console_allowed_origins': ['https://desk.example.test'],
                     'console_trusted_proxies': ['127.0.0.1', '10.0.0.0/8'],
-                    'profiles': {'fast-code': {'model': 'acme/one', 'label': 'Mine'}}}
+                    'profiles': {'fallback': {'model': 'acme/one', 'label': 'Mine'}}}
         self.config.parent.mkdir(parents=True)
         self.config.write_text(json.dumps(existing))
         self.run_install()
@@ -222,7 +251,7 @@ class InstallTests(unittest.TestCase):
         existing = {'version': 1, 'server_url': 'http://127.0.0.1:41234',
                     'console_url': 'http://127.0.0.1:41235', 'opencode_binary': '/old/opencode',
                     'console_allowed_origins': ['https://*.example.test'],
-                    'profiles': {'fast-code': {'model': 'acme/one'}}}
+                    'profiles': {'fallback': {'model': 'acme/one'}}}
         self.config.parent.mkdir(parents=True)
         self.config.write_text(json.dumps(existing))
         with self.assertRaises(SystemExit):
@@ -291,7 +320,7 @@ class InstallTests(unittest.TestCase):
 
     def test_urls_must_be_distinct_loopback(self):
         base = {'version': 1, 'opencode_binary': '/x',
-                'profiles': {'fast-code': {'model': 'acme/worker'}}}
+                'profiles': {'fallback': {'model': 'acme/worker'}}}
         for server, console in [('http://127.0.0.1:49999', 'http://127.0.0.1:49999'),
                                 ('http://127.0.0.1:49999', 'http://example.com:49998'),
                                 ('http://127.0.0.1:49999', 'https://127.0.0.1:49998')]:
@@ -324,7 +353,7 @@ class InstallTests(unittest.TestCase):
         existing = {'version': 1, 'server_url': 'http://127.0.0.1:41234',
                     'console_url': 'http://127.0.0.1:41235',
                     'opencode_binary': str(binary),
-                    'profiles': {'fast-code': {'model': 'acme/one', 'label': 'Mine'}}}
+                    'profiles': {'fallback': {'model': 'acme/one', 'label': 'Mine'}}}
         self.config.parent.mkdir(parents=True)
         self.config.write_text(json.dumps(existing))
         # Neither PATH nor bootstrap may be consulted while the saved binary is valid.
@@ -341,7 +370,7 @@ class InstallTests(unittest.TestCase):
         existing = {'version': 1, 'server_url': 'http://127.0.0.1:41234',
                     'console_url': 'http://127.0.0.1:41235',
                     'opencode_binary': str(self.root / 'gone' / 'opencode'),
-                    'profiles': {'fast-code': {'model': 'acme/one', 'label': 'Mine'}}}
+                    'profiles': {'fallback': {'model': 'acme/one', 'label': 'Mine'}}}
         self.config.parent.mkdir(parents=True)
         self.config.write_text(json.dumps(existing))
         self.run_install()

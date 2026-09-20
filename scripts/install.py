@@ -31,12 +31,13 @@ CONFIG = Path(os.environ.get('DELEGATE_CONFIG', '~/.config/opencode/delegate-poo
 PACKAGE_ITEMS = ['SKILL.md', 'README.md', 'README.zh-CN.md', 'LICENSE',
                  'SECURITY.md', 'CONTRIBUTING.md',
                  'agents', 'scripts', 'references', 'web']
-# Routing defaults (quota.route): fast -> fast-code, background -> senior-code,
+# Routing defaults (quota.route): fast -> fallback, normal -> senior-code,
 # deep -> deep-research. Profile names must stay aligned with those routes.
-PROFILE_NAMES = ['fast-code', 'senior-code', 'deep-research']
+PROFILE_NAMES = ['fallback', 'senior-code', 'deep-research']
+LEGACY_FALLBACK_PROFILE = 'fast-code'
 PRESETS = {
     'deepseek-kimi': {
-        'fast-code': {'model': 'deepseek/deepseek-flash', 'variant': 'max', 'label': 'DeepSeek V4.1 Flash'},
+        'fallback': {'model': 'deepseek/deepseek-flash', 'variant': 'max', 'label': 'Fallback · DeepSeek V4.1 Flash'},
         'senior-code': {'model': 'kimi-for-coding/kimi-for-coding', 'variant': 'max', 'label': 'Kimi K2.8 Preview'},
         'deep-research': {'model': 'kimi-for-coding/k3', 'variant': 'max', 'label': 'Kimi K3'},
     },
@@ -46,7 +47,7 @@ PRESETS = {
     # ark-deepseek is intentionally not a default profile: it stays available in
     # provider metadata for manual selection only.
     'ark-agent-plan': {
-        'fast-code': {'model': 'deepseek/deepseek-flash', 'variant': 'max', 'label': 'DeepSeek V4.1 Flash'},
+        'fallback': {'model': 'deepseek/deepseek-flash', 'variant': 'max', 'label': 'Fallback · DeepSeek V4.1 Flash'},
         'senior-code': {'model': 'kimi-for-coding/kimi-for-coding', 'variant': 'max', 'label': 'Kimi K2.8 Preview'},
         'deep-research': {'model': 'kimi-for-coding/k3', 'variant': 'max', 'label': 'Kimi K3'},
         'ark-evolving': {'model': ARK_PROVIDER + '/doubao-seed-evolving', 'variant': 'max', 'label': 'Ark Doubao Seed Evolving'},
@@ -63,18 +64,18 @@ PRESETS = {
 DEFAULT_ROUTING_POLICY = {
     'fast': [
         [{'profile': 'ark-auto', 'weight': 1}],
-        [{'profile': 'fast-code', 'weight': 1}],
+        [{'profile': 'fallback', 'weight': 1}],
     ],
     'background': [
         [{'profile': 'senior-code', 'weight': 1}, {'profile': 'ark-evolving', 'weight': 1}],
         [{'profile': 'ark-auto', 'weight': 1}],
-        [{'profile': 'fast-code', 'weight': 1}],
+        [{'profile': 'fallback', 'weight': 1}],
     ],
     'deep': [
         [{'profile': 'deep-research', 'weight': 2}, {'profile': 'ark-k3', 'weight': 1}],
         [{'profile': 'senior-code', 'weight': 1}, {'profile': 'ark-evolving', 'weight': 1}],
         [{'profile': 'ark-auto', 'weight': 1}],
-        [{'profile': 'fast-code', 'weight': 1}],
+        [{'profile': 'fallback', 'weight': 1}],
     ],
 }
 # Adaptive quota balancing is separate from ordinary weighting. This preset opts
@@ -245,6 +246,38 @@ def default_profiles(model=None, preset=None):
     return {name: {'model': model, 'label': model.split('/', 1)[1]} for name in PROFILE_NAMES}
 
 
+def migrate_legacy_fallback_profile(c):
+    """Rename the old misleading fast-code profile without changing its model.
+
+    Routes and policy members reference profile IDs, so the migration updates them
+    atomically with the profile map. A pre-existing fallback profile wins to avoid
+    overwriting an operator's configuration.
+    """
+    profiles = c.get('profiles')
+    if not isinstance(profiles, dict) or LEGACY_FALLBACK_PROFILE not in profiles or 'fallback' in profiles:
+        return False
+    profiles['fallback'] = profiles.pop(LEGACY_FALLBACK_PROFILE)
+    if profiles['fallback'].get('label') == 'DeepSeek V4.1 Flash':
+        profiles['fallback']['label'] = 'Fallback · DeepSeek V4.1 Flash'
+    routing = c.get('routing')
+    if isinstance(routing, dict):
+        for tier, profile in list(routing.items()):
+            if profile == LEGACY_FALLBACK_PROFILE:
+                routing[tier] = 'fallback'
+    policy = c.get('routing_policy')
+    if isinstance(policy, dict):
+        for stages in policy.values():
+            if not isinstance(stages, list):
+                continue
+            for stage in stages:
+                if not isinstance(stage, list):
+                    continue
+                for member in stage:
+                    if isinstance(member, dict) and member.get('profile') == LEGACY_FALLBACK_PROFILE:
+                        member['profile'] = 'fallback'
+    return True
+
+
 def refuse_active_tasks():
     STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
     STATE.chmod(0o700)
@@ -277,6 +310,7 @@ def load_or_build_config(args, opencode):
              'profiles': default_profiles(args.model, args.preset)}
     else:
         c = json.loads(CONFIG.read_text())
+        migrate_legacy_fallback_profile(c)
     if 'profiles' not in c:
         if not args.model and not args.preset:
             fail('Config has no profiles; re-run with --model provider/model or --preset')

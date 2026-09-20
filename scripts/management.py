@@ -276,7 +276,7 @@ def _validate_settings(body):
             raise ValueError('Cleanup target must be at least the trigger threshold')
         result['cleanup'] = cleaned
     if 'routing' not in result:
-        defaults = {'fast': 'fast-code', 'background': 'senior-code', 'deep': 'deep-research'}
+        defaults = {'fast': 'fallback', 'background': 'senior-code', 'deep': 'deep-research'}
         if not all(p in profiles and profiles[p]['enabled'] for p in defaults.values()):
             raise ValueError('routing is required for custom profiles')
         result['routing'] = defaults

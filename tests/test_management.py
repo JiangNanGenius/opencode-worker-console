@@ -49,7 +49,7 @@ class ManagementTests(unittest.TestCase):
         return {'version': 1, 'server_url': 'http://127.0.0.1:1234', 'opencode_binary': '/opt/opencode',
                 'console_url': 'http://127.0.0.1:1235', 'max_parallel_per_owner': 4,
                 'max_steps': 80, 'kimi_reserve_percent': 20,
-                'profiles': {'fast-code': {'model': 'deepseek/deepseek-flash', 'label': 'Flash', 'variant': 'high'},
+                'profiles': {'fallback': {'model': 'deepseek/deepseek-flash', 'label': 'Flash', 'variant': 'high'},
                              'senior-code': {'model': 'kimi-for-coding/kimi-for-coding', 'label': 'Kimi', 'variant': 'high'}}}
 
     def write_config(self, value):
@@ -59,10 +59,10 @@ class ManagementTests(unittest.TestCase):
         return json.loads(self.config.read_text())
 
     def valid_body(self):
-        return {'profiles': {'fast-code': {'model': 'deepseek/deepseek-flash', 'label': 'Flash', 'variant': 'high'},
+        return {'profiles': {'fallback': {'model': 'deepseek/deepseek-flash', 'label': 'Flash', 'variant': 'high'},
                              'senior-code': {'model': 'kimi-for-coding/kimi-for-coding', 'label': 'Kimi', 'enabled': True}},
                 'max_parallel_per_owner': 6, 'max_steps': 100, 'kimi_reserve_percent': 25,
-                'routing': {'fast': 'fast-code', 'background': 'senior-code', 'deep': 'senior-code'}}
+                'routing': {'fast': 'fallback', 'background': 'senior-code', 'deep': 'senior-code'}}
 
     def add_task(self, task_id, status, session_id=None, title='Pool task'):
         t = {'id': task_id, 'title': title, 'status': status, 'created_at': time.time()}
@@ -268,7 +268,7 @@ class ManagementTests(unittest.TestCase):
         self.assertEqual(result['economics']['afp_cny_per_unit'], 0.002)
         self.assertEqual(result['economics']['kimi_plan_cny'], 699.0)
         self.assertEqual(result['max_parallel_per_owner'], 4)
-        self.assertEqual(result['profiles']['fast-code'],
+        self.assertEqual(result['profiles']['fallback'],
                          {'model': 'deepseek/deepseek-flash', 'label': 'Flash', 'variant': 'high', 'enabled': True})
         # Generic disabled defaults are exported when the schedule was never configured.
         self.assertEqual(result['kimi_monthly_reset'], {'enabled': False, 'day': 1, 'time': '12:00',

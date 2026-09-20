@@ -81,26 +81,31 @@ A fresh `--preset ark-agent-plan` installation creates:
   "routing_policy": {
     "fast": [
       [{"profile": "ark-auto", "weight": 1}],
-      [{"profile": "fast-code", "weight": 1}]
+      [{"profile": "fallback", "weight": 1}]
     ],
     "background": [
       [{"profile": "senior-code", "weight": 1}, {"profile": "ark-evolving", "weight": 1}],
       [{"profile": "ark-auto", "weight": 1}],
-      [{"profile": "fast-code", "weight": 1}]
+      [{"profile": "fallback", "weight": 1}]
     ],
     "deep": [
       [{"profile": "deep-research", "weight": 2}, {"profile": "ark-k3", "weight": 1}],
       [{"profile": "senior-code", "weight": 1}, {"profile": "ark-evolving", "weight": 1}],
       [{"profile": "ark-auto", "weight": 1}],
-      [{"profile": "fast-code", "weight": 1}]
+      [{"profile": "fallback", "weight": 1}]
     ]
   }
 }
 ```
 
-Only the first stage with an available candidate participates. Explicit profiles bypass policy.
+Only the first stage with an available candidate participates. Coordinators submit a tier with
+`profile=auto`; explicit profiles are reserved for user-required model pins and controlled tests.
 Weighted admission is durable and counts admitted jobs, not tokens or money. Waiting for owner
 capacity, scope locks or provider recovery consumes no turn.
+
+If automatic routing reaches the configured `fallback` after skipping at least one preferred
+stage, task status exposes `fallback_used: true` and a routing notice. Ordinary model choices are
+silent; coordinators tell the user only when this final fallback is actually used.
 
 The baseline favors native Kimi because buying the same Kimi model through Ark is usually a poor
 economic trade. Fresh reset-aware quota telemetry can move the ratios by one step only:
@@ -114,7 +119,8 @@ For each valid window, runway is `remaining fraction / time fraction until reset
 constrained window represents the provider. Stale, missing or unauthenticated telemetry keeps the
 baseline. Ark Auto, Evolving and K3 share one runway, so heavy Auto use naturally reduces later
 Ark share. Endpoint-confirmed zero removes the provider. A dispatched task remains pinned; the
-coordinator inspects partial work before deliberately continuing on another model.
+coordinator inspects partial work and continues with the same tier, while the bridge selects the
+next available model.
 
 ## AFP-equivalent
 

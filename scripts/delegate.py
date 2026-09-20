@@ -67,7 +67,7 @@ def wait_result(t, waited_seconds):
         continue_waiting=not terminal and not blocked,
         waited_seconds=max(0, round(waited_seconds, 3)),
         next_action=(
-            'reselect_profile_and_resubmit' if actionable and alternatives else
+            'resubmit_same_tier_auto' if actionable and alternatives else
             'top_up_or_authorize_manual_retry' if actionable and monthly else
             'retry_or_reselect_after_usage_window' if actionable and window else
             'top_up_provider_account_then_resubmit' if billing_terminal else
@@ -95,6 +95,33 @@ def task_status(t):
     return result
 
 
+def routing_assignment(t, profile, reason):
+    """Persist one bridge-owned routing decision and disclose true fallback use."""
+    fields = {
+        'profile': profile,
+        'status': 'starting',
+        'route_reason': reason,
+        'started_at': time.time(),
+        'queue_reason': None,
+        'recovery': None,
+    }
+    stage = next((part for part in str(reason).split(':') if part.startswith('stage')), '')
+    try:
+        stage_index = int(stage[5:])
+    except (TypeError, ValueError):
+        stage_index = -1
+    if ((t.get('requested_profile') or 'auto') == 'auto' and profile == 'fallback'
+            and stage_index > 0):
+        fields.update(
+            fallback_used=True,
+            routing_notice=(
+                'Preferred routing stages were unavailable or exhausted; '
+                'the bridge dispatched the configured fallback model.'
+            ),
+        )
+    return fields
+
+
 def submit(spec):
     c = config()
     root = Path(spec['directory']).expanduser().resolve()
@@ -119,6 +146,23 @@ def submit(spec):
     if c.get('routing_policy') and requested_profile != 'auto' and not profile_reason:
         raise ValueError('Explicit profile requires profile_reason when routing policy is enabled; '
                          'use profile=auto for subscription-first routing')
+    tier = spec.get('tier')
+    if tier is not None and tier not in ('fast', 'normal', 'deep'):
+        raise ValueError('Tier must be fast, normal or deep')
+    legacy_urgency = spec.get('urgency')
+    legacy_complexity = spec.get('complexity')
+    if legacy_urgency is not None and legacy_urgency not in ('fast', 'background'):
+        raise ValueError('Urgency must be fast or background')
+    if legacy_complexity is not None and legacy_complexity not in ('normal', 'deep'):
+        raise ValueError('Complexity must be normal or deep')
+    legacy_tier = ('deep' if legacy_complexity == 'deep' else
+                   'fast' if legacy_urgency == 'fast' else 'normal')
+    if tier is None:
+        tier = legacy_tier
+    elif (legacy_urgency is not None or legacy_complexity is not None) and tier != legacy_tier:
+        raise ValueError('Tier conflicts with legacy urgency/complexity fields')
+    urgency = 'fast' if tier == 'fast' else 'background'
+    complexity = 'deep' if tier == 'deep' else 'normal'
     mode = spec.get('mode', 'read')
     if mode not in ('read', 'write'):
         raise ValueError('Mode must be read or write')
@@ -137,10 +181,6 @@ def submit(spec):
         raise ValueError('Workspace must be auto, shared or isolated')
     if workspace == 'isolated' and git_root(root) != root:
         raise ValueError('For isolated work, specify the Git repository root')
-    if spec.get('urgency', 'background') not in ('fast', 'background'):
-        raise ValueError('Urgency must be fast or background')
-    if spec.get('complexity', 'normal') not in ('normal', 'deep'):
-        raise ValueError('Complexity must be normal or deep')
     for command in spec.get('commands', []):
         if not isinstance(command, str) or not command.strip():
             raise ValueError('Allowed commands must be non-empty strings')
@@ -154,7 +194,7 @@ def submit(spec):
         'id': 'job-' + uuid.uuid4().hex[:16], 'title': spec.get('title') or spec['objective'][:80],
         'objective': spec['objective'], 'acceptance': spec.get('acceptance', []),
         'requested_profile': requested_profile, 'mode': mode,
-        'urgency': spec.get('urgency', 'background'), 'complexity': spec.get('complexity', 'normal'),
+        'tier': tier, 'urgency': urgency, 'complexity': complexity,
         'workspace': workspace, 'source_dir': str(root), 'scopes': scopes, 'targets': targets,
         'commands': spec.get('commands', []), 'resources': spec.get('resources', []),
         'web': bool(spec.get('web', False)),
@@ -170,6 +210,10 @@ def submit(spec):
         parent = task(t['parent_task_id'])
         if parent.get('group_id') != t['group_id']:
             raise ValueError('Parent task must belong to the same group')
+        parent_recovery = parent.get('recovery') if isinstance(parent.get('recovery'), dict) else {}
+        blocked_provider = parent_recovery.get('blocked_provider')
+        if requested_profile == 'auto' and isinstance(blocked_provider, str) and blocked_provider:
+            t['excluded_providers'] = [blocked_provider]
     # Block accidental delegation of known stored API keys before persisting prompt text.
     if redact(t) != t:
         raise ValueError('Task contains a credential-like value; remove it before submission')
@@ -275,8 +319,7 @@ def daemon():
                     if reason == 'cancelled':
                         t.update(status='cancelled', finished_at=time.time())
                     elif profile:
-                        t.update(profile=profile, status='starting', route_reason=reason,
-                                 started_at=time.time(), queue_reason=None, recovery=None)
+                        t.update(routing_assignment(t, profile, reason))
                     else:
                         t['queue_reason'] = reason
                         t['recovery'] = quota.guidance(t, c, q)
@@ -376,9 +419,11 @@ def main():
     s.add_argument('--directory', default=os.getcwd())
     s.add_argument('--profile', default='auto')
     s.add_argument('--profile-reason', help='Why this task must bypass automatic routing')
+    s.add_argument('--tier', choices=['fast', 'normal', 'deep'],
+                   help='Worker capability tier; the bridge selects the model')
     s.add_argument('--mode', choices=['read', 'write'], default='read')
-    s.add_argument('--urgency', choices=['fast', 'background'], default='background')
-    s.add_argument('--complexity', choices=['normal', 'deep'], default='normal')
+    s.add_argument('--urgency', choices=['fast', 'background'], help=argparse.SUPPRESS)
+    s.add_argument('--complexity', choices=['normal', 'deep'], help=argparse.SUPPRESS)
     s.add_argument('--workspace', choices=['auto', 'shared', 'isolated'], default='auto')
     s.add_argument('--large', action='store_true')
     s.add_argument('--scope', action='append', default=[])
@@ -471,7 +516,7 @@ def main():
         if args.spec:
             spec = json.loads(sys.stdin.read() if args.spec == '-' else Path(args.spec).read_text())
         else:
-            spec = vars(args).copy()
+            spec = {key: value for key, value in vars(args).items() if value is not None}
             spec.update(scopes=args.scope, commands=args.command, resources=args.resource,
                         targets=args.target)
         result = submit(spec)

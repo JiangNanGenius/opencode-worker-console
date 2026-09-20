@@ -428,7 +428,7 @@ def run_task(task_id, shutdown):
                         # alternatives instead of retrying forever; nothing is replayed.
                         observed_errors.append(diagnostics.error(
                             'model', window, retry_message, retryable=False,
-                            action='inspect_partial_work_and_reselect_profile',
+                            action='inspect_partial_work_and_resubmit_same_tier_auto',
                             usage_window=True, usage_window_reason=window))
                     else:
                         observed_errors.append(diagnostics.error('model', 'retrying', retry_message,
