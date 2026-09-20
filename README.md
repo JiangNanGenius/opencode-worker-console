@@ -92,7 +92,7 @@ All profiles are general-purpose agents. Keep routing names while changing their
 
 ## What you can manage
 
-- **Tasks:** parent/child ownership, progress, live guidance, compact results, structured errors and on-demand full transcripts.
+- **Tasks:** expand details directly under a task; inspect live activity and input/output/reasoning/cache tokens without leaving the console. The current filter shows recorded worker totals; these exclude coordinator usage and are not a cost estimate. Parent/child ownership, live guidance, structured errors and full transcripts remain available.
 - **Sessions:** search, create, rename, fork, archive/restore, workspace binding, deletion and native OpenCode links. Forking alone sends no prompt.
 - **Models and usage:** configurable profiles/routing; DeepSeek balance and Kimi plan windows/reset times. Other providers can execute without a usage adapter.
 - **Parallel work:** four running workers per owning Codex conversation by default; independent capacity across conversations. Conflicting files/resources and provider availability still govern dispatch.

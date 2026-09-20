@@ -23,3 +23,4 @@ jobs:
       - run: node --check web/manage.js
       - run: node --check web/login.js
       - run: node --check web/setup.js
+      - run: node --check web/task-view.js

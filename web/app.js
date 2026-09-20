@@ -28,24 +28,105 @@ function renderQuota(){const providers=new Set(Object.values(data.profiles||{}).
  const reset=k.monthly_reset;const next=$('kimi-monthly-next');next.hidden=!(reset?.enabled&&reset.next_reset_at);next.textContent=next.hidden?'':tr('quota.nextMonthlyReset',{time:I18n?I18n.dateTime(reset.next_reset_at,{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false,timeZone:reset.timezone}):reset.next_reset_at,zone:reset.timezone});
 }
 function ordered(items){const ids=new Set(items.map(t=>t.id)),out=[],seen=new Set();function visit(t,depth){if(seen.has(t.id))return;seen.add(t.id);out.push([t,depth]);items.filter(x=>x.parent_task_id===t.id).forEach(x=>visit(x,depth+1));}items.filter(t=>!ids.has(t.parent_task_id)).forEach(t=>visit(t,0));items.forEach(t=>visit(t,0));return out;}
-function renderTasks(){const q=$('search').value.trim().toLowerCase();let list=data.tasks.filter(t=>!selectedGroup||t.group_id===selectedGroup);const total=list.length;
+const detailPanel = $('detail');
+const inlineDetailRow = document.createElement('tr');
+inlineDetailRow.className = 'task-detail-row';
+const inlineDetailCell = document.createElement('td');
+inlineDetailCell.colSpan = 6;
+inlineDetailCell.append(detailPanel);
+inlineDetailRow.append(inlineDetailCell);
+const taskRows = new Map();
+const number = value => I18n ? I18n.number(value) : Number(value).toLocaleString();
+const detailController = TaskView.createController({
+ request,
+ visible: () => !document.hidden && !$('view-tasks').hidden,
+ changed: state => { selectedTask = state.selected; renderTasks(); renderInlineDetail(state); }
+});
+function renderTasks(){
+ const q=$('search').value.trim().toLowerCase();
+ let list=data.tasks.filter(t=>!selectedGroup||t.group_id===selectedGroup);
+ const total=list.length;
  $('tasks-heading').textContent=selectedGroup?(grouped().get(selectedGroup)?.name||tr('common.primaryTask')):tr('nav.allTasks');
  $('counts').textContent=tr('counts.summary',{active:list.filter(t=>activeStates.includes(t.status)).length,queued:list.filter(t=>t.status==='queued').length});
  list=list.filter(t=>(selectedFilter==='all'||selectedFilter==='active'&&activeStates.includes(t.status)||selectedFilter==='attention'&&attentionStates.includes(t.status)||selectedFilter==='completed'&&t.status==='completed')&&(!q||[t.title,t.profile,data.profiles?.[t.profile]?.label,data.profiles?.[t.profile]?.model,t.group_title,t.id].join(' ').toLowerCase().includes(q)));
- const html=ordered(list).map(([t,depth])=>{const p=[...(profileMeta(t.profile)||(t.profile?[t.actual_models?.join(', ')||t.profile,tr('profile.generic'),'senior']:[tr('profile.awaiting'),tr('profile.auto'),'senior']))];if(data.profiles?.[t.profile]?.label)p[0]=data.profiles[t.profile].label;const title=t.session_url?`<a class="task-title" href="${esc(t.session_url)}" target="_blank" rel="noopener">${depth?'<span class="parent-indicator">└</span>':''}${esc(t.title)}${externalIcon}</a>`:`<span class="task-title no-session">${depth?'<span class="parent-indicator">└</span>':''}${esc(t.title)}</span>`;return `<tr><td>${title}<div class="task-meta">${esc(t.group_title)}${t.parent_task_id?tr('common.subtask'):''} · ${t.mode==='write'?tr('mode.write'):tr('mode.read')}${t.workspace==='isolated'?tr('mode.isolated'):''}</div></td><td><div class="worker-name"><i class="model-dot ${p[2]}"></i><div>${esc(p[0])}<small>${esc(p[1])}</small></div></div></td><td>${status(t)}</td><td class="duration">${duration(t)}</td><td><button class="detail-button" data-detail="${esc(t.id)}" aria-label="${esc(tr('task.viewDetails',{title:t.title}))}"><svg viewBox="0 0 18 18" aria-hidden="true"><path d="m7 4 5 5-5 5"/></svg></button></td></tr>`}).join('');
- setHTML($('task-rows'),html||`<tr><td colspan="5" class="empty">${data.tasks.length?tr('tasks.emptyFiltered'):tr('tasks.emptyNone')}</td></tr>`);$('visible-count').textContent=tr('tasks.visibleCount',{visible:list.length,total});
+ if(selectedTask&&!list.some(t=>t.id===selectedTask)){detailController.close();return;}
+ const overrides=new Map();
+ if(selectedTask&&detailController.state().detail)overrides.set(selectedTask,detailController.state().detail);
+ const usage=TaskView.aggregate(list,overrides);
+ $('usage-summary').textContent=tr('usage.filtered',{total:usage.total==null?'—':number(usage.total),known:usage.known,count:usage.count});
+ const rows=[];
+ for(const [t,depth] of ordered(list)){
+  const p=[...(profileMeta(t.profile)||(t.profile?[t.actual_models?.join(', ')||t.profile,tr('profile.generic'),'senior']:[tr('profile.awaiting'),tr('profile.auto'),'senior']))];
+  if(data.profiles?.[t.profile]?.label)p[0]=data.profiles[t.profile].label;
+  const expanded=selectedTask===t.id;
+  const usage=overrides.get(t.id)?.usage||TaskView.usageOf(t);
+  let row=taskRows.get(t.id);
+  if(!row){row=document.createElement('tr');taskRows.set(t.id,row);}
+  row.className='task-row'+(expanded?' expanded':'');
+  const focus=document.activeElement;
+  const focusTarget=row.contains(focus)?focus.getAttribute('data-focus'):null;
+  const toggle=`data-detail="${esc(t.id)}" aria-expanded="${expanded}"${expanded?' aria-controls="detail"':''}`;
+  setHTML(row,`<td><button class="task-title task-toggle" data-focus="title" ${toggle}>${depth?'<span class="parent-indicator">└</span>':''}${esc(t.title)}</button><div class="task-meta">${esc(t.group_title)}${t.parent_task_id?tr('common.subtask'):''} · ${t.mode==='write'?tr('mode.write'):tr('mode.read')}${t.workspace==='isolated'?tr('mode.isolated'):''}</div></td><td><div class="worker-name"><i class="model-dot ${p[2]}"></i><div>${esc(p[0])}<small>${esc(p[1])}</small></div></div></td><td>${status(t)}</td><td class="duration">${duration(t)}</td><td class="task-token-cell">${TaskView.numeric(usage.total)?esc(number(usage.total)):'—'}</td><td><div class="task-row-actions">${t.session_url?`<a class="native-task-link" data-focus="native" href="${esc(t.session_url)}" target="_blank" rel="noopener" aria-label="${esc(tr('detail.openTask'))}" title="${esc(tr('detail.openTask'))}">${externalIcon}</a>`:''}<button class="detail-button" data-focus="toggle" ${toggle} aria-label="${esc(tr(expanded?'detail.close':'task.viewDetails',{title:t.title}))}"><svg viewBox="0 0 18 18" aria-hidden="true"><path d="m7 4 5 5-5 5"/></svg></button></div></td>`);
+  if(focusTarget&&!row.contains(document.activeElement))row.querySelector('[data-focus="'+focusTarget+'"]').focus({preventScroll:true});
+  rows.push(row);
+  if(expanded)rows.push(inlineDetailRow);
+ }
+ const body=$('task-rows');
+ const wanted=new Set(rows);
+ for(const node of Array.from(body.children))if(!wanted.has(node))node.remove();
+ let cursor=body.firstElementChild;
+ for(const row of rows){if(row!==cursor)body.insertBefore(row,cursor);cursor=row.nextElementSibling;}
+ if(!rows.length)setHTML(body,`<tr><td colspan="6" class="empty">${data.tasks.length?tr('tasks.emptyFiltered'):tr('tasks.emptyNone')}</td></tr>`);
+ for(const id of taskRows.keys())if(!data.tasks.some(t=>t.id===id))taskRows.delete(id);
+ detailPanel.hidden=!selectedTask;
+ $('visible-count').textContent=tr('tasks.visibleCount',{visible:list.length,total});
 }
 async function request(path,options){const response=await fetch(path,options);if(response.status===401){window.location.replace('/console-login');throw new Error(tr('auth.expired'));}if(!response.ok){let body={};try{body=await response.json();}catch{}throw new Error(body.error||tr('error.unavailable'));}return response.json();}
-async function refresh(){if(loading)return;loading=true;try{data=await request('/console-api/state');renderGroups();renderQuota();renderTasks();$('health').classList.toggle('offline',!data.pool_healthy);$('health').innerHTML=`<i></i>${data.pool_healthy?tr('health.online'):tr('health.offline')}`;$('updated').textContent=tr('updated.at',{time:clock(data.updated_at)});$('pool-limit').textContent=tr('pool.limit',{n:data.max_parallel_per_owner});$('error').hidden=true;}catch(e){$('error').textContent=e.message;$('error').hidden=false;$('health').classList.add('offline');$('health').innerHTML='<i></i>'+tr('health.disconnected');}finally{loading=false;}}
+async function refresh(){if(loading)return;loading=true;try{data=await request('/console-api/state');renderGroups();renderQuota();renderTasks();$('health').classList.toggle('offline',!data.pool_healthy);$('health').innerHTML=`<i></i>${data.pool_healthy?tr('health.online'):tr('health.offline')}`;$('updated').textContent=tr('updated.at',{time:clock(data.updated_at)});$('pool-limit').textContent=tr('pool.limit',{n:data.max_parallel_per_owner});$('error').hidden=true;}catch(e){$('error').textContent=e.message;$('error').hidden=false;$('health').classList.add('offline');$('health').innerHTML='<i></i>'+tr('health.disconnected');}finally{loading=false;detailController.refresh();}}
 function listHTML(items,empty){return items?.length?'<ul>'+items.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul>':'<p class="muted">'+empty+'</p>';}
-async function details(id){selectedTask=id;$('detail').hidden=false;$('detail-title').textContent=tr('detail.loading');$('detail-body').textContent='';try{const d=await request('/console-api/task/'+encodeURIComponent(id));if(selectedTask!==id)return;const t=d.task,r=d.report||{};$('detail-title').textContent=t.title;setHTML($('detail-body'),`<div class="detail-content"><div><h3>${tr('detail.objective')}</h3><p>${esc(d.objective)}</p>${t.targets?.length?`<h3>${tr('field.targets')}</h3>${listHTML(t.targets,'')}`:''}<h3>${tr('detail.acceptance')}</h3>${listHTML(d.acceptance,tr('detail.noAcceptance'))}<h3>${tr('detail.statusOwnership')}</h3>${['running','uncertain'].includes(t.status)?`<button class="primary-button" data-steer-task="${esc(t.id)}">${tr('detail.steer')}</button>`:''}${['queued',...activeStates].includes(t.status)?`<button class="secondary-button" data-cancel-task="${esc(t.id)}">${tr('detail.stop')}</button>`:''}<p>${status(t)} · ${esc(t.group_title)}${t.parent_task_id?' / '+esc(t.parent_task_id):''}</p>${t.reason||t.queue_reason?'<p>'+esc(t.reason||t.queue_reason)+'</p>':''}${d.errors?.length?'<h3>'+tr('detail.errors')+'</h3>'+listHTML(d.errors.map(e=>[e.source,e.code,e.message,e.command?tr('detail.command')+e.command:'',e.exit_code!=null?tr('detail.exitCode')+e.exit_code:'',e.suggested_action?tr('detail.suggestedAction')+e.suggested_action:''].filter(Boolean).join(' · ')),''):''}${d.pending?.length?'<h3>'+tr('detail.pending')+'</h3>'+listHTML(d.pending.map(p=>JSON.stringify(p)),''):''}${t.guidance?.length?'<h3>'+tr('detail.guidance')+'</h3>'+listHTML(t.guidance.map(g=>g.status+' · '+g.text),''):''}<div class="detail-code">${esc(t.id)}<br>${esc(t.directory||t.source_dir)}</div>${d.session_url?`<a class="detail-link" href="${esc(d.session_url)}" target="_blank" rel="noopener">${tr('detail.openTask')}</a>`:'<p class="muted">'+tr('detail.noSession')+'</p>'}</div><div><h3>${tr('detail.workerSummary')}</h3><p>${esc(r.summary||t.summary||tr('detail.summaryPlaceholder'))}</p><h3>${tr('detail.evidence')}</h3>${listHTML(r.evidence,tr('detail.noEvidence'))}<h3>${tr('detail.tests')}</h3>${listHTML(r.tests,tr('detail.noTests'))}<h3>${tr('detail.unresolved')}</h3>${listHTML(r.unresolved,tr('detail.unresolvedDefault'))}</div></div>`);$('detail').scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'nearest'});}catch(e){$('detail-title').textContent=tr('detail.unreadable');$('detail-body').textContent=e.message;}}
+function renderInlineDetail(state){
+ if(!state.selected)return;
+ $('close-detail').textContent=tr('detail.close');
+ $('refresh-detail').textContent=tr('activity.refresh');
+ const d=state.detail;
+ $('detail-title').textContent=d?.task?.title||data.tasks.find(t=>t.id===state.selected)?.title||tr('detail.title');
+ const feedback=$('detail-feedback');
+ feedback.hidden=!state.error&&(!state.pending||!!d);
+ $('refresh-detail').disabled=state.pending;
+ feedback.textContent=state.error?tr('activity.refreshError',{message:state.error}):tr('activity.refreshing');
+ if(!d){delete $('detail-body').dataset.rendered;setHTML($('detail-body'),`<p class="muted">${esc(state.error?tr('activity.retryHint'):tr('detail.loading'))}</p>`);return;}
+ const t=d.task,r=d.report||{};
+ const options={tr,esc,number,clock};
+ const actions=`<div class="task-detail-actions">${['running','uncertain'].includes(t.status)?`<button class="primary-button" data-steer-task="${esc(t.id)}">${tr('detail.steer')}</button>`:''}${['queued',...activeStates].includes(t.status)?`<button class="secondary-button" data-cancel-task="${esc(t.id)}">${tr('detail.stop')}</button>`:''}${d.session_url?`<a class="detail-link" href="${esc(d.session_url)}" target="_blank" rel="noopener">${tr('detail.openTask')}</a>`:''}</div>`;
+ const body=$('detail-body');
+ const selection=window.getSelection?.();
+ if(selection&&!selection.isCollapsed&&body.contains(selection.anchorNode))return;
+ const sameTask=body.dataset.task===state.selected;
+ const oldActivity=body.querySelector('.activity-scroll');
+ const scroll=sameTask?(oldActivity?.scrollTop||0):0;
+ const followTail=!sameTask||!oldActivity||oldActivity.scrollHeight-oldActivity.clientHeight-scroll<24;
+ body.dataset.task=state.selected;
+ const focusedSection=document.activeElement?.closest('details')?.dataset.section;
+ const activityFocused=document.activeElement===body.querySelector('.activity-scroll');
+ const sections=new Set(sameTask?Array.from(body.querySelectorAll('details[open]')).map(el=>el.dataset.section):[]);
+ const html=`<div class="task-current-status">${status(t)}<span class="muted">${esc(t.actual_models?.join(', ')||data.profiles?.[t.profile]?.label||t.profile||'')}</span><span class="muted">${esc(t.reason||t.queue_reason||t.group_title||'')}</span></div>${actions}<div class="task-monitor">${TaskView.activityHTML(d.activity,options)}${TaskView.usageHTML(d.usage,options)}</div><details class="task-evidence" data-section="brief"><summary>${tr('detail.objective')} · ${tr('detail.acceptance')}</summary><h3>${tr('detail.objective')}</h3><p>${esc(d.objective)}</p>${t.targets?.length?`<h3>${tr('field.targets')}</h3>${listHTML(t.targets,'')}`:''}<h3>${tr('detail.acceptance')}</h3>${listHTML(d.acceptance,tr('detail.noAcceptance'))}<div class="detail-code">${esc(t.id)}<br>${esc(t.directory||t.source_dir)}</div></details><details class="task-evidence" data-section="results"><summary>${tr('detail.workerSummary')} · ${tr('detail.evidence')}</summary><p>${esc(r.summary||t.summary||tr('detail.summaryPlaceholder'))}</p><h3>${tr('detail.evidence')}</h3>${listHTML(r.evidence,tr('detail.noEvidence'))}<h3>${tr('detail.tests')}</h3>${listHTML(r.tests,tr('detail.noTests'))}<h3>${tr('detail.unresolved')}</h3>${listHTML(r.unresolved,tr('detail.unresolvedDefault'))}</details>${d.errors?.length?'<section class="task-errors"><h3>'+tr('detail.errors')+'</h3>'+listHTML(d.errors.map(e=>[e.source,e.code,e.message,e.command?tr('detail.command')+e.command:'',e.exit_code!=null?tr('detail.exitCode')+e.exit_code:''].filter(Boolean).join(' · ')),'')+'</section>':''}${d.pending?.length?'<h3>'+tr('detail.pending')+'</h3>'+listHTML(d.pending.map(p=>JSON.stringify(p)),''):''}${t.guidance?.length?'<h3>'+tr('detail.guidance')+'</h3>'+listHTML(t.guidance.map(g=>g.status+' · '+g.text),''):''}`;
+ // Preserve reading position and disclosure state during a live refresh.
+ if(body.dataset.rendered===html)return;
+ body.innerHTML=html;body.dataset.rendered=html;
+ for(const section of body.querySelectorAll('details'))section.open=sections.has(section.dataset.section);
+ const activity=body.querySelector('.activity-scroll');if(activity)activity.scrollTop=followTail?activity.scrollHeight:scroll;
+ if(focusedSection)body.querySelector('details[data-section="'+focusedSection+'"] summary')?.focus({preventScroll:true});
+ else if(activityFocused)activity?.focus({preventScroll:true});
+}
+function details(id){detailController.open(id);}
 $('groups').addEventListener('click',e=>{const b=e.target.closest('[data-group]');if(!b)return;selectedGroup=b.dataset.group;renderGroups();renderTasks();});
 $('filters').addEventListener('click',e=>{const b=e.target.closest('[data-filter]');if(!b)return;selectedFilter=b.dataset.filter;for(const x of $('filters').querySelectorAll('button')){x.classList.toggle('selected',x===b);x.setAttribute('aria-pressed',String(x===b));}renderTasks();});
 $('search').addEventListener('input',renderTasks);$('task-rows').addEventListener('click',e=>{const b=e.target.closest('[data-detail]');if(b)details(b.dataset.detail);});
-$('close-detail').addEventListener('click',()=>{selectedTask=null;$('detail').hidden=true;});
+$('close-detail').addEventListener('click',()=>{const id=selectedTask;detailController.close();taskRows.get(id)?.querySelector('[data-focus=title]')?.focus({preventScroll:true});});
+$('refresh-detail').addEventListener('click',()=>detailController.refresh(true));
 $('refresh-quota').addEventListener('click',async()=>{const b=$('refresh-quota');b.disabled=true;try{await request('/console-api/quota',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});await refresh();}catch(e){$('error').textContent=e.message;$('error').hidden=false;}finally{b.disabled=false;}});
 refresh();setInterval(()=>{if(!document.hidden)refresh();},4000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});
-document.addEventListener('i18n:change',()=>{renderGroups();renderQuota();renderTasks();$('health').innerHTML='<i></i>'+(data.pool_healthy?tr('health.online'):tr('health.offline'));if(data.updated_at)$('updated').textContent=tr('updated.at',{time:clock(data.updated_at)});if(data.max_parallel_per_owner!=null)$('pool-limit').textContent=tr('pool.limit',{n:data.max_parallel_per_owner});if(selectedTask)details(selectedTask);});
+document.addEventListener('i18n:change',()=>{renderGroups();renderQuota();renderTasks();$('health').innerHTML='<i></i>'+(data.pool_healthy?tr('health.online'):tr('health.offline'));if(data.updated_at)$('updated').textContent=tr('updated.at',{time:clock(data.updated_at)});if(data.max_parallel_per_owner!=null)$('pool-limit').textContent=tr('pool.limit',{n:data.max_parallel_per_owner});if(selectedTask)renderInlineDetail(detailController.state());});
 
 $('sign-out').addEventListener('click',async()=>{const b=$('sign-out');b.disabled=true;try{await request('/console-api/auth/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});window.location.replace('/console-login');}catch(e){$('error').textContent=e.message;$('error').hidden=false;}finally{b.disabled=false;}});
 request('/console-api/auth/status').then(s=>{if(!s.authenticated){window.location.replace('/console-login');return;}$('account-name').textContent=s.username||'';}).catch(()=>{});

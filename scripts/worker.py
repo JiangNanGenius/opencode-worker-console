@@ -14,6 +14,7 @@ from common import (STATE, HttpFailure, api, artifact_dir, config, read_json, re
 from workspace import collect_changes, prepare
 import diagnostics
 import quota
+import task_activity
 
 RESULT_SCHEMA = {
     'type': 'object', 'additionalProperties': False,
@@ -274,6 +275,9 @@ def _finish(t, messages, forced_status=None, reason=None):
     messages = redact(messages)
     write_json(art / 'messages.json', messages)
     evidence = summarize_messages(messages)
+    # Persist accurate usage (cache and cost included) so the task list can show
+    # retained evidence without re-reading the transcript or querying sessions.
+    usage = task_activity.usage_from_messages(messages)
     report = evidence.get('structured')
     status = forced_status or ('completed' if isinstance(report, dict) and report.get('outcome') == 'done' else 'needs_attention')
     flags = []
@@ -313,7 +317,7 @@ def _finish(t, messages, forced_status=None, reason=None):
     write_json(art / 'result.json', result)
     summary = (report.get('summary', '') if isinstance(report, dict) else evidence['text'])[:8000]
     (art / 'summary.md').write_text(summary + '\n')
-    extra = {'recovery': None}
+    extra = {'recovery': None, 'usage': usage}
     if billing and status in ('failed', 'needs_attention'):
         # Billing failure never replays or re-profiles this task; persist coordinator options.
         try:

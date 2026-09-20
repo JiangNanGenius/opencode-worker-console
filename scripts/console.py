@@ -23,6 +23,7 @@ import quota
 import service
 import management
 import delegate
+import task_activity
 from common import CONFIG, HttpFailure, locked, update, write_json
 
 WEB = Path(__file__).resolve().parent.parent / 'web'
@@ -31,7 +32,7 @@ WEB = Path(__file__).resolve().parent.parent / 'web'
 PUBLIC_ASSETS = {'login.js': 'text/javascript', 'style.css': 'text/css', 'i18n.js': 'text/javascript'}
 # Authenticated application assets are never served anonymously.
 PRIVATE_ASSETS = {'app.js': 'text/javascript', 'manage.js': 'text/javascript', 'i18n.js': 'text/javascript',
-                  'setup.js': 'text/javascript'}
+                  'setup.js': 'text/javascript', 'task-view.js': 'text/javascript'}
 MAX_LOGIN_BODY = 4096
 MAX_API_BODY = 65536
 # Long-lived streams and WebSockets re-check the server-side session this often
@@ -74,6 +75,9 @@ def state():
         p['group_id'] = t.get('group_id') or t['source_dir']
         p['group_title'] = t.get('group_title') or Path(t['source_dir']).name
         p['session_url'] = session_url(t)
+        # Cheap per-task usage only: cached live sample or retained snapshot.
+        # Global refresh never fetches sessions and never scans history.
+        p['usage'] = task_activity.usage_for_task(t)
         entries.append(p)
     health = service_health()
     return redact({'tasks': entries, 'quota': quota.view(read_json(STATE / 'quota.json', {})),
@@ -380,10 +384,14 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 t = task(path.rsplit('/', 1)[1])
                 result = read_json(artifact_dir(t['id']) / 'result.json', {})
-                self.reply(200, redact({'task': public_task(t), 'objective': t['objective'],
+                payload = {'task': public_task(t), 'objective': t['objective'],
                            'acceptance': t['acceptance'], 'report': result.get('worker_report'),
                            'changes': result.get('changes'), 'errors': t.get('errors', result.get('errors', [])),
-                           'pending': result.get('pending', []), 'session_url': session_url(t)}))
+                           'pending': result.get('pending', []), 'session_url': session_url(t)}
+                # Live activity/usage for in-flight tasks; retained evidence
+                # (never the network) for closed or completed jobs.
+                payload.update(task_activity.snapshot(t))
+                self.reply(200, redact(payload))
             except ValueError:
                 self.reply(404, {'error': 'Task not found'})
         else:
