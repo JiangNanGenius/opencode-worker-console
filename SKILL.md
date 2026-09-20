@@ -116,11 +116,13 @@ quota unknown is not unlimited.
 
 Ark Auto (`ark-code-latest`) follows the model setting in the Ark console. Only a console
 setting of Auto enables provider-side automatic routing and its applicable discounts. It
-cannot guarantee K3 or a 1M window: the documented alias configuration is 256,000 tokens;
-explicit Ark `kimi-k3` supports 1,024,000. Use deep routing for genuinely large contexts.
-Never convert an Auto task into fixed K3 merely to increase K3 utilization: their allowance
-costs differ. Consult [routing and plan efficiency](references/routing.md) when configuring
-providers, weights or cost policy; discount dates and prices must be rechecked.
+cannot guarantee K3, but the Worker Desk client ceiling is 1,024,000 so Auto can use a
+long-context route without local compaction at the 256,000-token example value. Explicit Ark
+`kimi-k3` guarantees a documented 1,024,000-capable model. Prefer task quality and required
+context over the lowest AFP coefficient: pin Ark K3 when its model quality or predictability
+matters, and use Auto when provider-side selection is acceptable. Consult
+[routing and plan efficiency](references/routing.md) when configuring providers, weights or
+cost policy; discount dates, current model limits and prices must be rechecked.
 
 Broad or ambiguous work stays deep even if its eventual patch is small. Give a capable worker
 one complete outcome instead of many tiny lookups. Do not replay large context across providers

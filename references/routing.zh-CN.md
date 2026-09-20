@@ -12,7 +12,7 @@ DeepSeek 直连会消耗余额。不要为了切换渠道，把一个任务拆�
 
 | Profile 示例 | 模型 | 上下文 / 最大输出 | 思考强度 |
 | --- | --- | --- | --- |
-| `ark-auto` | `volcengine-agent-plan/ark-code-latest` | 256,000 / 32,000 | `max` |
+| `ark-auto` | `volcengine-agent-plan/ark-code-latest` | 客户端上限 1,024,000 / 32,000 | `max` |
 | `ark-k3` | `volcengine-agent-plan/kimi-k3` | 1,024,000 / 65,536 | `max` |
 
 SDK 为 `@ai-sdk/openai`，套餐接口为 `https://ark.cn-beijing.volces.com/api/plan/v3`。
@@ -20,8 +20,11 @@ SDK 为 `@ai-sdk/openai`，套餐接口为 `https://ark.cn-beijing.volces.com/ap
 不会更改交互式 OpenCode 的默认模型。
 
 `ark-code-latest` 跟随方舟控制台的选择，后台设为 **Auto** 才启用自动路由。
-不能把它当作保证使用 K3 或保证 1M 上下文的别名。两种模型均于 2026-09-20 实测接受
-`reasoning.effort=max`。
+Auto 不保证每次使用 K3，但后端并不受官方 OpenCode 示例中 256K 客户端声明的硬限制。
+2026-09-20 使用 Agent Plan Auto 真实发送 270,062 个输入 Token，返回 HTTP 200。
+因此 Worker Desk 将客户端窗口设为 1,024,000，避免 OpenCode 在 256K 提前压缩；实际
+后端上限仍取决于 Auto 当次选择的模型。需要可预测的 1M 模型时应指定 `ark-k3`。
+两种 Profile 均于 2026-09-20 实测接受 `reasoning.effort=max`。
 
 2026-09-20 核对的官方规则：Auto 抵扣系数 **0.5**，活动至 **2026-11-08**；固定 K3
 系数 **10**。相同输入、输出 Token 下，固定 K3 消耗的 AFP 是 Auto 的 **20 倍**。
@@ -53,7 +56,9 @@ AccessKey ID/Secret。目前没有接入该适配器时，额度标为未知，�
 查看状态、等待容量或文件冲突不会消耗轮次；计数重启后保留。
 未配置的层级沿用原单 Profile 路由，空策略恢复原路由。修改运行配置应在任务空闲时应用。
 
-追求套餐效率时，建议普通任务使用方舟 Auto 接替，深度任务优先 Kimi K3，
-方舟固定 K3 留作深度任务备用。精准优化还需要各套餐实时余量和刷新时间；额度未知不等于无限。
+效果优先时，建议让 Kimi K3 与方舟 K3 位于同一个深度任务加权阶段，持续利用两个套餐，
+不要仅因 AFP 系数较高就把方舟 K3 降为最后备用。允许服务端选模型的任务使用方舟 Auto；
+要求模型一致性或长上下文质量时直接指定 K3。只有明确追求套餐续航时，才改成
+Kimi → 方舟 → DeepSeek 的顺序回退。精准优化仍需要各套餐实时余量和刷新时间；额度未知不等于无限。
 让同一任务保留在已选模型上，复用有用上下文，给主模型返回精炼证据。
 运行失败时由协调模型检查部分结果，再选模型继续剩余工作；桥接层不会盲目重放已接受任务。

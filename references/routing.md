@@ -15,7 +15,7 @@ is configured, Worker Desk supplies the provider definition automatically:
 
 | Profile example | Model | Context / output | Reasoning |
 | --- | --- | --- | --- |
-| `ark-auto` | `volcengine-agent-plan/ark-code-latest` | 256,000 / 32,000 | `max` |
+| `ark-auto` | `volcengine-agent-plan/ark-code-latest` | 1,024,000 client ceiling / 32,000 | `max` |
 | `ark-k3` | `volcengine-agent-plan/kimi-k3` | 1,024,000 / 65,536 | `max` |
 
 The SDK is `@ai-sdk/openai` (Responses API), with base URL
@@ -25,7 +25,11 @@ contains no key. Configuring this provider does not change the interactive OpenC
 
 `ark-code-latest` follows the Ark console's selected model. Verify that the console is set to
 **Auto** before counting on automatic routing. An Auto response is not proof that K3 served it,
-and the alias must not be advertised as a guaranteed 1M model. Both built-in Ark models accepted
+but its backend is not limited by the official OpenCode example's 256,000-token client metadata.
+On 2026-09-20, a real Agent Plan Auto request accepted 270,062 input tokens and returned HTTP 200.
+Worker Desk therefore advertises a 1,024,000 client ceiling so OpenCode can retain long sessions;
+the model selected by Auto remains the authoritative backend limit. Pin `ark-k3` when the task
+requires a predictable documented 1,024,000-capable model. Both built-in Ark profiles accepted
 `reasoning.effort=max` in real Responses API checks on 2026-09-20.
 
 Official rules checked on 2026-09-20 specify an Auto AFP coefficient of **0.5** through
@@ -74,11 +78,14 @@ unavailable, the other receives the work. A 2:1 setting targets **task admission
 simultaneous running jobs or money. Explicit profiles bypass this policy. Missing tiers retain
 legacy routing, and an empty policy restores legacy routing entirely.
 
-For allowance efficiency, replace the deep tier's weighted stage with two sequential stages:
-Kimi K3 first, Ark K3 second, then DeepSeek. This preserves fixed K3 for a genuine deep-context
-need. For ordinary work, use Ark Auto as the next subscription tier. Exact optimization across
-plans additionally requires live remaining allowances and reset schedules; never infer that
-an unknown quota is free or unlimited. Deploy config changes only when execution is idle.
+For quality-first operation, keep Kimi K3 and Ark K3 in the same weighted deep stage. This uses
+both subscriptions continuously and avoids treating Ark K3 as a last resort merely because its
+AFP coefficient is higher. Use Ark Auto for tasks where provider-side selection is acceptable,
+and pin either K3 when model consistency or deep-context quality matters. A sequential Kimi →
+Ark → DeepSeek policy remains available when allowance life is the explicit objective. Exact
+optimization across plans additionally requires live remaining allowances and reset schedules;
+never infer that an unknown quota is free or unlimited. Deploy config changes only when execution
+is idle.
 
 After dispatch, the model stays pinned. If it fails, the coordinator inspects partial work,
 chooses an available alternative and continues only the remaining outcome in a new task.

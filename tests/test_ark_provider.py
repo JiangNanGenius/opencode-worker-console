@@ -20,7 +20,7 @@ class ArkProviderTests(unittest.TestCase):
         ark = overlay['provider'][ARK_PROVIDER]
         self.assertEqual(ark['npm'], '@ai-sdk/openai')
         self.assertEqual(ark['options'], {'baseURL': 'https://ark.cn-beijing.volces.com/api/plan/v3'})
-        self.assertEqual(ark['models']['ark-code-latest']['limit']['context'], 256000)
+        self.assertEqual(ark['models']['ark-code-latest']['limit']['context'], 1024000)
         self.assertEqual(ark['models']['kimi-k3']['limit']['context'], 1024000)
         self.assertNotIn('apiKey', json.dumps(overlay))
         for model in ark['models'].values():

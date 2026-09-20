@@ -5,10 +5,12 @@ ARK_BASE_URL = 'https://ark.cn-beijing.volces.com/api/plan/v3'
 
 
 def ark_provider():
-    """Responses API; the configurable Auto alias is not a guaranteed 1M model.
+    """Responses API with a long-context client ceiling for the Auto alias.
 
-    The provider's console controls what ark-code-latest resolves to. A named K3
-    request guarantees the model and supports the documented 1,024,000 window.
+    The provider's console controls what ark-code-latest resolves to. Agent Plan
+    Auto accepted input beyond the 256k OpenCode example in a live check, so the
+    client ceiling is 1,024,000 to avoid premature local compaction. A named K3
+    request guarantees the documented 1,024,000-capable model.
     Maximum reasoning was verified against both endpoints, not inferred from
     similarly named models on a different provider.
     """
@@ -23,7 +25,7 @@ def ark_provider():
                 'variants': {'max': {'reasoningEffort': 'max'}},
             }
             for model, context, output in (
-                ('ark-code-latest', 256000, 32000),
+                ('ark-code-latest', 1024000, 32000),
                 ('kimi-k3', 1024000, 65536),
             )
         },
