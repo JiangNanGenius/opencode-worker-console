@@ -48,9 +48,13 @@ implementation, checks and a concise report. Use `steer` for refinements to that
 instead of creating a sequence of microtasks. Split tasks when deliverables or writable
 scopes are genuinely independent.
 
-Choose one tier and keep `--profile auto`: Fast for bounded well-understood work needing quick
-feedback, Normal for ordinary coherent outcomes, and Deep for large-context, ambiguous,
-cross-module, architectural or consequential work.
+Choose one tier and keep `--profile auto`: Fast for a bounded, concrete outcome with a known
+path and clear acceptance; Normal as the strong default when a concrete outcome needs broader
+investigation or synthesis; Deep for an abstract or unclear objective, an unresolved system-wide
+root cause, architecture trade-offs or unusually complex logic. Fast can own complete features,
+known fixes, tests, documentation and routine deployment. Large context, many files, long runtime
+and importance alone do not make a task Deep, and genuinely Deep work has no separate task-count
+limit.
 The first available policy stage wins; members in that stage share actual admissions by
 weight. See [routing and plan efficiency](routing.md) for the Ark/Kimi baseline, bounded
 quota-aware ratios, fallbacks and configuration. A direct user requirement for a named model or

@@ -105,6 +105,13 @@ These options initialize a **fresh** installation, not replace existing profiles
 
 Codex chooses Fast, Normal or Deep and submits with `profile=auto`; the bridge owns the profile, provider, allowance balance and fallback. The profile table above is an operator configuration view, not an agent role list. The preset uses `max` reasoning; other models need a variant their provider actually supports. Only a user-required named model or controlled comparison should pin a profile. [Routing and plan efficiency](references/routing.md).
 
+Fast can complete bounded, well-specified features, known fixes, tests, documentation and routine
+deployment; it is not a mechanical-work bucket. Normal is the strong default when a concrete
+outcome needs broader investigation or synthesis. Deep is for abstract or unclear goals,
+unresolved system-wide causes, architecture trade-offs and unusually complex
+logic. File count, runtime, context size and importance do not make a task Deep, and genuinely
+Deep work has no separate task-count limit.
+
 ## What you can manage
 
 - **Tasks:** expand details directly under a task; inspect live activity and input/output/reasoning/cache tokens without leaving the console. The current filter shows recorded worker totals; these exclude coordinator usage and are not a cost estimate. Parent/child ownership, live guidance, structured errors and full transcripts remain available.
@@ -122,7 +129,7 @@ This sends a real model request and can consume provider allowance. Use an exist
 
 ```sh
 ~/.local/bin/delegate-opencode submit --directory /absolute/project \
-  --profile auto --tier deep --group-title 'Repository orientation' \
+  --profile auto --tier normal --group-title 'Repository orientation' \
   --title 'Map the project' \
   --acceptance 'Return entry points, test commands and evidence; do not modify files.' \
   'Read the project guidance and summarize how this project is organized.'

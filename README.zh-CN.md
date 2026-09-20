@@ -103,6 +103,11 @@ python3 scripts/install.py --preset ark-agent-plan
 
 Codex 只选择 Fast、Normal 或 Deep，并以 `profile=auto` 提交；具体 profile、供应商、套餐比例和兜底均由桥接层决定。上表是管理员配置视图，不是 Agent 的角色清单。预设使用 `max`；新增模型要选择供应商实际支持的思考档位。只有用户明确要求指定模型或进行受控对比时才固定 profile。详见[路由与套餐利用率](references/routing.zh-CN.md)。
 
+Fast 也能完整处理边界和验收明确的功能、已知修复、测试、文档和常规部署，并不是机械工作档。
+Normal 是明确目标需要更广调查或综合判断时的强能力默认档。Deep 用于抽象或尚不明确的目标、
+未定位的系统级根因、架构取舍和特别复杂的逻辑。文件数量、运行时间、上下文大小和任务重要性
+不会自动把任务变成 Deep；真正符合条件的 Deep 任务不设额外总量限制。
+
 ## 主要功能
 
 - **任务协作**：在任务下方原位展开详情，直接查看实时活动及输入、输出、推理、缓存 Token。按当前筛选汇总已记录的 Worker 用量，不含主 Agent 用量，也不代表费用。支持父子归属、运行中引导、结构化错误和完整会话。
@@ -120,7 +125,7 @@ Codex 只选择 Fast、Normal 或 Deep，并以 `profile=auto` 提交；具体 p
 
 ```sh
 ~/.local/bin/delegate-opencode submit --directory /absolute/project \
-  --profile auto --tier deep --group-title '了解项目' \
+  --profile auto --tier normal --group-title '了解项目' \
   --title '整理项目结构' \
   --acceptance '返回入口、测试命令与文件证据，不修改文件。' \
   '阅读项目约定，说明目录组织、关键入口和测试方法。'

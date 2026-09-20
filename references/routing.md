@@ -20,6 +20,16 @@ Ordered fallback and weighted sharing can be mixed independently for each task t
 one subscription needs no policy at all; a user with one paid plan and one pay-as-you-go backup can
 use two one-model stages. The Ark/Kimi policy below is an optional example, not a platform default.
 
+Tier selection is based on reasoning shape, not workload size or a weak-to-strong model ranking.
+Fast can own a complete bounded feature, known fix, test, documentation change or routine
+deployment when its path and acceptance are clear. Normal is the capable default when a concrete
+outcome needs broader investigation or synthesis, even when it reads a large repository, changes
+many files, runs for a long time, or includes implementation, tests, documentation, packaging
+and deployment. Deep is for an
+abstract or unclear objective, an unresolved system-wide root cause, architecture trade-offs or
+logic with unusually difficult invariants. Large context and task importance alone are not Deep
+criteria. There is no separate total-task cap for work that genuinely needs Deep.
+
 The stored shape is deliberately provider-neutral:
 
 ```json

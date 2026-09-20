@@ -121,12 +121,24 @@ not to manually reproduce the bridge's routing decision.
 
 | Task shape | Selection |
 | --- | --- |
-| Bounded, well-understood work where fast feedback matters | `--profile auto --tier fast` |
-| Ordinary coherent work; use this default when neither other row applies | `--profile auto --tier normal` |
-| Large-context, ambiguous, cross-module, architectural or consequential work | `--profile auto --tier deep` |
+| A bounded, concrete outcome with a known solution path and clear acceptance | `--profile auto --tier fast` |
+| A clear objective and acceptance criteria; use this strong default even for long, broad or cross-file execution | `--profile auto --tier normal` |
+| An abstract or unclear objective, unresolved system-wide cause, architecture trade-off or unusually complex logic/invariants | `--profile auto --tier deep` |
 
-Task size alone does not make a task Fast, and importance alone does not make it Deep. Keep a
-capable worker on one coherent outcome. Only a direct user requirement for a named model or a
+Fast is also a capable execution tier, not a mechanical-work bucket. It can own a complete
+feature, known bug fix, test addition, documentation update or routine deployment when the
+boundary, method and acceptance are clear and little exploration is required. Normal is the
+default capable-worker tier for work that needs broader investigation or synthesis. It may
+inspect a large repository and own complete implementation, refactoring, documentation,
+testing, packaging,
+deployment and terminal/headless verification when the requested result is concrete. Long
+runtime, many files, a large context window, important code or a complete end-to-end outcome do
+not by themselves justify Deep. Choose Deep when the worker must first define the problem,
+construct a system-wide mental model, resolve competing architecture choices, find an unknown
+cross-system root cause, or reason through logic with unusually difficult invariants. A failed
+or materially uncertain Normal investigation can also justify a Deep continuation. Do not split
+a coherent Normal outcome into small tasks to avoid Deep, and do not limit the number of tasks
+that truly meet the Deep criteria. Only a direct user requirement for a named model or a
 controlled model comparison may bypass tier routing; then use the explicit profile with a
 concrete `profile_reason`.
 
@@ -158,8 +170,10 @@ matters, and use Auto when provider-side selection is acceptable. Consult
 [routing and plan efficiency](references/routing.md) when configuring providers, weights or
 cost policy; discount dates, current model limits and prices must be rechecked.
 
-Broad or ambiguous work stays deep even if its eventual patch is small. Give a capable worker
-one complete outcome instead of many tiny lookups. Do not replay large context across providers
+Ambiguous, abstract or logically difficult work stays Deep even if its eventual patch is small;
+broad but concrete execution stays Normal, while bounded and well-specified execution can use
+Fast. Give a capable worker one complete outcome instead of many tiny lookups. Do not replay
+large context across providers
 to chase a discount mid-session. Keep accepted work on its pinned model, reuse relevant sessions,
 and pass compact evidence to the coordinator. Use `stats` to assess actual task distribution;
 job counts are not token, money or quota ratios. Quota telemetry adjusts a pair only when that
