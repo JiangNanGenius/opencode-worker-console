@@ -331,6 +331,8 @@ class PoolTests(unittest.TestCase):
         messages = [{'info': {'role': 'assistant', 'modelID': 'deepseek-flash', 'providerID': 'deepseek'},
                      'parts': [{'type': 'text', 'text': json.dumps(report)}]}]
         self.assertEqual(worker.summarize_messages(messages)['structured'], report)
+        messages[0]['parts'][0]['text'] = repr(report)
+        self.assertEqual(worker.summarize_messages(messages)['structured'], report)
         messages[0]['parts'][0]['text'] = '{"outcome":"done"}'
         self.assertIsNone(worker.summarize_messages(messages)['structured'])
 

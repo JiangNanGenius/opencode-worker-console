@@ -1,4 +1,5 @@
 """Durable worker execution. Never replay an ambiguously accepted prompt."""
+import ast
 import collections
 import hashlib
 import json
@@ -148,7 +149,13 @@ def parse_report(text):
         try:
             candidate = json.loads(probe)
         except (ValueError, TypeError):
-            continue
+            # Some otherwise capable models occasionally render the requested
+            # object with Python-style single quotes. literal_eval accepts only
+            # data literals and never executes model text.
+            try:
+                candidate = ast.literal_eval(probe)
+            except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+                continue
         if valid_report(candidate):
             valid.append(candidate)
     return valid[0] if len(valid) == 1 else None
