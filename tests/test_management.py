@@ -129,6 +129,17 @@ class ManagementTests(unittest.TestCase):
         self.assertEqual(result['deleted'], 2)
         self.assertEqual({item['id'] for item in common.tasks()}, {'job-attention', 'job-running'})
 
+    def test_task_management_clear_finished_includes_needs_attention(self):
+        self.add_task('job-done', 'completed')
+        self.add_task('job-attention', 'needs_attention')
+        self.add_task('job-failed', 'failed')
+        self.add_task('job-running', 'running')
+
+        result = management.delete_tasks({'action': 'clear_finished'})
+
+        self.assertEqual(result['deleted'], 2)
+        self.assertEqual({item['id'] for item in common.tasks()}, {'job-failed', 'job-running'})
+
     def test_task_management_validates_request_before_deleting(self):
         self.add_task('job-done', 'completed')
         bad_requests = [None, {}, {'action': 'unknown'}, {'action': 'delete', 'ids': []},

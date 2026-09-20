@@ -419,13 +419,15 @@ def delete_tasks(body):
     if not isinstance(body, dict):
         raise ValueError('JSON object required')
     action = body.get('action')
-    if action not in ('delete', 'clear_completed'):
+    if action not in ('delete', 'clear_completed', 'clear_finished'):
         raise ValueError('Unknown task management action')
     with common.locked():
         current = common.tasks()
         by_id = {item['id']: item for item in current}
         if action == 'clear_completed':
             selected = [item for item in current if item.get('status') == 'completed']
+        elif action == 'clear_finished':
+            selected = [item for item in current if item.get('status') in ('completed', 'needs_attention')]
         else:
             ids = body.get('ids')
             if not isinstance(ids, list) or not ids or len(ids) > 1000:
