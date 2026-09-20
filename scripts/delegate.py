@@ -22,6 +22,10 @@ import routing
 from workspace import conflicts, git_root, integrate, relative_scope
 from worker import run_task
 
+WAIT_DEFAULT_SECONDS = {'fast': 300, 'normal': 1800, 'deep': 3600}
+WAIT_MIN_SECONDS = 60
+WAIT_POLL_SECONDS = 0.5
+
 
 def owner_key(t):
     """Immutable scheduling owner: the Codex conversation, with legacy fallbacks."""
@@ -83,6 +87,37 @@ def wait_result(t, waited_seconds):
         result['recovery'] = recovery
     if actionable:
         result['attention'] = True
+    return result
+
+
+def wait_window_seconds(t, requested=None):
+    """Choose a useful observation window without turning it into a worker deadline."""
+    if requested is not None:
+        return max(WAIT_MIN_SECONDS, requested)
+    return WAIT_DEFAULT_SECONDS.get(t.get('tier'), WAIT_DEFAULT_SECONDS['normal'])
+
+
+def wait_ready(t):
+    """Return promptly for terminal work or an actionable queued blockage."""
+    if t.get('status') in TERMINAL:
+        return True
+    return t.get('status') == 'queued' and isinstance(live_recovery(t), dict)
+
+
+def wait_for_task(task_id, requested_seconds=None):
+    began = time.time()
+    current = task(task_id)
+    window = wait_window_seconds(current, requested_seconds)
+    end = began + window
+    while not wait_ready(current):
+        remaining = end - time.time()
+        if remaining <= 0:
+            break
+        time.sleep(min(WAIT_POLL_SECONDS, remaining))
+        current = task(task_id)
+    current = task(task_id)  # Include a state change racing the observation-window boundary.
+    result = wait_result(current, time.time() - began)
+    result['wait_window_seconds'] = window
     return result
 
 
@@ -493,7 +528,9 @@ def main():
     s.add_argument('--saved', action='store_true', help='Read retained worker evidence instead of live OpenCode')
     s.add_argument('--output', help='Export to a new private JSON file and return only its location')
     s = sub.add_parser('cancel'); s.add_argument('id')
-    s = sub.add_parser('wait'); s.add_argument('id'); s.add_argument('--seconds', type=int, default=20)
+    s = sub.add_parser('wait'); s.add_argument('id')
+    s.add_argument('--seconds', type=int,
+                   help='Observation window; defaults by tier to fast=300, normal=1800, deep=3600; minimum 60')
     s = sub.add_parser('quota'); s.add_argument('--refresh', action='store_true')
     s.add_argument('--retry-provider', metavar='PROVIDER',
                    help='Explicit local authorization to allow new attempts on a billing-blocked provider '
@@ -578,11 +615,7 @@ def main():
         t = task(args.id)
         result = public_task(t if t['status'] in TERMINAL else update(args.id, cancel_requested=True))
     elif args.cmd == 'wait':
-        began = time.time()
-        end = time.time() + max(0, min(args.seconds, 60))
-        while task(args.id)['status'] not in TERMINAL and time.time() < end:
-            time.sleep(1)
-        result = wait_result(task(args.id), time.time() - began)
+        result = wait_for_task(args.id, args.seconds)
     elif args.cmd == 'quota':
         result = quota.retry_provider(args.retry_provider) if args.retry_provider \
             else quota.refresh(force=args.refresh)

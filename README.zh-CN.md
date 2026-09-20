@@ -124,11 +124,11 @@ Codex 只选择 Fast、Normal 或 Deep，并以 `profile=auto` 提交；具体 p
   --title '整理项目结构' \
   --acceptance '返回入口、测试命令与文件证据，不修改文件。' \
   '阅读项目约定，说明目录组织、关键入口和测试方法。'
-~/.local/bin/delegate-opencode wait JOB_ID --seconds 20
+~/.local/bin/delegate-opencode wait JOB_ID
 ~/.local/bin/delegate-opencode collect JOB_ID
 ```
 
-替换返回的 `JOB_ID`。`continue_waiting` 为真时继续短时等待，观察窗口不是任务期限。结果仍需验收。修改任务使用 `--mode write`，并提供本地 `--scope`、操作 `--target` 或两者。[更多操作](references/operations.md)。
+替换返回的 `JOB_ID`。默认等待窗口按任务档位决定：Fast 5 分钟、Normal 30 分钟、Deep 60 分钟；一旦有结果会立即返回。命令工具返回仍在运行的会话 ID 时，应继续等待同一个命令进程；只有完整窗口结束且 `continue_waiting` 为真时才再次调用 `wait`。观察窗口不是任务期限。结果仍需验收。修改任务使用 `--mode write`，并提供本地 `--scope`、操作 `--target` 或两者。[更多操作](references/operations.md)。
 
 ## 安装独立于对话
 

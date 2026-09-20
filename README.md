@@ -126,11 +126,11 @@ This sends a real model request and can consume provider allowance. Use an exist
   --title 'Map the project' \
   --acceptance 'Return entry points, test commands and evidence; do not modify files.' \
   'Read the project guidance and summarize how this project is organized.'
-~/.local/bin/delegate-opencode wait JOB_ID --seconds 20
+~/.local/bin/delegate-opencode wait JOB_ID
 ~/.local/bin/delegate-opencode collect JOB_ID
 ```
 
-Replace `JOB_ID` with the returned ID. Repeat bounded waits while `continue_waiting` is true; an observation interval is not a task deadline. Review evidence. Writes require `--mode write` and local `--scope`, operational `--target`, or both. [More examples](references/operations.md).
+Replace `JOB_ID` with the returned ID. The default wait window follows the task tier (Fast 5 minutes, Normal 30 minutes, Deep 60 minutes) and returns as soon as a result is available. Continue the same command process when the runner yields a session ID; call `wait` again only if the full window returns `continue_waiting: true`. An observation window is not a task deadline. Review evidence. Writes require `--mode write` and local `--scope`, operational `--target`, or both. [More examples](references/operations.md).
 
 ## Installed independently of your conversation
 

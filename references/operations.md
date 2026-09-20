@@ -16,7 +16,7 @@ delegate-opencode submit --directory /absolute/repo --mode write --scope src/par
   --acceptance 'Preserve all existing behavior except the specified empty-input fix.' \
   'Fix the already-identified empty-input parser failure and run the authorized tests.'
 delegate-opencode status
-delegate-opencode wait JOB_ID --seconds 20
+delegate-opencode wait JOB_ID
 delegate-opencode collect JOB_ID
 delegate-opencode cancel JOB_ID
 delegate-opencode stats
@@ -363,15 +363,22 @@ A transport error after dispatch means the prompt may have been accepted: observ
 existing session, never blindly resubmit. The bridge reports information when queried;
 Codex should use bounded `wait` calls while awaiting a delegated result.
 
-`wait --seconds N` is a bounded observation call and does not define how long the worker
-should take. Fifteen to thirty minutes is normal for coherent implementation, compilation,
-tests or deep investigation; configured deep tasks may run longer. A nonterminal response
-contains `terminal: false`, `continue_waiting: true` and `next_action: call_wait_again`.
-When the requested result depends on that worker, the coordinator must call `wait` again in
-the same turn rather than ending with a progress-only response or asking the user to send
-“continue”. Owner capacity, several quiet waits or the coordinator's desire to finish its
-turn are not cancellation reasons. Cancel only when the user requests it, the scope is
-confirmed wrong or unsafe, the objective is superseded, or a terminal condition requires it.
+With no `--seconds`, `wait` observes Fast tasks for up to 5 minutes, Normal tasks for 30 minutes
+and Deep tasks for 60 minutes. An explicit value has a one-minute minimum and may be longer.
+The window does not define how long the worker should take: the command checks approximately
+twice per second and returns immediately when work becomes terminal or an actionable queued
+blockage appears. Fifteen to forty minutes is normal for coherent implementation, compilation,
+tests or deep investigation; configured deep tasks may run longer.
+
+When a command runner yields a process/session ID while the wait command remains active, follow
+that same process with empty stdin polls using 60-second poll windows. Do not create a sequence of new
+short wait commands. A nonterminal response after the full window contains `terminal: false`,
+`continue_waiting: true` and `next_action: call_wait_again`; then call `wait` again in the same
+turn rather than ending with a progress-only response or asking the user to send “continue”.
+For independent jobs, long waits may run concurrently. Owner capacity, quiet intervals or the
+coordinator's desire to finish its turn are not cancellation reasons. Cancel only when the user
+requests it, the scope is confirmed wrong or unsafe, the objective is superseded, or a terminal
+condition requires it.
 
 
 ## Read complete conversations on demand

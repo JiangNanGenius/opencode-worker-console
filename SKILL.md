@@ -177,13 +177,19 @@ bypass capacity. Four slots are a ceiling, not a task-count target.
 
 ## Follow through to completion
 
-Use `status`, bounded `wait JOB_ID --seconds 20`, and `collect JOB_ID`. A wait interval is an
-observation window, not a deadline: substantial work often takes 15–30 minutes or longer.
-While queued, starting or running, continue independent work or keep waiting in the same
-Codex turn. Do not cancel quiet workers, impose a time limit, or end with a progress message
-asking the user to say “continue”. Keep the main turn active until the dependent work reaches
-an actionable terminal state. Cancel for a user request, superseded objective, confirmed
-wrong scope or another concrete reason, not elapsed time or repeated tool failures alone.
+Use `status`, `wait JOB_ID`, and `collect JOB_ID`. With no `--seconds`, the bridge chooses an
+observation window from the task tier: Fast 5 minutes, Normal 30 minutes, Deep 60 minutes.
+Explicit windows are accepted with a one-minute minimum. This is a maximum observation window,
+not a sleep or worker deadline: `wait` checks continuously and returns as soon as the task is
+completed, failed or needs attention. If the command tool yields a running process/session ID,
+continue that same process with its stdin/poll operation using 60-second poll windows;
+do not launch a series of new short wait commands. For several independent jobs, start their
+wait commands concurrently and keep following each returned process until it produces a result.
+While queued, starting or running, continue independent work or keep waiting in the same Codex
+turn. Do not cancel quiet workers, impose a time limit, or end with a progress message asking the
+user to say “continue”. Keep the main turn active until the dependent work reaches an actionable
+terminal state. Cancel for a user request, superseded objective, confirmed wrong scope or another
+concrete reason, not elapsed time or repeated tool failures alone.
 
 Use `steer JOB_ID 'guidance' --request-id STABLE_ID` for useful batched corrections. Guidance
 is read at a model-step boundary, not necessarily an immediate interruption. Check delivery

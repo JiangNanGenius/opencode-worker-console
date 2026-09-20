@@ -1002,6 +1002,36 @@ class PoolTests(unittest.TestCase):
         attention = delegate.wait_result({'id': 'job-test', 'status': 'needs_attention'}, 2)
         self.assertEqual(attention['next_action'], 'collect_and_inspect_errors')
 
+    def test_wait_window_defaults_by_task_tier_and_enforces_one_minute(self):
+        self.assertEqual(delegate.wait_window_seconds({'tier': 'fast'}), 300)
+        self.assertEqual(delegate.wait_window_seconds({'tier': 'normal'}), 1800)
+        self.assertEqual(delegate.wait_window_seconds({'tier': 'deep'}), 3600)
+        self.assertEqual(delegate.wait_window_seconds({}), 1800)
+        self.assertEqual(delegate.wait_window_seconds({'tier': 'deep'}, 20), 60)
+        self.assertEqual(delegate.wait_window_seconds({'tier': 'fast'}, 2400), 2400)
+
+    def test_wait_returns_as_soon_as_task_finishes(self):
+        t = self.new(mode='read', scopes=[], tier='deep')
+        common.update(t['id'], status='running', started_at=time.time())
+
+        def finish(_seconds):
+            common.update(t['id'], status='completed', finished_at=time.time())
+
+        with patch.object(delegate.time, 'sleep', side_effect=finish) as pause:
+            result = delegate.wait_for_task(t['id'])
+        pause.assert_called_once_with(delegate.WAIT_POLL_SECONDS)
+        self.assertTrue(result['terminal'])
+        self.assertFalse(result['continue_waiting'])
+        self.assertEqual(result['wait_window_seconds'], 3600)
+
+    def test_wait_on_already_finished_task_never_sleeps(self):
+        t = self.new(mode='read', scopes=[], tier='normal')
+        common.update(t['id'], status='completed', finished_at=time.time())
+        with patch.object(delegate.time, 'sleep') as pause:
+            result = delegate.wait_for_task(t['id'])
+        pause.assert_not_called()
+        self.assertTrue(result['terminal'])
+
     def console_server(self):
         import console_auth
         server = ThreadingHTTPServer(('127.0.0.1', 0), console_server.Handler)
