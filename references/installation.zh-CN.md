@@ -69,11 +69,15 @@ python3 scripts/install.py --model YOUR_PROVIDER/YOUR_MODEL
 
 # 或明确选择适合自己账号的预设。
 python3 scripts/install.py --preset deepseek-kimi
+python3 scripts/install.py --preset ark-agent-plan
 
 # 可追加 --no-start，仅安装文件而不启动服务。
 ```
 
-自定义模型初始映射到三个 profile。预设配置 DeepSeek V4.1 Flash、Kimi K2.8 Preview、Kimi K3，思考强度为 `max`。预设不会创建账号或赋予模型权限。已有安装即使传入模型/预设参数，也保留原配置。
+自定义模型初始映射到三个 profile。`deepseek-kimi` 配置 DeepSeek V4.1 Flash、Kimi K2.8
+Preview、Kimi K3；`ark-agent-plan` 还加入方舟 Auto、Seed Evolving、方舟 K3 和
+[路由说明](routing.zh-CN.md)中的套餐优先加权策略。两种预设均使用 `max`。预设不会创建账号
+或赋予模型权限。已有安装即使传入模型/预设参数，也保留原配置。
 
 安装器输出实际路径与本地地址；**端口自动选择，没有固定端口号**。运行时和 CLI 独立于源码目录。
 
@@ -142,7 +146,7 @@ python3 ~/.codex/skills/delegate-opencode/scripts/console_auth.py set-user --use
 ~/.local/bin/delegate-opencode quota --refresh
 ```
 
-检查 JSON 内容，不只看退出码：`doctor` 正常退出也可能包含 `server_error`。查看服务健康、注册 profiles、`daemon.healthy`。余额适配器覆盖 DeepSeek/Kimi，其他供应商缺少额度信息不代表不能运行。
+检查 JSON 内容，不只看退出码：`doctor` 正常退出也可能包含 `server_error`。查看服务健康、注册 profiles、`daemon.healthy`。额度适配器覆盖 DeepSeek、Kimi 和方舟 Agent Plan；方舟 AFP 查询还要配置[凭据说明](credentials.md)中的控制面引用。
 
 需要真实执行验证时，主动运行 [README 首个任务](../README.zh-CN.md#第一个任务)，收集报告并检查证据；这会消耗模型额度。仅服务健康不等于模型可用或任务验收通过。
 

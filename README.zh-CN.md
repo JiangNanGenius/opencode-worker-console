@@ -78,6 +78,16 @@ python3 scripts/install.py --model YOUR_PROVIDER/YOUR_MODEL
 python3 scripts/install.py --preset deepseek-kimi
 ```
 
+也可以安装以套餐优先的 Ark/Kimi/DeepSeek 路由：
+
+```sh
+python3 scripts/install.py --preset ark-agent-plan
+```
+
+该预设让快速任务先用 Ark Auto；普通任务按 Kimi K2.8 : 方舟 Seed Evolving = 1:1；
+深度任务按原厂 Kimi K3 : 方舟 K3 = 2:1；之后依次回退到 Ark Auto 与 DeepSeek 直连。
+实时额度续航只允许把成对比例移动一档，不会改写保存的基准策略。
+
 这些选项只初始化**全新安装**，不会覆盖已有 profiles。`--no-start` 表示安装后不启动。登录、托管 OpenCode 路径、密码、验证、升级和排障见[完整安装指引](references/installation.zh-CN.md)。
 
 ## Profile 是模型选择，不是能力限制
@@ -94,7 +104,7 @@ python3 scripts/install.py --preset deepseek-kimi
 
 - **任务协作**：在任务下方原位展开详情，直接查看实时活动及输入、输出、推理、缓存 Token。按当前筛选汇总已记录的 Worker 用量，不含主 Agent 用量，也不代表费用。支持父子归属、运行中引导、结构化错误和完整会话。
 - **会话管理**：查找、新建、改名、分叉、归档/恢复、绑定工作区、删除、跳转 OpenCode。分叉本身不发送提示词。
-- **模型与额度**：配置 profiles、路由，读取 DeepSeek 余额和 Kimi 套餐窗口/刷新时间；其他供应商即使没有额度适配器，也可执行任务。
+- **模型、额度与经济性**：配置 profiles、路由，读取 DeepSeek 余额、Kimi 套餐窗口和方舟 AFP 窗口。控台显示当前动态比例和可配置的统一成本尺（默认 `1 AFP-equivalent = ¥0.002`）；AFP-equivalent 不是 Kimi 官方额度。
 - **并发执行**：默认每个所属 Codex 会话同时运行 4 个 Worker，各会话独立计数；文件/资源冲突和供应商可用性仍影响调度。
 - **工作区协调**：不重叠共享范围、远程操作目标、隔离 Git worktree；补丁检查后再合入。
 - **长任务**：不人为限制模型轮数、工具次数或总运行时间；持续观察引导，未知状态不盲目重放。

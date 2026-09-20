@@ -3,90 +3,108 @@
 [简体中文](routing.zh-CN.md)
 
 Prefer complete outcomes, usable subscription allowance and enough model/context capacity.
-There is no universal cheapest provider order without remaining quota, reset times, latency
-and task quality. A fixed subscription is already paid for; DeepSeek's direct balance is
-incremental spend. Do not split a coherent task or replay its context just to change providers.
+Subscriptions are already paid for; direct DeepSeek balance is incremental spend. Do not split a
+coherent task or replay its context merely to change providers.
 
 ## Ark Agent Plan
 
-Connect `volcengine-agent-plan` using OpenCode's private auth store. Never paste a credential
-into a task, a tracked config, a terminal command argument or a report. When either Ark profile
-is configured, Worker Desk supplies the provider definition automatically:
+Connect `volcengine-agent-plan` through OpenCode's private auth store. Never paste a credential
+into a task, tracked config, command argument or report. Worker Desk supplies this Responses API
+provider when a matching profile is enabled:
 
 | Profile example | Model | Context / output | Reasoning |
 | --- | --- | --- | --- |
 | `ark-auto` | `volcengine-agent-plan/ark-code-latest` | 1,024,000 client ceiling / 32,000 | `max` |
+| `ark-evolving` | `volcengine-agent-plan/doubao-seed-evolving` | 1,024,000 / 65,536 | `max` |
 | `ark-k3` | `volcengine-agent-plan/kimi-k3` | 1,024,000 / 65,536 | `max` |
+| manual only | `volcengine-agent-plan/deepseek-v4.1-flash` | 1,024,000 / 65,536 | `max` |
 
-The SDK is `@ai-sdk/openai` (Responses API), with base URL
-`https://ark.cn-beijing.volces.com/api/plan/v3`. This is the subscription endpoint.
-Credentials stay under the provider ID in OpenCode's private `auth.json`; the runtime overlay
-contains no key. Configuring this provider does not change the interactive OpenCode default model.
+The SDK is `@ai-sdk/openai` and the subscription base URL is
+`https://ark.cn-beijing.volces.com/api/plan/v3`. Provider keys stay in OpenCode's private
+authentication store; the generated runtime overlay contains no key. `ark-code-latest` follows
+Ark's console selection and can route unpredictably, so use fixed Evolving or K3 when model
+identity matters. The 1,024,000 client ceiling prevents local compaction at 256K; the selected
+backend remains authoritative.
 
-`ark-code-latest` follows the Ark console's selected model. Verify that the console is set to
-**Auto** before counting on automatic routing. An Auto response is not proof that K3 served it,
-but its backend is not limited by the official OpenCode example's 256,000-token client metadata.
-On 2026-09-20, a real Agent Plan Auto request accepted 270,062 input tokens and returned HTTP 200.
-Worker Desk therefore advertises a 1,024,000 client ceiling so OpenCode can retain long sessions;
-the model selected by Auto remains the authoritative backend limit. Pin `ark-k3` when the task
-requires a predictable documented 1,024,000-capable model. Both built-in Ark profiles accepted
-`reasoning.effort=max` in real Responses API checks on 2026-09-20.
-
-Official rules checked on 2026-09-20 specify an Auto AFP coefficient of **0.5** through
-2026-11-08, versus **10** for fixed K3. At equal input/output token counts, fixed K3 uses
-20 times the AFP. This compares allowance, not quality, speed or final monetary cost.
-Auto raises its K3 routing proportion during the documented 00:00–08:00 period; it does not
-guarantee K3. Recheck the [current billing rules](https://www.volcengine.com/docs/82379/2516283)
-and [promotion dates](https://www.volcengine.com/docs/82379/2533565) before making cost decisions.
-No price or expiring discount is hard-coded into the scheduler.
-
-Ark's inference key alone does not provide remaining AFP telemetry. Its control-plane
-`GetAFPUsage` API uses a separately authorized account AccessKey ID/Secret. Worker Desk does
-not invent a balance or silently collect those credentials. Without an adapter, Ark quota is
-unknown; execution errors still return to the coordinator. Provider-side overage billing is
-a separate account setting; connecting Worker Desk does not enable it.
+AFP telemetry is separate. `GetAFPUsage` and `GetPersonalPlan` use a Volcengine control-plane
+AccessKey ID/Secret. Register the two metadata-only references described in
+[credentials](credentials.md). Worker Desk signs the fixed Ark OpenAPI requests in-process and
+returns only plan/window metadata. Missing telemetry leaves quota unknown without breaking
+inference. The four windows share one provider runway, and all Ark profiles consume it.
 
 Sources: [OpenCode integration](https://www.volcengine.com/docs/82379/2373741),
 [plan overview](https://www.volcengine.com/docs/82379/2366394),
-[CC Switch usage adapter](https://github.com/farion1231/cc-switch/blob/main/src-tauri/src/services/coding_plan.rs).
+[GetAFPUsage](https://www.volcengine.com/docs/82379/2479847),
+[GetPersonalPlan](https://www.volcengine.com/docs/82379/2546382).
 
-## Ordered stages and weighted pools
+## Default subscription-first policy
 
-An optional `routing_policy` in `~/.config/opencode/delegate-pool.json` overrides the legacy
-single-profile `routing` only for `profile=auto`. Each tier contains ordered stages; each stage
-contains weighted profile members. Example, after adding and enabling the named profiles:
+A fresh `--preset ark-agent-plan` installation creates:
 
 ```json
 {
   "routing_policy": {
+    "fast": [
+      [{"profile": "ark-auto", "weight": 1}],
+      [{"profile": "fast-code", "weight": 1}]
+    ],
     "background": [
-      [{"profile": "senior-code", "weight": 1}],
+      [{"profile": "senior-code", "weight": 1}, {"profile": "ark-evolving", "weight": 1}],
       [{"profile": "ark-auto", "weight": 1}],
       [{"profile": "fast-code", "weight": 1}]
     ],
     "deep": [
       [{"profile": "deep-research", "weight": 2}, {"profile": "ark-k3", "weight": 1}],
+      [{"profile": "senior-code", "weight": 1}, {"profile": "ark-evolving", "weight": 1}],
+      [{"profile": "ark-auto", "weight": 1}],
       [{"profile": "fast-code", "weight": 1}]
     ]
   }
 }
 ```
 
-Only the first stage with available profiles participates. Weighted admissions are durable;
-status polling, scope conflicts and capacity waits do not consume turns. If one member is
-unavailable, the other receives the work. A 2:1 setting targets **task admissions**, not tokens,
-simultaneous running jobs or money. Explicit profiles bypass this policy. Missing tiers retain
-legacy routing, and an empty policy restores legacy routing entirely.
+Only the first stage with an available candidate participates. Explicit profiles bypass policy.
+Weighted admission is durable and counts admitted jobs, not tokens or money. Waiting for owner
+capacity, scope locks or provider recovery consumes no turn.
 
-For quality-first operation, keep Kimi K3 and Ark K3 in the same weighted deep stage. This uses
-both subscriptions continuously and avoids treating Ark K3 as a last resort merely because its
-AFP coefficient is higher. Use Ark Auto for tasks where provider-side selection is acceptable,
-and pin either K3 when model consistency or deep-context quality matters. A sequential Kimi →
-Ark → DeepSeek policy remains available when allowance life is the explicit objective. Exact
-optimization across plans additionally requires live remaining allowances and reset schedules;
-never infer that an unknown quota is free or unlimited. Deploy config changes only when execution
-is idle.
+The baseline favors native Kimi because buying the same Kimi model through Ark is usually a poor
+economic trade. Fresh reset-aware quota telemetry can move the ratios by one step only:
 
-After dispatch, the model stays pinned. If it fails, the coordinator inspects partial work,
-chooses an available alternative and continues only the remaining outcome in a new task.
-The bridge does not replay accepted prompts or deployed side effects.
+| Pool | Baseline | Allowed range |
+| --- | --- | --- |
+| native Kimi K3 : Ark K3 | 2:1 | 3:1, 2:1 or 1:1; Ark K3 never leads |
+| native Kimi K2.8 : Ark Evolving | 1:1 | 2:1, 1:1 or 1:2 |
+
+For each valid window, runway is `remaining fraction / time fraction until reset`. The most
+constrained window represents the provider. Stale, missing or unauthenticated telemetry keeps the
+baseline. Ark Auto, Evolving and K3 share one runway, so heavy Auto use naturally reduces later
+Ark share. Endpoint-confirmed zero removes the provider. A dispatched task remains pinned; the
+coordinator inspects partial work before deliberately continuing on another model.
+
+## AFP-equivalent
+
+Worker Desk stores cost assumptions separately from real quota. Defaults are configurable in the
+console:
+
+```text
+1 AFP-equivalent = CNY 0.002
+CNY 1 = 500 AFP-equivalent
+Kimi CNY 699 = 349,500 AFP-equivalent (nominal purchase-cost comparison only)
+```
+
+This does **not** mean Kimi supplies 349,500 AFP or a known token allowance. If a completed Kimi
+billing cycle processed `M` million observed tokens, `349500 / M` is only that cycle's blended
+nominal AFP-equivalent per million. It cannot separate K3 from K2.8 without per-model usage or
+multiple independently observed mixes.
+
+With configurable assumptions Auto=50, Evolving=250 and Ark K3=1000 AFP per million tokens, and
+baseline shares K3 2:1 plus K2.8/Evolving 1:1:
+
+```text
+Ark AFP = 333.33D + 125N + 50S
+```
+
+`D`, `N` and `S` are millions of deep, normal and small-task tokens. Under dynamic shares the
+general expression is `1000*rD*D + 250*rN*N + 50*S`, where `rD` is 1/4, 1/3 or 1/2 and `rN` is
+1/3, 1/2 or 2/3. These coefficients are estimates and promotion terms can change. The live Ark
+`Used` value is authoritative; the console shows it separately from estimates and nominal cost.

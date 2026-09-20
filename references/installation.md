@@ -68,13 +68,18 @@ Choose **one** fresh-install method:
 # Replace the placeholder with an actual provider/model identifier.
 python3 scripts/install.py --model YOUR_PROVIDER/YOUR_MODEL
 
-# Or opt into the preset if those accounts/models are appropriate.
+# Or opt into one of the presets if those accounts/models are appropriate.
 python3 scripts/install.py --preset deepseek-kimi
+python3 scripts/install.py --preset ark-agent-plan
 
 # Append --no-start to provision files without starting services.
 ```
 
-A custom model initially backs all three profiles. The preset configures DeepSeek V4.1 Flash, Kimi K2.8 Preview and Kimi K3 with `max` reasoning. A preset does not create provider accounts or grant model access. Existing configurations are preserved even when model/preset flags are supplied.
+A custom model initially backs all three profiles. `deepseek-kimi` configures DeepSeek V4.1 Flash,
+Kimi K2.8 Preview and Kimi K3. `ark-agent-plan` adds Ark Auto, Seed Evolving and Ark K3 plus the
+subscription-first weighted policy described in [routing](routing.md). Both use `max` reasoning.
+A preset does not create provider accounts or grant model access. Existing configurations are
+preserved even when model/preset flags are supplied.
 
 The installer prints its actual paths and loopback URLs; **ports are selected locally, not fixed**. It installs a CLI wrapper and copies runtime/skill files outside the source checkout.
 
@@ -143,7 +148,7 @@ A configured profile, connected provider and successful model request are three 
 ~/.local/bin/delegate-opencode quota --refresh
 ```
 
-Inspect the JSON, not just the exit status: `doctor` can report a `server_error` in a successful CLI invocation. Check server health, registered profiles and `daemon.healthy`. Usage adapters currently cover DeepSeek and Kimi; another provider lacking quota telemetry is not necessarily unusable.
+Inspect the JSON, not just the exit status: `doctor` can report a `server_error` in a successful CLI invocation. Check server health, registered profiles and `daemon.healthy`. Usage adapters cover DeepSeek, Kimi and Ark Agent Plan; Ark AFP telemetry additionally requires the control-plane references in [credentials](credentials.md).
 
 For actual execution verification, explicitly run the [README first task](../README.md#first-task), review `collect`, and inspect a transcript if necessary. This uses model allowance. A service-health check alone does not prove provider access or task quality.
 

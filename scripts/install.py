@@ -19,6 +19,8 @@ import sys
 import time
 import urllib.parse
 
+from providers import ARK_PROVIDER
+
 ROOT = Path(__file__).resolve().parent.parent
 INSTALL = Path(os.environ.get('DELEGATE_INSTALL', '~/.codex/skills/delegate-opencode')).expanduser()
 STATE = Path(os.environ.get('DELEGATE_STATE', '~/.local/state/delegate-opencode')).expanduser()
@@ -37,7 +39,43 @@ PRESETS = {
         'fast-code': {'model': 'deepseek/deepseek-flash', 'variant': 'max', 'label': 'DeepSeek V4.1 Flash'},
         'senior-code': {'model': 'kimi-for-coding/kimi-for-coding', 'variant': 'max', 'label': 'Kimi K2.8 Preview'},
         'deep-research': {'model': 'kimi-for-coding/k3', 'variant': 'max', 'label': 'Kimi K3'},
-    }
+    },
+    # Agent Plan ladder: every fixed Ark model and Auto share one AFP allowance,
+    # so the automatic policy load-balances the same-capability pairs by
+    # provider quota headroom and falls through Auto before direct DeepSeek.
+    # ark-deepseek is intentionally not a default profile: it stays available in
+    # provider metadata for manual selection only.
+    'ark-agent-plan': {
+        'fast-code': {'model': 'deepseek/deepseek-flash', 'variant': 'max', 'label': 'DeepSeek V4.1 Flash'},
+        'senior-code': {'model': 'kimi-for-coding/kimi-for-coding', 'variant': 'max', 'label': 'Kimi K2.8 Preview'},
+        'deep-research': {'model': 'kimi-for-coding/k3', 'variant': 'max', 'label': 'Kimi K3'},
+        'ark-evolving': {'model': ARK_PROVIDER + '/doubao-seed-evolving', 'variant': 'max', 'label': 'Ark Doubao Seed Evolving'},
+        'ark-k3': {'model': ARK_PROVIDER + '/kimi-k3', 'variant': 'max', 'label': 'Ark Kimi K3'},
+        'ark-auto': {'model': ARK_PROVIDER + '/ark-code-latest', 'variant': 'max', 'label': 'Ark Auto'},
+    },
+}
+# The automatic ladder: K3 pair (2:1) → K2.8/Evolving pair (1:1) → Ark Auto →
+# direct DeepSeek. Same-capability pairs are one quota-aware pool each, grouped
+# by provider so equal headroom preserves the exact 2:1 and 1:1 baselines and
+# only materially imbalanced valid quota temporarily shifts effective shares.
+# Auto is its own ordered stage, never mixed into a random pool; direct DeepSeek
+# is the final fallback. ark-deepseek stays out of automatic routing (manual only).
+DEFAULT_ROUTING_POLICY = {
+    'fast': [
+        [{'profile': 'ark-auto', 'weight': 1}],
+        [{'profile': 'fast-code', 'weight': 1}],
+    ],
+    'background': [
+        [{'profile': 'senior-code', 'weight': 1}, {'profile': 'ark-evolving', 'weight': 1}],
+        [{'profile': 'ark-auto', 'weight': 1}],
+        [{'profile': 'fast-code', 'weight': 1}],
+    ],
+    'deep': [
+        [{'profile': 'deep-research', 'weight': 2}, {'profile': 'ark-k3', 'weight': 1}],
+        [{'profile': 'senior-code', 'weight': 1}, {'profile': 'ark-evolving', 'weight': 1}],
+        [{'profile': 'ark-auto', 'weight': 1}],
+        [{'profile': 'fast-code', 'weight': 1}],
+    ],
 }
 # Concurrency is capped per owning Codex conversation (owner_thread_id), never
 # globally or per provider; the scheduler reads max_parallel_per_owner (default 4).
@@ -246,6 +284,8 @@ def load_or_build_config(args, opencode):
     if not enabled:
         fail('At least one enabled profile is required')
     c.setdefault('routing', {tier: name if name in enabled else enabled[0] for tier, name in zip(('fast', 'background', 'deep'), PROFILE_NAMES)})
+    if fresh and args.preset == 'ark-agent-plan':
+        c['routing_policy'] = DEFAULT_ROUTING_POLICY
     # Legacy global/provider cap fields (max_parallel, max_kimi_parallel,
     # provider_limits) are never written for new installs and are left inert
     # on disk for existing configs; max_parallel_per_owner is the only cap.

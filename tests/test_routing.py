@@ -910,5 +910,64 @@ class WorkerWindowRecoveryTests(unittest.TestCase):
         self.assertEqual(waited['recovery']['blocked_provider'], 'kimi-for-coding')
 
 
+class DynamicRunwayTests(unittest.TestCase):
+    def sample(self, remaining_percent):
+        return {'state': 'ok', 'available': True, 'stale': False,
+                'windows': [{'valid': True, 'remaining_percent': remaining_percent}]}
+
+    def test_equal_runway_preserves_deep_two_to_one_and_mid_one_to_one(self):
+        q = {'kimi-for-coding': self.sample(50), 'volcengine-agent-plan': self.sample(50)}
+        deep = [{'profile': 'native', 'weight': 2}, {'profile': 'ark', 'weight': 1}]
+        effective, reason, info = routing.dynamics(
+            deep, {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q, now=1)
+        self.assertEqual(effective, deep)
+        self.assertEqual(reason, 'baseline_balanced')
+        self.assertAlmostEqual(info['native']['share'], 2 / 3)
+        mid = [{'profile': 'native', 'weight': 1}, {'profile': 'ark', 'weight': 1}]
+        effective, _, _ = routing.dynamics(
+            mid, {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q, now=1)
+        self.assertEqual([e['weight'] for e in effective], [1, 1])
+
+    def test_kimi_pressure_moves_only_one_bounded_step_toward_ark(self):
+        q = {'kimi-for-coding': self.sample(20), 'volcengine-agent-plan': self.sample(100)}
+        deep, reason, _ = routing.dynamics(
+            [{'profile': 'native', 'weight': 2}, {'profile': 'ark', 'weight': 1}],
+            {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q, now=1)
+        self.assertEqual([e['weight'] for e in deep], [1, 1])
+        self.assertEqual(reason, 'runway_shift_right')
+        mid, _, _ = routing.dynamics(
+            [{'profile': 'native', 'weight': 1}, {'profile': 'ark', 'weight': 1}],
+            {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q, now=1)
+        self.assertEqual([e['weight'] for e in mid], [1, 2])
+
+    def test_ark_pressure_moves_only_one_bounded_step_toward_native_kimi(self):
+        q = {'kimi-for-coding': self.sample(100), 'volcengine-agent-plan': self.sample(20)}
+        deep, _, _ = routing.dynamics(
+            [{'profile': 'native', 'weight': 2}, {'profile': 'ark', 'weight': 1}],
+            {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q, now=1)
+        self.assertEqual([e['weight'] for e in deep], [3, 1])
+        mid, _, _ = routing.dynamics(
+            [{'profile': 'native', 'weight': 1}, {'profile': 'ark', 'weight': 1}],
+            {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q, now=1)
+        self.assertEqual([e['weight'] for e in mid], [2, 1])
+
+    def test_unknown_or_stale_telemetry_never_changes_baseline(self):
+        entries = [{'profile': 'native', 'weight': 2}, {'profile': 'ark', 'weight': 1}]
+        q = {'kimi-for-coding': self.sample(20),
+             'volcengine-agent-plan': dict(self.sample(100), stale=True)}
+        effective, reason, _ = routing.dynamics(
+            entries, {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q, now=1)
+        self.assertEqual(effective, entries)
+        self.assertEqual(reason, 'telemetry_unknown')
+
+    def test_profiles_on_one_provider_share_one_signal_and_do_not_self_balance(self):
+        entries = [{'profile': 'ark-a', 'weight': 2}, {'profile': 'ark-b', 'weight': 1}]
+        effective, reason, _ = routing.dynamics(
+            entries, {'ark-a': 'volcengine-agent-plan', 'ark-b': 'volcengine-agent-plan'},
+            {'volcengine-agent-plan': self.sample(80)}, now=1)
+        self.assertEqual(effective, entries)
+        self.assertEqual(reason, 'single_provider')
+
+
 if __name__ == '__main__':
     unittest.main()

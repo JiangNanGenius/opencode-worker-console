@@ -14,6 +14,7 @@ class ArkProviderTests(unittest.TestCase):
         overlay = server.runtime_overlay({'profiles': {
             'senior-code': {'model': 'kimi-for-coding/kimi-for-coding', 'variant': 'max'},
             'ark-auto': {'model': ARK_PROVIDER + '/ark-code-latest', 'variant': 'max'},
+            'ark-evolving': {'model': ARK_PROVIDER + '/doubao-seed-evolving', 'variant': 'max'},
             'ark-k3': {'model': ARK_PROVIDER + '/kimi-k3', 'variant': 'max'},
         }})
         self.assertIn('kimi-for-coding', overlay['provider'])
@@ -22,6 +23,8 @@ class ArkProviderTests(unittest.TestCase):
         self.assertEqual(ark['options'], {'baseURL': 'https://ark.cn-beijing.volces.com/api/plan/v3'})
         self.assertEqual(ark['models']['ark-code-latest']['limit']['context'], 1024000)
         self.assertEqual(ark['models']['kimi-k3']['limit']['context'], 1024000)
+        self.assertEqual(ark['models']['doubao-seed-evolving']['limit']['context'], 1024000)
+        self.assertEqual(ark['models']['deepseek-v4.1-flash']['limit']['context'], 1024000)
         self.assertNotIn('apiKey', json.dumps(overlay))
         for model in ark['models'].values():
             self.assertEqual(model['variants']['max']['reasoningEffort'], 'max')

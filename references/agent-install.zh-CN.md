@@ -35,7 +35,10 @@ cd ~/Developer/opencode-worker-console
 python3 scripts/install.py --model YOUR_PROVIDER/YOUR_MODEL
 ```
 
-只有用户选择或已有上下文明确时才用 `--preset deepseek-kimi`；预设不创建账号，也不授予模型访问权。用户只要求安装文件时追加 `--no-start`。
+只有用户选择或已有上下文明确时才用 `--preset deepseek-kimi` 或
+`--preset ark-agent-plan`。方舟预设会加入套餐优先加权策略，需要原厂 Kimi、方舟 Agent Plan
+和 DeepSeek 直连访问权；预设不创建账号，也不授予模型访问权。用户只要求安装文件时追加
+`--no-start`。
 
 已有 OpenCode 复用，缺少时安装固定官方版本。安装器创建独立运行时/状态并输出实际地址，不能硬编码端口。覆盖变量为 `DELEGATE_INSTALL`、`DELEGATE_STATE`、`DELEGATE_CONFIG`、`DELEGATE_BIN_DIR`，后续统一使用生成的 wrapper。
 

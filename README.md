@@ -78,6 +78,17 @@ Or opt into the DeepSeek/Kimi bundle:
 python3 scripts/install.py --preset deepseek-kimi
 ```
 
+Or install the subscription-first Ark/Kimi/DeepSeek ladder:
+
+```sh
+python3 scripts/install.py --preset ark-agent-plan
+```
+
+That preset uses Ark Auto for fast work; Kimi K2.8 and Ark Seed Evolving at 1:1 for
+ordinary work; native Kimi K3 and Ark K3 at 2:1 for deep work; then Ark Auto and direct
+DeepSeek as ordered fallbacks. Live quota runway can move either paired ratio by one bounded
+step without rewriting the saved baseline.
+
 These options initialize a **fresh** installation, not replace existing profiles. `--no-start` installs without launching services. [Full installation guide](references/installation.md): provider login, managed binary path, passwords, verification, updates and recovery.
 
 ## Profiles select models, not job restrictions
@@ -94,7 +105,7 @@ All profiles are general-purpose agents. Keep routing names while changing their
 
 - **Tasks:** expand details directly under a task; inspect live activity and input/output/reasoning/cache tokens without leaving the console. The current filter shows recorded worker totals; these exclude coordinator usage and are not a cost estimate. Parent/child ownership, live guidance, structured errors and full transcripts remain available.
 - **Sessions:** search, create, rename, fork, archive/restore, workspace binding, deletion and native OpenCode links. Forking alone sends no prompt.
-- **Models and usage:** configurable profiles/routing; DeepSeek balance and Kimi plan windows/reset times. Other providers can execute without a usage adapter.
+- **Models, usage and economics:** configurable profiles/routing; DeepSeek balance, Kimi plan windows and Ark AFP windows. The console shows live dynamic shares and a configurable cost ruler (`1 AFP-equivalent = ¥0.002` by default); AFP-equivalent is not Kimi quota.
 - **Parallel work:** four running workers per owning Codex conversation by default; independent capacity across conversations. Conflicting files/resources and provider availability still govern dispatch.
 - **Workspaces:** disjoint shared scopes, remote operational targets or isolated Git worktrees; review patches before integration.
 - **Long jobs:** no artificial model-step, tool-call or total-runtime cap. Observe and guide through completion; never blindly replay uncertain operations.

@@ -108,8 +108,10 @@ informed recovery decision, not by habit.
 | A specific model, independent second opinion, or latency-critical exception | Explicit enabled profile, with a reason |
 
 Configured policy stages are tried in order before dispatch. Available members within one
-stage share admissions by weight. For example, ordinary work can use Kimi → Ark Auto →
-DeepSeek, while deep work uses either Kimi K3 → Ark K3 → DeepSeek or a 2:1 K3 pool.
+stage share admissions by weight. The built-in Agent Plan policy is intentionally broad:
+fast work uses Ark Auto then direct DeepSeek; ordinary work uses native Kimi K2.8 and Ark
+Seed Evolving at 1:1, then Ark Auto and direct DeepSeek; deep work uses native Kimi K3 and
+Ark K3 at 2:1, then the ordinary pair, Ark Auto and direct DeepSeek.
 Without a policy, legacy routing maps fast/background/deep to the configured single profiles.
 Inspect the configured policy in Models & routing and use `quota` for provider availability;
 quota unknown is not unlimited.
@@ -128,8 +130,12 @@ Broad or ambiguous work stays deep even if its eventual patch is small. Give a c
 one complete outcome instead of many tiny lookups. Do not replay large context across providers
 to chase a discount mid-session. Keep accepted work on its pinned model, reuse relevant sessions,
 and pass compact evidence to the coordinator. Use `stats` to assess actual task distribution;
-job counts are not token, money or quota ratios. Keep the highest **verified supported** reasoning
-variant; the built-in Kimi, DeepSeek and Ark profiles currently support `max`.
+job counts are not token, money or quota ratios. Fresh quota telemetry adjusts paired admissions
+by at most one discrete step: K3 can move only among 3:1, 2:1 and 1:1, while K2.8/Evolving can
+move only among 2:1, 1:1 and 1:2. Stale or unknown telemetry keeps the baseline. All Ark profiles
+share one AFP runway, so Auto usage reduces the same allowance signal used by Ark K3/Evolving.
+Keep the highest **verified supported** reasoning variant; the built-in Kimi, DeepSeek and Ark
+profiles currently support `max`.
 
 Each owning Codex conversation has independent worker capacity (default four). There is no
 shared global/provider cap; K2.8 and K3 share account quota. Use independent jobs for truly

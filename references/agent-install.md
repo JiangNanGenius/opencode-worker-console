@@ -35,7 +35,10 @@ Use the user's actual model identifier, **not the literal placeholder**:
 python3 scripts/install.py --model YOUR_PROVIDER/YOUR_MODEL
 ```
 
-Use `--preset deepseek-kimi` only when the user chose that bundle or the existing task context establishes it. It requires access to those providers/models; the preset is not an account. Append `--no-start` if the user asked to provision without starting.
+Use `--preset deepseek-kimi` or `--preset ark-agent-plan` only when the user chose that bundle or
+the existing task context establishes it. The Ark preset adds the subscription-first weighted
+policy; it requires native Kimi, Ark Agent Plan and direct DeepSeek access. A preset is not an
+account. Append `--no-start` if the user asked to provision without starting.
 
 OpenCode is reused when available or installed at the pinned official version. The installer creates independent runtime/state directories and prints actual paths/URLs. There is no fixed port to hard-code. Explicit overrides: `DELEGATE_INSTALL`, `DELEGATE_STATE`, `DELEGATE_CONFIG`, `DELEGATE_BIN_DIR`; use the resulting wrapper consistently.
 

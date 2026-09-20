@@ -80,9 +80,14 @@ def state():
         p['usage'] = task_activity.usage_for_task(t)
         entries.append(p)
     health = service_health()
-    return redact({'tasks': entries, 'quota': quota.view(read_json(STATE / 'quota.json', {})),
+    c = config()
+    quota_view = quota.view(read_json(STATE / 'quota.json', {}))
+    import economics
+    return redact({'tasks': entries, 'quota': quota_view,
+                   'routing_status': quota.routing_status(c, quota_view),
+                   'economics': economics.summary(c, quota_view),
                    'pool_healthy': all(health.values()), 'services': health,
-                   'profiles': {k: {'label': v.get('label', v['model']), 'model': v['model']} for k, v in config()['profiles'].items()},
+                   'profiles': {k: {'label': v.get('label', v['model']), 'model': v['model']} for k, v in c['profiles'].items()},
                    'updated_at': time.time(), 'max_parallel_per_owner': management.settings()['max_parallel_per_owner']})
 
 

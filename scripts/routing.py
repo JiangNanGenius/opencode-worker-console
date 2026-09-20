@@ -30,6 +30,48 @@ MAX_TIER_PROFILES = 16
 MAX_WEIGHT = 100
 MAX_CREDIT = MAX_WEIGHT * MAX_STAGE_ENTRIES
 
+# Quota-aware dynamic admission weights inside one same-capability stage.
+# Stored policy weights stay the baseline preference; only the in-memory advance
+# uses the effective weights below, so user configuration is never rewritten by
+# telemetry. The signal is a reset-aware runway: for each valid window,
+# remaining_fraction / time_fraction_remaining, targeting simultaneous plan
+# depletion near each provider's window reset. Unknown, stale or unauthenticated
+# telemetry falls back to base weights; a zero authoritative window is enforced
+# earlier by provider admission (quota.allowed), which removes that candidate.
+#
+# Shifting is discrete and modest, never exact-depletion chasing with extreme
+# ratios. A two-provider subscription pool only ever moves one step from its
+# baseline ratio (allowed ladder per baseline below), with hysteresis so small
+# runway differences stay at baseline and recovery returns toward baseline.
+RUNWAY_MAX = 4.0            # Runway pressure cap: surplus beyond 4x on-track stops shifting.
+RUNWAY_STEP = 0.15          # Material normalized runway-signal gap that moves one ratio step.
+RUNWAY_HOLD = RUNWAY_STEP / 2  # Smaller drift than this stays at baseline (hysteresis).
+
+# Economic invariant, encoded as policy — not a generic symmetric max-scale.
+#
+# Native Kimi subscription is always the PRIMARY source for Kimi models: Ark
+# Kimi K3 bills the same models through expensive AFP, so Ark K3 must NEVER
+# exceed the native Kimi share. Runway may relax the deep pair from 2:1 toward
+# 1:1 when native Kimi is constrained, but never to 1:2 (Ark K3 leading). The
+# mid pool compares two DIFFERENT models — native K2.8 versus the cheaper Ark
+# Evolving — so after capability validation it may shift from 1:1 toward
+# Evolving, but only to 1:2. Ark Auto is a separate discounted/uncertain-routing
+# ordered stage and is never priced as fixed Ark K3.
+#
+# Each ladder is keyed by the stored (left, right) baseline weights, ordered
+# from most-left-leaning to most-right-leaning. The baseline sits at index 1 and
+# only ONE step either way is reachable; recovery moves back toward baseline.
+# There is deliberately no 1:4/1:8 or arbitrary DYNAMIC_MAX_SCALE blowup.
+_RATIO_LADDERS = {
+    # deep: native Kimi K3 (left) vs Ark Kimi K3 (right). Ark K3 may catch up to
+    # parity (1:1) under Kimi constraint but never lead; 3:1 leans harder into
+    # the cheaper native subscription when Kimi has surplus runway.
+    (2, 1): [(3, 1), (2, 1), (1, 1)],
+    # background: native Kimi K2.8 (left) vs Ark Evolving (right). Evolving is
+    # cheaper, so it may take the lead to 1:2; 2:1 leans back to native K2.8.
+    (1, 1): [(2, 1), (1, 1), (1, 2)],
+}
+
 
 def _weight(value):
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MAX_WEIGHT:
@@ -158,6 +200,202 @@ def _credit(value):
     if isinstance(value, bool) or not isinstance(value, int):
         return 0
     return max(-MAX_CREDIT, min(value, MAX_CREDIT))
+
+
+def _window_runway(w, now):
+    """Reset-aware runway pressure for one valid window, or None when unusable.
+
+    runway = remaining_fraction / time_fraction_remaining, so a provider exactly
+    on track to deplete at its window reset reads ~1, a provider burning ahead
+    of schedule reads <1 (more constrained) and a provider with surplus relative
+    to time-to-reset reads >1. Timing comes from subscribed_at→resets_at when
+    both are valid, else duration_minutes ending at resets_at; when no usable
+    timing exists it falls back safely to the bare remaining fraction. The value
+    is capped at RUNWAY_MAX so surplus stops shifting weights past a bound.
+    """
+    if not isinstance(w, dict) or w.get('valid') is not True:
+        return None
+    pct = w.get('remaining_percent')
+    if isinstance(pct, bool) or not isinstance(pct, (int, float)):
+        return None
+    remaining_fraction = max(0.0, min(100.0, float(pct))) / 100.0
+    resets = _iso_seconds(w.get('resets_at'))
+    start = _iso_seconds(w.get('subscribed_at'))
+    duration = w.get('duration_minutes')
+    duration_seconds = duration * 60 if isinstance(duration, (int, float)) and not isinstance(duration, bool) and duration > 0 else None
+    time_fraction = None
+    if resets is not None and resets > now:
+        total = None
+        if start is not None and resets > start:
+            total = resets - start
+        elif duration_seconds:
+            total = duration_seconds
+        if total and total > 0:
+            left = resets - now
+            time_fraction = max(0.0, min(1.0, left / total))
+    if time_fraction is None or time_fraction <= 0:
+        pressure = remaining_fraction
+    else:
+        pressure = remaining_fraction / time_fraction
+    return max(0.0, min(RUNWAY_MAX, pressure))
+
+
+def _iso_seconds(value):
+    """ISO-8601 or epoch seconds/ms to epoch seconds; None when unparseable."""
+    from datetime import datetime, timezone
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        seconds = value / 1000 if value >= 1e12 else value
+        return seconds if seconds > 0 else None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or len(text) > 64:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace('Z', '+00:00'))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    return None
+
+
+def _runway(provider_view, now):
+    """Most constraining valid runway signal for one provider, or None.
+
+    Only fresh, positively sampled, unblocked telemetry counts; anything else is
+    None so the caller falls back to base weights instead of guessing. A valid
+    zero-remaining window yields 0.0 here, but provider admission has already
+    removed that candidate entirely, so a starved provider never lingers in a
+    stage with a zero effective weight. One provider yields one signal no matter
+    how many of its profiles sit in the stage.
+    """
+    if not isinstance(provider_view, dict) or provider_view.get('stale', True):
+        return None
+    if provider_view.get('state') != 'ok' or provider_view.get('available') is not True:
+        return None
+    signals = []
+    for w in provider_view.get('windows') or []:
+        runway = _window_runway(w, now)
+        if runway is not None:
+            signals.append(runway)
+    if not signals:
+        return None
+    return min(signals)
+
+
+def dynamics(entries, provider_by_profile, quota_view=None, now=None):
+    """Effective admission weights and a safe reason for one available stage.
+
+    entries are the stage's already-admissible candidates in policy order with
+    their stored base weights. provider_by_profile maps profile name → provider
+    id; quota_view maps provider id → the provider view from quota.view. ``now``
+    is one deterministic timestamp for the whole decision (default: current
+    time), so a stage never mixes samples from different instants.
+
+    Provider grouping is load-bearing: every profile on one provider (Ark Auto,
+    K3, Evolving, the manual DeepSeek copy) shares a single AFP allowance and a
+    single runway signal. Auto consumption lowers the same Ark pressure that
+    later K3/Evolving admissions use, so the bounded adjustment naturally shifts
+    those pools back toward Kimi. The signal is never counted once per profile,
+    and Auto does not create a separate allowance.
+
+    Kimi stays the primary baseline: the discrete ladders below only move one
+    step from the stored ratio on material runway imbalance and return toward
+    baseline on recovery. The mid 1:1 pool is a same-capability baseline, not a
+    1:1 total provider-spend target, and the adjustment never forces
+    simultaneous depletion at the expense of Kimi-primary economics. The stored
+    policy itself is never touched; this is an in-memory dispatch input.
+    """
+    import time as _time
+    now = _time.time() if now is None else now
+    base = {entry['profile']: entry['weight'] for entry in entries}
+    total_base = sum(base.values()) or 1
+    info = {name: {'base_weight': weight, 'base_share': weight / total_base,
+                   'effective_weight': weight, 'share': weight / total_base,
+                   'provider': provider_by_profile.get(name), 'runway': None}
+            for name, weight in base.items()}
+    if len(entries) < 2:
+        return list(entries), 'single_candidate', info
+    quota_view = quota_view if isinstance(quota_view, dict) else {}
+    # One runway sample per provider, shared across all of its profiles.
+    providers = []
+    for entry in entries:
+        provider = provider_by_profile.get(entry['profile'])
+        if provider not in providers:
+            providers.append(provider)
+    if len(providers) < 2:
+        # All candidates sit on one provider: headroom cannot differentiate
+        # them, so the stored baseline applies unchanged.
+        runway = _runway(quota_view.get(providers[0]), now) if providers else None
+        for name in base:
+            info[name]['runway'] = runway
+        return list(entries), 'single_provider', info
+    runway_by_provider = {provider: _runway(quota_view.get(provider), now) for provider in providers}
+    for name in base:
+        info[name]['runway'] = runway_by_provider.get(info[name]['provider'])
+    if any(runway is None for runway in runway_by_provider.values()):
+        # Telemetry unknown/stale for any provider in the stage: keep the
+        # stored baseline rather than loading partial telemetry onto one side.
+        return list(entries), 'telemetry_unknown', info
+    # Each provider group's baseline weight is the sum of its member profiles'
+    # base weights. The normalized runway signal is (group baseline weight ×
+    # runway), so equal on-track runway reduces exactly to the stored baseline
+    # (deep stays 2:1, background stays 1:1); only material imbalance moves one
+    # discrete step.
+    group_base = {}
+    for entry in entries:
+        provider = provider_by_profile.get(entry['profile'])
+        group_base[provider] = group_base.get(provider, 0) + entry['weight']
+    total_group_base = sum(group_base.values()) or 1
+    weighted = {provider: group_base[provider] * runway_by_provider[provider] for provider in providers}
+    total_weighted = sum(weighted.values())
+    if total_weighted <= 0:
+        return list(entries), 'telemetry_unknown', info
+    group_signal = {provider: weighted[provider] / total_weighted for provider in providers}
+    group_base_share = {provider: group_base[provider] / total_group_base for provider in providers}
+    divergence = max(abs(group_signal[provider] - group_base_share[provider]) for provider in providers)
+    if divergence < RUNWAY_HOLD:
+        return list(entries), 'baseline_balanced', info
+
+    # Discrete bounded ratio for a two-provider subscription pool. Ordered by
+    # policy, left is the first provider, right the second.
+    left, right = providers[0], providers[1]
+    ladder = _RATIO_LADDERS.get((group_base[left], group_base[right]))
+    if ladder is None:
+        # Not a recognized two-provider baseline: stay at stored weights rather
+        # than inventing an unbounded ratio.
+        return list(entries), 'baseline_unsupported', info
+    baseline_index = ladder.index((group_base[left], group_base[right]))
+    # Positive advantage means the left provider has more runway than baseline
+    # implies; negative means the right provider does. One step per material
+    # imbalance; hysteresis keeps small gaps at baseline.
+    advantage = group_signal[left] - group_base_share[left]
+    if advantage >= RUNWAY_STEP:
+        step = -1 if baseline_index > 0 else 0  # shift share toward left
+    elif advantage <= -RUNWAY_STEP:
+        step = 1 if baseline_index < len(ladder) - 1 else 0  # shift toward right
+    else:
+        step = 0
+    ratio = ladder[baseline_index + step] if step else ladder[baseline_index]
+    if step == 0:
+        return list(entries), 'hysteresis_hold', info
+    group_effective = {left: ratio[0], right: ratio[1]}
+    out = []
+    for entry in entries:
+        provider = provider_by_profile.get(entry['profile'])
+        members = [e for e in entries if provider_by_profile.get(e['profile']) == provider]
+        member_base = sum(e['weight'] for e in members) or 1
+        share = group_effective[provider] * entry['weight'] / member_base
+        out.append(dict(entry, weight=max(1, int(round(share)))))
+    total_effective = sum(e['weight'] for e in out) or 1
+    for entry in out:
+        info[entry['profile']]['effective_weight'] = entry['weight']
+        info[entry['profile']]['share'] = entry['weight'] / total_effective
+    reason = ('runway_shift_left' if step == -1 else 'runway_shift_right')
+    return out, reason, info
 
 
 def advance(entries, credits):

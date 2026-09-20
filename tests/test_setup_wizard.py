@@ -128,6 +128,12 @@ class WizardTests(unittest.TestCase):
         self.assertEqual(out.count('admin/admin'), 1)
         self.assertTrue(console_auth.verify_credentials('admin', 'admin', self.state))
 
+    def test_fresh_install_choose_ark_agent_plan_preset(self):
+        self.run_wizard('en', ['3', '', 'n', 'y', 'y'])
+        c = json.loads(self.config.read_text())
+        self.assertEqual(c['profiles'], install.PRESETS['ark-agent-plan'])
+        self.assertEqual(c['routing_policy'], install.DEFAULT_ROUTING_POLICY)
+
     def test_fresh_install_custom_model_validates_and_retries(self):
         out = self.run_wizard('en', ['2', 'not a provider!', 'x', 'acme', 'worker-7', '', 'n', 'y', 'y'])
         self.assertIn('Invalid model choice', out)
@@ -151,7 +157,7 @@ class WizardTests(unittest.TestCase):
 
     def test_cancel_at_model_choice_makes_no_changes(self):
         with self.assertRaises(setup_wizard.Cancelled) as error:
-            self.run_wizard('en', ['3'])
+            self.run_wizard('en', ['4'])
         self.assertIn('no changes', str(error.exception))
         self.assert_untouched()
 

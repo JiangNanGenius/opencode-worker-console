@@ -55,6 +55,20 @@ delegate-opencode credential register deploy-env --env EXAMPLE_DEPLOY_TOKEN
 registered timestamp, availability). `remove` deletes reference metadata only;
 it never deletes or modifies the source file or environment.
 
+Ark Agent Plan inference authentication remains in OpenCode. Optional AFP telemetry uses a
+separate Volcengine control-plane AK/SK pair. Put each value in its own owner-only file outside
+every repository and register these fixed metadata names:
+
+```sh
+delegate-opencode credential register volcengine-control-ak --file /private/path/ark-control-ak
+delegate-opencode credential register volcengine-control-sk --file /private/path/ark-control-sk
+delegate-opencode quota --refresh
+```
+
+The console returns only the safe source label and normalized plan windows. It never returns
+the values, their hashes or source paths. Without these references, inference still works and
+Ark quota stays unknown.
+
 File references must be absolute, regular, owned by the current user, owner-only
 (0600 or stricter), non-empty, at most 64 KiB and not a symlink. A file already
 tracked by Git is rejected at registration; this checks the current index only and

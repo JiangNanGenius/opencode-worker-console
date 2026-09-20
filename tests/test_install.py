@@ -125,6 +125,18 @@ class InstallTests(unittest.TestCase):
         for legacy in ('max_parallel', 'max_kimi_parallel', 'provider_limits'):
             self.assertNotIn(legacy, c)
 
+    def test_ark_agent_plan_preset_installs_complete_weighted_ladder(self):
+        self.run_install('--preset', 'ark-agent-plan')
+        c = json.loads(self.config.read_text())
+        self.assertEqual(c['profiles'], install.PRESETS['ark-agent-plan'])
+        self.assertEqual(c['routing_policy'], install.DEFAULT_ROUTING_POLICY)
+        self.assertEqual(c['routing_policy']['deep'][0], [
+            {'profile': 'deep-research', 'weight': 2}, {'profile': 'ark-k3', 'weight': 1}])
+        self.assertEqual(c['routing_policy']['background'][0], [
+            {'profile': 'senior-code', 'weight': 1}, {'profile': 'ark-evolving', 'weight': 1}])
+        self.assertEqual(c['routing_policy']['fast'][0], [{'profile': 'ark-auto', 'weight': 1}])
+        self.assertNotIn('ark-deepseek', c['profiles'])
+
     def test_existing_config_unchanged_except_missing_defaults(self):
         existing = {'version': 1, 'server_url': 'http://127.0.0.1:41234',
                     'opencode_binary': '/old/opencode', 'max_parallel': 5, 'max_kimi_parallel': 2,

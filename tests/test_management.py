@@ -205,7 +205,9 @@ class ManagementTests(unittest.TestCase):
         result = management.settings()
         self.assertEqual(set(result.keys()), {'profiles', 'max_parallel_per_owner',
                                               'kimi_reserve_percent', 'revision', 'cleanup', 'auto_approve',
-                                              'kimi_monthly_reset'})
+                                              'kimi_monthly_reset', 'economics'})
+        self.assertEqual(result['economics']['afp_cny_per_unit'], 0.002)
+        self.assertEqual(result['economics']['kimi_plan_cny'], 699.0)
         self.assertEqual(result['max_parallel_per_owner'], 4)
         self.assertEqual(result['profiles']['fast-code'],
                          {'model': 'deepseek/deepseek-flash', 'label': 'Flash', 'variant': 'high', 'enabled': True})

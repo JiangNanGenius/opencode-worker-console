@@ -31,7 +31,8 @@ T = {
                     'No changes were made.\n'
                     'For unattended installation run instead:\n'
                     '  python3 scripts/install.py --model provider/model [--no-start]\n'
-                    '  python3 scripts/install.py --preset deepseek-kimi [--no-start]'),
+                    '  python3 scripts/install.py --preset deepseek-kimi [--no-start]\n'
+                    '  python3 scripts/install.py --preset ark-agent-plan [--no-start]'),
         'fresh_found': 'No existing configuration was found; this will be a fresh install.',
         'existing_found': 'An existing installation was found:',
         'config_unreadable': 'The existing configuration at {0} is not valid JSON; refusing to '
@@ -44,6 +45,7 @@ T = {
                            'while workers are idle; setup never replaces them silently.',
         'model_title': 'Model selection for the three default profiles:',
         'opt_preset': 'Use the deepseek-kimi preset (DeepSeek Flash + Kimi K2.8/K3, max reasoning)',
+        'opt_ark_preset': 'Use the ark-agent-plan preset (Ark Auto/Evolving/K3 + native Kimi + DeepSeek)',
         'opt_custom': 'Use a custom provider/model',
         'choose_prompt': 'Enter a number',
         'choose_invalid': 'Please enter one of the listed numbers.',
@@ -69,7 +71,7 @@ T = {
         'review_config': 'Configuration: {0}',
         'review_state': 'Private state: {0}',
         'review_keep': 'Models: keep the existing configuration (no model changes)',
-        'review_preset': 'Models: deepseek-kimi preset',
+        'review_preset': 'Models: {0} preset',
         'review_model': 'Models: all profiles use {0}',
         'review_opencode': 'OpenCode binary: {0}',
         'review_binary_kept': 'OpenCode binary: keep the configured one',
@@ -96,7 +98,8 @@ T = {
         'non_tty': ('安装向导需要交互式终端（stdin 和 stdout 均为 TTY）。未做任何更改。\n'
                     '无人值守安装请改用：\n'
                     '  python3 scripts/install.py --model 提供商/模型 [--no-start]\n'
-                    '  python3 scripts/install.py --preset deepseek-kimi [--no-start]'),
+                    '  python3 scripts/install.py --preset deepseek-kimi [--no-start]\n'
+                    '  python3 scripts/install.py --preset ark-agent-plan [--no-start]'),
         'fresh_found': '未找到现有配置，将进行全新安装。',
         'existing_found': '发现现有安装：',
         'config_unreadable': '现有配置 {0} 不是有效的 JSON，拒绝继续。请先修复或删除该文件。'
@@ -108,6 +111,7 @@ T = {
                            '安装向导绝不会静默替换模型。',
         'model_title': '为三个默认配置选择模型：',
         'opt_preset': '使用 deepseek-kimi 预设（DeepSeek Flash + Kimi K2.8/K3，max 推理）',
+        'opt_ark_preset': '使用 ark-agent-plan 预设（方舟 Auto/Evolving/K3 + 原厂 Kimi + DeepSeek）',
         'opt_custom': '使用自定义 provider/model',
         'choose_prompt': '请输入数字',
         'choose_invalid': '请输入列出的数字之一。',
@@ -130,7 +134,7 @@ T = {
         'review_config': '配置文件：{0}',
         'review_state': '私有状态目录：{0}',
         'review_keep': '模型：保留现有配置（不更改模型）',
-        'review_preset': '模型：deepseek-kimi 预设',
+        'review_preset': '模型：{0} 预设',
         'review_model': '模型：所有配置使用 {0}',
         'review_opencode': 'OpenCode 二进制：{0}',
         'review_binary_kept': 'OpenCode 二进制：保留已配置的二进制',
@@ -236,12 +240,16 @@ def _choose_models(prompt, plan):
     choice = prompt.choose(prompt.t['model_title'], [
         ('preset', prompt.t['opt_preset']),
         ('custom', prompt.t['opt_custom']),
+        ('ark_preset', prompt.t['opt_ark_preset']),
         ('cancel', prompt.t['opt_cancel']),
     ])
     if choice == 'cancel':
         raise Cancelled(prompt.t['cancelled'])
     if choice == 'preset':
         plan['preset'] = 'deepseek-kimi'
+        return
+    if choice == 'ark_preset':
+        plan['preset'] = 'ark-agent-plan'
         return
     while True:
         provider = prompt.ask(prompt.t['ask_provider'])
@@ -332,7 +340,7 @@ def _review(prompt, plan):
     else:
         # Fresh install plan.
         if plan['preset']:
-            prompt.line('  ' + t['review_preset'])
+            prompt.line('  ' + t['review_preset'].format(plan['preset']))
         else:
             prompt.line('  ' + t['review_model'].format(plan['model']))
         prompt.line('  ' + t['review_opencode'].format(plan['opencode'] or t['auto']))

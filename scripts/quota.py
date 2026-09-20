@@ -6,7 +6,26 @@ from datetime import datetime, timezone
 import time
 from concurrent.futures import ThreadPoolExecutor
 from common import config, STATE, HttpFailure, auth_key, credential_identity, locked, read_json, redact, request, write_json
+from providers import ARK_PROVIDER
+import ark_quota
 import routing
+
+
+def _telemetry_identity(provider):
+    """Identity of the credential the quota sampler actually uses.
+
+    Bearer-token providers sample with the same OpenCode API key the data plane
+    uses, so the shared credential_identity applies. Ark's control plane is a
+    separate account AccessKey: the cache and its fresh-sample clearing use the
+    AccessKey hash so a rotated control credential invalidates stale telemetry.
+    Billing/model-error circuits deliberately stay bound to the OpenCode
+    inference credential (common.credential_identity) via trip/billing_block;
+    this helper never feeds them, so an inference-key rotation is never
+    mis-attached to a control-plane identity.
+    """
+    if provider == ARK_PROVIDER:
+        return ark_quota.credential_identity()
+    return credential_identity(provider)
 
 try:
     import zoneinfo
@@ -17,6 +36,10 @@ ENDPOINTS = {
     'deepseek': 'https://api.deepseek.com/user/balance',
     'kimi-for-coding': 'https://api.kimi.com/coding/v1/usages',
 }
+
+# Control-plane (AK/SK signed) providers use a private fetch instead of the
+# bearer-token ENDPOINTS path; credentials never travel through this module.
+CONTROL_PLANE = {ARK_PROVIDER: ark_quota.fetch}
 
 
 BILLING = 'billing.json'
@@ -315,7 +338,7 @@ def observe_model_success(provider, identity, started_at, completed_at):
 
 
 def known_providers():
-    names = set(ENDPOINTS)
+    names = set(ENDPOINTS) | set(CONTROL_PLANE)
     try:
         names.update(str(p.get('model', '')).split('/', 1)[0] for p in config().get('profiles', {}).values()
                      if isinstance(p, dict) and '/' in str(p.get('model', '')))
@@ -432,6 +455,11 @@ def normalize(provider, body):
 
 def fetch_one(provider):
     now = time.time()
+    control = CONTROL_PLANE.get(provider)
+    if control is not None:
+        # Signed control-plane adapters own their full failure taxonomy and
+        # credential boundary; values are never visible here.
+        return control()
     try:
         body = request(ENDPOINTS[provider], headers={'Authorization': 'Bearer ' + auth_key(provider),
                                                   'Accept': 'application/json'})
@@ -445,12 +473,22 @@ def fetch_one(provider):
         return {'state': 'unknown', 'attempted_at': now}
 
 
+def _providers_in_use():
+    """Telemetry-bearing providers referenced by at least one configured profile."""
+    try:
+        models = [v['model'] for v in config()['profiles'].values()]
+    except Exception:
+        return []
+    known = set(ENDPOINTS) | set(CONTROL_PLANE)
+    return [p for p in known if any(str(m).split('/', 1)[0] == p for m in models)]
+
+
 def refresh(force=False):
     with locked('quota'):
         old = read_json(STATE / 'quota.json', {})
         now = time.time()
-        providers = [p for p in ENDPOINTS if any(v['model'].split('/', 1)[0] == p for v in config()['profiles'].values())]
-        identities = {p: credential_identity(p) for p in providers}
+        providers = _providers_in_use()
+        identities = {p: _telemetry_identity(p) for p in providers}
         # A configured monthly schedule releases the previous cycle's Kimi monthly block on
         # every refresh, including cache hits. It is authorization to try, never quota
         # proof, and it never touches non-monthly or credential-mismatched blocks.
@@ -460,10 +498,10 @@ def refresh(force=False):
         if not force and same and recent:
             return view(old)
         result = {}
-        with ThreadPoolExecutor(max_workers=2) as pool:
+        with ThreadPoolExecutor(max_workers=max(1, min(4, len(providers)))) as pool:
             for p, value in zip(providers, pool.map(fetch_one, providers)):
                 last = old.get(p, {}) if identities[p] == old.get(p, {}).get('_credential') else {}
-                if value['state'] not in ('ok', 'auth_error') and last.get('sampled_at'):
+                if value['state'] not in ('ok', 'auth_error', 'no_credential') and last.get('sampled_at'):
                     value = dict(last, **value)
                 value.update(checked_at=now, _credential=identities[p])
                 result[p] = value
@@ -480,6 +518,11 @@ def view(values):
     for p, v in values.items():
         v = {k: x for k, x in v.items() if not k.startswith('_')}
         v['stale'] = v.get('state') != 'ok' or time.time() - v.get('sampled_at', 0) > 900
+        if p == ARK_PROVIDER:
+            # Safe metadata only: the credential source label, never a value or
+            # identity. No AK/SK, hash or reference path leaves this boundary.
+            source = v.get('credential_source')
+            v['credential_source'] = source if source in ('credential_reference', 'environment') else None
         block = billing_block(p)
         if block:
             # Overlay the active circuit so a stale positive cache is never advertised
@@ -517,6 +560,9 @@ def allowed(provider, q, complexity, threshold=0, retry_monthly=False):
         return False, 'credential_rejected'
     if state == 'rate_limited':
         return False, 'quota_endpoint_rate_limited'
+    # Ark without control-plane credentials keeps quota unknown: the data plane
+    # may still serve, and a zero-window check below only applies to real
+    # telemetry. Unknown quota is never treated as unlimited or as empty.
     empty_window = any(w.get('valid', True) and w.get('remaining') == 0
                        for w in v.get('windows', []))
     if available is False or empty_window:
@@ -525,6 +571,8 @@ def allowed(provider, q, complexity, threshold=0, retry_monthly=False):
     if block and not (retry_monthly and block.get('reason') == MONTHLY_REASON):
         return False, 'provider_billing_blocked'
     fresh_enough = time.time() - v.get('sampled_at', 0) <= 900
+    # kimi_reserve_percent is explicitly Kimi-only by configuration contract;
+    # Ark headroom steers dynamic pool weights instead of a reserve threshold.
     if provider == 'kimi-for-coding' and fresh_enough:
         pcts = [w['remaining_percent'] for w in v.get('windows', []) if w.get('remaining_percent') is not None]
         if pcts and min(pcts) < threshold and complexity != 'deep':
@@ -623,6 +671,11 @@ def _policy_route(t, c, q, stages, batch=None):
     choose_ready commits it after the owner/scope checks pass, while a preview call
     (batch=None) reads the stored credits without writing them. Within one batch each
     committed proposal moves the credits, so subsequent choices distribute correctly.
+
+    Inside a stage the stored weights are the baseline; quota-aware dynamics scale
+    them in memory by each candidate's current valid headroom. The stored policy is
+    never rewritten, explicit profiles stay pinned and a running task is never
+    migrated.
     """
     preview = None
     first_reason = None
@@ -636,7 +689,12 @@ def _policy_route(t, c, q, stages, batch=None):
             elif first_reason is None:
                 first_reason = why
         if candidates:
-            entries = [entry for entry, _ in candidates]
+            base_entries = [entry for entry, _ in candidates]
+            provider_by_profile = {}
+            for entry, _ in candidates:
+                profile = c['profiles'].get(entry['profile']) or {}
+                provider_by_profile[entry['profile']] = str(profile.get('model', '')).split('/', 1)[0]
+            entries, dynamic_reason, _ = routing.dynamics(base_entries, provider_by_profile, q)
             if batch is not None:
                 chosen, credits = routing.advance(entries, batch.credits_for(tier))
                 batch.propose(tier, credits)
@@ -645,7 +703,7 @@ def _policy_route(t, c, q, stages, batch=None):
                     preview = routing.Admissions.load().credits
                 chosen, _ = routing.advance(entries, preview.get(tier, {}))
             why = next(reason for entry, reason in candidates if entry['profile'] == chosen)
-            return chosen, 'routing_policy:' + tier + ':stage' + str(index) + ':' + why
+            return chosen, 'routing_policy:' + tier + ':stage' + str(index) + ':' + why + ':' + dynamic_reason
     return None, 'routing_policy:' + (first_reason or 'no_enabled_candidate')
 
 
@@ -897,6 +955,45 @@ def window_failure_recovery(t, c, q):
     provider, _ = _task_provider(t, c)
     return _options(t, c, q, 'provider_usage_window_limit', partial_work=True,
                     billing_reason=None, provider=provider, exclude=provider, window=True)
+
+
+def routing_status(c, q):
+    """Read-only effective dynamic admission shares per same-capability stage.
+
+    Safe console metadata only: base/effective weights and shares plus the
+    reason; never quota secrets, credential material or raw endpoint data. The
+    stored policy is never read as telemetry and never rewritten here.
+    """
+    policy = routing.configured(c)
+    if not policy:
+        return None
+    out = {}
+    for tier in routing.TIERS:
+        stages = policy.get(tier)
+        if not stages:
+            continue
+        stage_views = []
+        for stage in stages:
+            candidates = []
+            for entry in stage:
+                profile = c.get('profiles', {}).get(entry['profile'])
+                if not isinstance(profile, dict) or profile.get('enabled') is False:
+                    continue
+                provider = str(profile.get('model', '')).split('/', 1)[0]
+                complexity = 'deep' if tier == 'deep' else 'normal'
+                ok, _ = allowed(provider, q, complexity, c.get('kimi_reserve_percent', 0))
+                if ok:
+                    candidates.append(entry)
+            provider_by_profile = {}
+            for entry in candidates:
+                profile = c['profiles'].get(entry['profile']) or {}
+                provider_by_profile[entry['profile']] = str(profile.get('model', '')).split('/', 1)[0]
+            _, reason, info = routing.dynamics(candidates, provider_by_profile, q)
+            if info:
+                stage_views.append({'reason': reason, 'members': info})
+        if stage_views:
+            out[tier] = stage_views
+    return out or None
 
 
 def guidance(t, c, q):

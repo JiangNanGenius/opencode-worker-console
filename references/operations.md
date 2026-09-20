@@ -45,8 +45,8 @@ Choose task depth deliberately. With a configured `routing_policy`, use `--profi
 ordinary work follows the normal tier, while `--complexity deep` selects the deep tier for
 large-repository mapping, ambiguous causes, architecture synthesis and consequential review.
 The first available policy stage wins; members in that stage share actual admissions by
-weight. See [routing and plan efficiency](routing.md) for Ark Auto, fixed K3, quota limitations
-and configuration. Explicit profiles pin one model and bypass the policy; use them when a
+weight. See [routing and plan efficiency](routing.md) for the Ark/Kimi baseline, bounded
+quota-aware ratios, fallbacks and configuration. Explicit profiles pin one model and bypass the policy; use them when a
 specific model matters or the coordinator makes an informed recovery choice.
 
 Without a policy, `auto` uses the legacy `routing` mapping based on urgency and complexity.
@@ -108,7 +108,8 @@ remote changes and are never claimed as such.
 
 `console --open` opens the URL saved in `console_url` in the pool configuration. The page
 shows ownership groups, nested children, execution status, model, duration, summaries,
-DeepSeek balance and Kimi quota windows. It supports search, status filtering, details and
+DeepSeek balance, Kimi plan windows, Ark AFP windows, current routing shares and nominal
+AFP-equivalent economics. It supports search, status filtering, details and
 coalesced quota refresh. Click a task title to open its actual OpenCode web session.
 
 The console requires username/password login and checks explicitly allowed Host/Origin

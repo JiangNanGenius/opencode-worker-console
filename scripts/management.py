@@ -153,6 +153,8 @@ def settings():
     # fail-closed normalization when a legacy record is malformed. The personal day 19 is
     # never a default; it only appears when explicitly stored.
     out['kimi_monthly_reset'] = quota.normalize_monthly_schedule(c.get('kimi_monthly_reset'))
+    import economics
+    out['economics'] = economics.normalize(c.get('economics'))
     if isinstance(c.get('routing'), dict):
         out['routing'] = c['routing']
     # Expose the effective dispatch policy, not the raw record: a degraded reference is
@@ -224,6 +226,9 @@ def _validate_settings(body):
         # Strict validation with zoneinfo: unknown zones, malformed times and out-of-range
         # days are rejected. Omitting the key preserves the stored schedule for old clients.
         result['kimi_monthly_reset'] = quota.validate_monthly_schedule(body['kimi_monthly_reset'])
+    if 'economics' in body:
+        import economics
+        result['economics'] = economics.validate(body['economics'])
     routing = body.get('routing')
     if routing is not None:
         if not isinstance(routing, dict) or set(routing.keys()) != set(_ROUTING_KEYS):
