@@ -172,6 +172,28 @@ class PoolTests(unittest.TestCase):
         self.assertIn('consumption_estimate', rendered)
         self.assertNotIn('samples', rendered)
 
+    def test_payg_balance_range_uses_real_balance_burn_and_keeps_history_private(self):
+        now = time.time()
+        raw = {'deepseek': {'state': 'ok', 'sampled_at': now, 'available': True,
+                            'balances': [{'currency': 'CNY', 'remaining': 60.0}], 'windows': []}}
+        common.write_json(self.state / quota.HISTORY, {'deepseek': {'samples': [
+            {'time': now - 3600, 'windows': {}, 'balances': {'CNY': 80.0}}]}})
+        rendered = quota.view(raw)['deepseek']
+        estimate = rendered['balances'][0]['consumption_estimate']
+        self.assertAlmostEqual(estimate['rate_balance_per_hour'], 20.0, places=1)
+        self.assertAlmostEqual(estimate['hours'], 3.0, places=1)
+        self.assertNotIn('samples', rendered)
+
+    def test_quota_history_records_balance_numbers_without_provider_payload(self):
+        now = time.time()
+        quota._record_history({'deepseek': {'state': 'ok', 'sampled_at': now,
+                                             '_credential': 'opaque-id',
+                                             'balances': [{'currency': 'CNY', 'remaining': 61.12}],
+                                             'windows': [], 'secret': 'must-not-persist'}}, now)
+        stored = common.read_json(self.state / quota.HISTORY, {})['deepseek']
+        self.assertEqual(stored['samples'][0]['balances'], {'CNY': 61.12})
+        self.assertNotIn('secret', json.dumps(stored))
+
     def test_normal_background_prefers_kimi_fast_prefers_deepseek(self):
         t = self.new(profile='auto')
         self.assertEqual(quota.route(t, self.c, self.q)[0], 'senior-code')

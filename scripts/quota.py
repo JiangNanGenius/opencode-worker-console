@@ -465,9 +465,15 @@ def _record_history(result, now):
             if item.get('valid', True) and remaining is not None:
                 windows[_window_key(item)] = {'remaining_percent': remaining,
                                               'resets_at': item.get('resets_at')}
+        balances = {}
+        for item in value.get('balances', []):
+            currency = item.get('currency') if isinstance(item, dict) else None
+            remaining = number(item.get('remaining')) if isinstance(item, dict) else None
+            if isinstance(currency, str) and 1 <= len(currency) <= 8 and remaining is not None and remaining >= 0:
+                balances[currency] = remaining
         sampled = number(value.get('sampled_at'))
-        if windows and sampled is not None and (not samples or samples[-1].get('time') != sampled):
-            samples.append({'time': sampled, 'windows': windows})
+        if (windows or balances) and sampled is not None and (not samples or samples[-1].get('time') != sampled):
+            samples.append({'time': sampled, 'windows': windows, 'balances': balances})
         samples = [x for x in samples if isinstance(x, dict) and number(x.get('time')) is not None
                    and now - float(x['time']) <= HISTORY_RETENTION_SECONDS][-HISTORY_MAX_SAMPLES:]
         history[provider] = {'_credential': identity, 'samples': samples}
@@ -524,6 +530,36 @@ def consumption_estimate(value, samples, now=None):
     return {'hours': round(min(hours, 24 * 365), 2) if hours is not None else None,
             'rate_percent_per_hour': round(rate, 4) if rate is not None else None,
             'source': source, 'idle': idle, 'sample_span_hours': round(span_hours, 2)}
+
+
+def balance_consumption_estimate(value, samples, now=None):
+    """Estimate pay-as-you-go balance range from credential-scoped balance samples."""
+    now = time.time() if now is None else now
+    remaining = number(value.get('remaining')) if isinstance(value, dict) else None
+    currency = value.get('currency') if isinstance(value, dict) else None
+    if remaining is None or remaining < 0 or not isinstance(currency, str):
+        return None
+    if remaining == 0:
+        return {'hours': 0.0, 'rate_balance_per_hour': None, 'source': 'exhausted',
+                'idle': False, 'sample_span_hours': 0.0}
+    points = []
+    for sample in samples if isinstance(samples, list) else []:
+        stamp = number(sample.get('time')) if isinstance(sample, dict) else None
+        prior = number((sample.get('balances') or {}).get(currency)) if isinstance(sample, dict) else None
+        if stamp is not None and prior is not None and 0 < now - stamp <= 24 * 3600:
+            points.append((stamp, prior))
+    points.sort()
+    oldest = next(((stamp, prior) for stamp, prior in points if now - stamp >= 300), None)
+    if not oldest:
+        return {'hours': None, 'rate_balance_per_hour': None, 'source': 'collecting',
+                'idle': False, 'sample_span_hours': 0.0}
+    span_hours = (now - oldest[0]) / 3600
+    rate = max(0.0, oldest[1] - remaining) / span_hours
+    idle = rate <= .000001
+    hours = remaining / rate if not idle else None
+    return {'hours': round(min(hours, 24 * 365), 2) if hours is not None else None,
+            'rate_balance_per_hour': round(rate, 6), 'source': 'recent', 'idle': idle,
+            'sample_span_hours': round(span_hours, 2)}
 
 
 def window(name, detail, duration=None):
@@ -673,6 +709,11 @@ def view(values):
         samples = history.get(p, {}).get('samples', []) if isinstance(history.get(p), dict) else []
         for item in v['windows']:
             estimate = consumption_estimate(item, samples, now)
+            if estimate is not None:
+                item['consumption_estimate'] = estimate
+        v['balances'] = [dict(item) for item in v.get('balances', [])]
+        for item in v['balances']:
+            estimate = balance_consumption_estimate(item, samples, now)
             if estimate is not None:
                 item['consumption_estimate'] = estimate
         v['stale'] = v.get('state') != 'ok' or time.time() - v.get('sampled_at', 0) > 900

@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import common
 import console
 import console_auth
+import credentials
 
 
 class ConsoleAuthUnitTests(unittest.TestCase):
@@ -432,6 +433,29 @@ class ConsoleHttpTests(unittest.TestCase):
         lowered = status['body'].decode().lower()
         for secret in ('hash', 'salt', 'token', 'password', 'settings', 'allowed_origins', 'console_bind'):
             self.assertNotIn(secret, lowered)
+
+    def test_quota_credential_console_only_exposes_fixed_reference_metadata(self):
+        self.start_server()
+        cookie = self.cookie(self.login())
+        headers = {'Cookie': cookie}
+        with patch.dict(os.environ, {'SYNTHETIC_ARK_AK': 'synthetic-secret'}, clear=False):
+            created = self.call('POST', '/console-api/credentials',
+                                body={'action': 'register', 'name': 'volcengine-control-ak',
+                                      'env': 'SYNTHETIC_ARK_AK'}, headers=headers)
+            self.assertEqual(created['status'], 200)
+            self.assertNotIn(b'synthetic-secret', created['body'])
+            credentials.register('unrelated-deploy-key', env='SYNTHETIC_ARK_AK')
+            listed = self.call('GET', '/console-api/credentials', headers=headers)
+            self.assertEqual(listed['status'], 200)
+            body = json.loads(listed['body'])
+            self.assertEqual([item['name'] for item in body['credentials']], ['volcengine-control-ak'])
+            self.assertNotIn('unrelated-deploy-key', listed['body'].decode())
+            self.assertNotIn('synthetic-secret', listed['body'].decode())
+            self.assertNotIn('SYNTHETIC_ARK_AK', listed['body'].decode())
+        refused = self.call('POST', '/console-api/credentials',
+                            body={'action': 'register', 'name': 'other', 'env': 'SYNTHETIC_ARK_AK'},
+                            headers=headers)
+        self.assertEqual(refused['status'], 400)
 
     def test_login_throttling_returns_429(self):
         self.start_server()

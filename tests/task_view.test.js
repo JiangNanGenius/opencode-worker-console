@@ -141,8 +141,11 @@ test('quota range distinguishes paused sampling, collection and burn estimates',
  assert.equal(h.run("estimatedRange({consumption_estimate:{idle:true}})"),'quota.rangePaused');
  assert.equal(h.run("estimatedRange({consumption_estimate:{hours:null}})"),'quota.rangeCollecting');
  assert.equal(h.run("estimatedRange({consumption_estimate:{hours:12}})"),'quota.rangeHours');
+ assert.equal(h.run("estimatedBalanceRange({balances:[{consumption_estimate:{hours:31,idle:false}}]})"),'quota.rangeHours');
+ assert.equal(h.run("estimatedBalanceRange({balances:[{consumption_estimate:{idle:true}}]})"),'quota.rangePaused');
  assert.equal(h.run("quotaPace({remaining_percent:70,duration_minutes:10080,resets_at:new Date(Date.now()+100*3600000).toISOString(),consumption_estimate:{hours:40}})[0]"),'tight');
  assert.doesNotMatch(h.run("quotaTrack(70,'remaining')"),/line|pace-marker/);
+ assert.match(h.run("quotaWindows([{name:'AFPFiveHour',remaining_percent:70,duration_minutes:300,resets_at:new Date(Date.now()+3600000).toISOString()}],true)"),/quota-window-reset/);
 });
 
 test('cleanup result stays visible in the task row and raises a success toast', async () => {

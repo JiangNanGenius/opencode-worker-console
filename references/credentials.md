@@ -65,6 +65,8 @@ delegate-opencode credential register volcengine-control-sk --file /private/path
 delegate-opencode quota --refresh
 ```
 
+The same two references can be registered from **Models & routing → Quota query credentials** in the authenticated console. The form accepts only an environment-variable name or an absolute owner-only file path; it never accepts, stores in configuration, or echoes the secret value itself.
+
 The console returns only the safe source label and normalized plan windows. It never returns
 the values, their hashes or source paths. Without these references, inference still works and
 Ark quota stays unknown.

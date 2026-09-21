@@ -25,6 +25,7 @@ import service
 import management
 import delegate
 import task_activity
+import credentials
 from common import CONFIG, HttpFailure, locked, update, write_json
 
 WEB = Path(__file__).resolve().parent.parent / 'web'
@@ -67,6 +68,15 @@ def service_health():
     except Exception:
         server_ok = False
     return {'pool': bool(pool_ok), 'server': server_ok}
+
+
+def quota_credential_refs():
+    """Return only quota-control reference metadata, never unrelated references."""
+    allowed = {'volcengine-control-ak', 'volcengine-control-sk'}
+    return {'credentials': [{key: item.get(key) for key in
+                             ('name', 'source', 'available', 'registered_at')}
+                            for item in credentials.listing().get('credentials', [])
+                            if item.get('name') in allowed]}
 
 
 def state():
@@ -377,15 +387,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def console_get(self, path):
         if path in ('/console-api/models', '/console-api/settings', '/console-api/sessions',
-                    '/console-api/workspaces', '/console-api/cleanup', '/console-api/usage-history'):
+                    '/console-api/workspaces', '/console-api/cleanup', '/console-api/usage-history',
+                    '/console-api/credentials', '/console-api/stats'):
             try:
                 fn = {'/console-api/models': management.catalog, '/console-api/settings': management.settings,
                       '/console-api/sessions': management.sessions, '/console-api/workspaces': management.workspaces,
                       '/console-api/cleanup': __import__('cleanup').preview,
                       '/console-api/usage-history':
-                          lambda: __import__('usage_ledger').summary(include_entries=True)}[path]
+                          lambda: __import__('usage_ledger').summary(include_entries=True),
+                      '/console-api/credentials': quota_credential_refs,
+                      '/console-api/stats': lambda: __import__('analytics').summary()}[path]
                 self.reply(200, redact(fn()))
-            except (ValueError, HttpFailure) as e:
+            except (ValueError, HttpFailure, credentials.CredentialError) as e:
                 self.reply(503, {'error': str(e)})
         elif path == '/console-api/state':
             self.reply(200, state())
@@ -454,6 +467,22 @@ class Handler(BaseHTTPRequestHandler):
                         (STATE / 'maintenance.json').unlink(missing_ok=True)
             elif path == '/console-api/workspaces':
                 result = management.save_workspace(body)
+            elif path == '/console-api/credentials':
+                action = body.get('action')
+                name = body.get('name')
+                # The console exposes only the two fixed Ark quota references.
+                # Values are never accepted or returned; source metadata points
+                # to an owner-only local file or a service environment variable.
+                if name not in ('volcengine-control-ak', 'volcengine-control-sk'):
+                    raise ValueError('Unsupported quota credential reference')
+                if action == 'register':
+                    registered = credentials.register(name, file=body.get('file'), env=body.get('env'))
+                    result = {key: registered.get(key) for key in
+                              ('name', 'source', 'available', 'registered_at')}
+                elif action == 'remove':
+                    result = credentials.remove(name)
+                else:
+                    raise ValueError('Unknown credential action')
             elif path == '/console-api/cleanup':
                 import cleanup
                 result = cleanup.run(apply=body.get('apply') is True, force=False)
@@ -475,7 +504,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(404, {'error': 'Unknown console action'})
                 return
             self.reply(200, redact(result))
-        except (ValueError, KeyError, TypeError) as e:
+        except (ValueError, KeyError, TypeError, credentials.CredentialError) as e:
             self.reply(400, {'error': str(e)})
         except (HttpFailure, RuntimeError, OSError) as e:
             self.reply(503, {'error': 'Local service could not apply the request: ' + str(e)})
