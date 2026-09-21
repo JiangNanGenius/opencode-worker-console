@@ -140,6 +140,22 @@ class EconomicsTests(unittest.TestCase):
         self.assertEqual(pool['refills'][1]['hours_until'], 40)
         self.assertAlmostEqual(pool['refills'][1]['projected_remaining_percent'], 84.295, places=3)
 
+    def test_display_endurance_adjusts_only_the_ui_and_fades_with_samples(self):
+        pool = {'total': 10}
+        config = {'quota_spillover': {'profile': 'fallback'}}
+        routing = {'background': [{'members': {
+            'ark-auto': {'share': .5}, 'fallback': {'share': .5}}}]}
+        guidance = {'conservation_level': 2}
+        fresh = economics.display_endurance(config, pool, guidance, routing,
+                                              {'level_since': 1000}, now=1000)
+        self.assertEqual(fresh['raw_hours'], 10)
+        self.assertGreater(fresh['adjusted_hours'], 15)
+        self.assertEqual(pool['total'], 10)  # routing input remains untouched
+        faded = economics.display_endurance(config, pool, guidance, routing,
+                                              {'level_since': 1000}, now=1000 + 6 * 3600)
+        self.assertEqual(faded['adjusted_hours'], 10)
+        self.assertEqual(faded['multiplier'], 1)
+
     def test_validation_rejects_unknown_negative_or_missing_values(self):
         valid = dict(economics.DEFAULTS)
         self.assertEqual(economics.validate(valid), valid)

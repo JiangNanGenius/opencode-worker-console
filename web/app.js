@@ -156,11 +156,11 @@ function renderPool(providers){
   setHTML($('pool-summary'),`<div class="pool-health"><strong>${Number.isFinite(remainingPercent)?Math.round(remainingPercent)+'%':'—'}</strong><span>${esc(tr('quota.poolRemaining'))}</span></div>`);
   renderPoolBar(sources,pool);
   setHTML($('pool-components'),sources.map(x=>`<div class="pool-component ${x.key} ${x.tone}"><i class="component-dot ${x.key}" aria-hidden="true"></i><span class="component-copy"><strong>${esc(x.label)}</strong><small>${esc(x.detail)}</small></span><span class="component-state">${esc(x.state)}</span></div>`).join(''));
-  const refill=Array.isArray(pool.refills)?pool.refills[0]:null,totalHours=Number(pool.total);
+  const refill=Array.isArray(pool.refills)?pool.refills[0]:null,projection=pool.display_projection||{},adjustedHours=Number(projection.adjusted_hours),rawHours=Number(pool.total),adjusted=Number(projection.multiplier)>1.01,totalHours=adjusted&&Number.isFinite(adjustedHours)?adjustedHours:rawHours;
   const refillName=refill?.provider==='kimi'?tr('quota.kimiPlan'):refill?.provider==='plan'?tr('quota.arkPlan'):'';
   const endurance=Number.isFinite(totalHours)?fittedDuration(totalHours):tr('quota.rangeCollecting');
   const next=refill?`${refillName} · ${resetTime(refill.resets_at)} · ${tr('quota.poolProjected',{value:Math.round(refill.projected_remaining_percent)})}`:tr('quota.poolNoRefill');
-  setHTML($('pool-next'),`<span><small>${esc(tr('quota.poolEndurance'))}</small><strong>${esc(endurance)}</strong></span><span><small>${esc(tr('quota.poolNextRefillLabel'))}</small><strong>${esc(next)}</strong></span>`);
+  setHTML($('pool-next'),`<span><small>${esc(tr(adjusted?'quota.poolAdjustedEndurance':'quota.poolEndurance'))}</small><strong>${esc(endurance)}</strong></span><span><small>${esc(tr('quota.poolNextRefillLabel'))}</small><strong>${esc(next)}</strong></span>`);
 }
 function duration(item) { if (!item.started_at) return tr('duration.waiting'); const s = Math.max(0, Math.round((item.finished_at || Date.now()/1000)-item.started_at)); if(s<60)return tr('duration.seconds',{n:s}); if(s<3600)return tr('duration.minutes',{m:Math.floor(s/60),s:s%60}); return tr('duration.hours',{h:Math.floor(s/3600),m:Math.floor(s%3600/60)}); }
 function formatBytes(value){const n=Number(value);if(!Number.isFinite(n))return '—';const gb=n/2**30;return (I18n?I18n.number(gb,{maximumFractionDigits:gb>=100?0:1}):gb.toFixed(gb>=100?0:1))+' GB';}

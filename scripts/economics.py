@@ -585,8 +585,45 @@ def work_pool(config, quota_view, now=None, include_payg_balance=True):
                               'notes': {'weights_use_observed_burn': True,
                                         'balance_topups_start_new_epochs': True,
                                         'balance_range_uses_conservative_rate': True,
-                                        'afp_not_used_as_weight': True,
-                                        'prices_not_used_as_weight': True}}}
+                              'afp_not_used_as_weight': True,
+                              'prices_not_used_as_weight': True}}}
+
+
+def display_endurance(config, pool, guidance, routing_status, control=None, now=None):
+    """Policy-adjusted UI range; never feeds admission or conservation.
+
+    Observed burn needs several hours to absorb a new routing mix. During that
+    interval, show a bounded correction for the work shifted to the configured
+    fallback and for Level 2's cheaper Fast path. The correction fades as fresh
+    burn samples take over, preventing permanent double counting.
+    """
+    raw = _non_negative((pool or {}).get('total'))
+    level = int((guidance or {}).get('conservation_level') or 0)
+    if raw is None:
+        return {'raw_hours': None, 'adjusted_hours': None, 'multiplier': 1.0,
+                'conservation_level': level, 'basis': 'collecting'}
+    if level not in (1, 2):
+        return {'raw_hours': raw, 'adjusted_hours': raw, 'multiplier': 1.0,
+                'conservation_level': level, 'basis': 'observed_burn'}
+
+    spill_profile = ((config or {}).get('quota_spillover') or {}).get('profile')
+    members = (((routing_status or {}).get('background') or [{}])[0].get('members') or {})
+    spill_share = _non_negative((members.get(spill_profile) or {}).get('share')) or 0.0
+    spill_share = max(0.0, min(0.5, spill_share))
+    # Level 1 gains only from bounded PAYG sharing. Level 2 also moves automatic
+    # Normal work onto the cheaper Fast path, so it earns a modest extra relief.
+    relief = min(0.45, 0.15 + 0.50 * spill_share if level == 2 else 0.35 * spill_share)
+    full_multiplier = 1.0 / max(0.55, 1.0 - relief)
+    now = time.time() if now is None else now
+    since = _non_negative((control or {}).get('level_since'))
+    # The burn estimator blends up to six hours of recent evidence. Fade the
+    # bridge correction over the same interval as the real samples catch up.
+    blend = max(0.0, min(1.0, 1.0 - (now - since) / (6 * 3600))) if since else 1.0
+    multiplier = 1.0 + (full_multiplier - 1.0) * blend
+    return {'raw_hours': round(raw, 3), 'adjusted_hours': round(raw * multiplier, 3),
+            'multiplier': round(multiplier, 3), 'conservation_level': level,
+            'fallback_share': round(spill_share, 3), 'sample_blend': round(blend, 3),
+            'basis': 'current_conservation_policy'}
 
 
 def summary(config, quota_view):

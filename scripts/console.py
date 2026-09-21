@@ -99,13 +99,19 @@ def state():
     c = config()
     quota_view = quota.view(read_json(STATE / 'quota.json', {}))
     import economics
+    guidance = quota.tier_guidance(c, quota_view)
+    routing_view = quota.routing_status(c, quota_view)
+    economic_view = economics.summary(c, quota_view)
+    economic_view['work_pool']['display_projection'] = economics.display_endurance(
+        c, economic_view['work_pool'], guidance, routing_view,
+        read_json(STATE / 'load-control.json', {}))
     host = system_status.snapshot()
     host['workers'] = {'active': sum(t.get('status') in ('starting', 'running', 'stopping', 'uncertain') for t in entries),
                        'queued': sum(t.get('status') == 'queued' for t in entries)}
     return redact({'tasks': entries, 'quota': quota_view,
-                   'tier_guidance': quota.tier_guidance(c, quota_view),
-                   'routing_status': quota.routing_status(c, quota_view),
-                   'economics': economics.summary(c, quota_view),
+                   'tier_guidance': guidance,
+                   'routing_status': routing_view,
+                   'economics': economic_view,
                    'pool_healthy': all(health.values()), 'services': health,
                    'host': host,
                    'profiles': {k: {'label': v.get('label', v['model']), 'model': v['model']} for k, v in c['profiles'].items()},

@@ -1559,6 +1559,8 @@ def observe_load(c, q, now=None):
     state = capacity.transition(raw['conservation_level'], raw['capacity_pressure_percent'],
                                 [raw['runway_threshold_percent'], raw['level2_runway_percent']],
                                 previous, now, replenished)
+    state['level_since'] = previous.get('level_since', now) \
+        if previous.get('level') == state['level'] else now
     state['policy'] = signature
     state['quota_observation'] = observation
     state['replenished_at'] = now if replenished else previous.get('replenished_at')

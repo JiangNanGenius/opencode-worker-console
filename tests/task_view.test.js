@@ -242,6 +242,14 @@ test('work pool remains visible for a Kimi-only installation', async () => {
   assert.match(h.get('pool-components').innerHTML,/quota\.kimiPlan/);
 });
 
+test('work pool labels policy-adjusted endurance without changing the capacity bar', async () => {
+  const h=appHarness();await tick();
+  h.run('data.quota={"volcengine-agent-plan":{available:true,windows:[]}};data.tier_guidance={conservation_level:2};data.economics={work_pool:{capacity:100,total:10,remaining_percent:10,display_projection:{raw_hours:10,adjusted_hours:16,multiplier:1.6},components:{plan:{capacity:100,amount:10,remaining_percent:10}}}};data.profiles={ark:{model:"volcengine-agent-plan/ark-code-latest"}};renderQuota()');
+  assert.match(h.get('pool-next').innerHTML,/quota\.poolAdjustedEndurance/);
+  assert.match(h.get('pool-next').innerHTML,/quota\.poolRunwayHours/);
+  assert.match(h.get('pool-summary').innerHTML,/10%/);
+});
+
 test('Kimi reset restores its fitted capacity to the total work pool', async () => {
   const h=appHarness();await tick();
   h.run('data.quota={"kimi-for-coding":{available:true,windows:[{name:"overall",remaining_percent:100}]}};data.economics={work_pool:{capacity:168,total:168,remaining_percent:100,components:{kimi:{capacity:168,amount:168,remaining_percent:100}}}};data.profiles={kimi:{model:"kimi-for-coding/k3"}};renderQuota()');
