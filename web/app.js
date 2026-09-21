@@ -79,12 +79,12 @@ function poolStateText(model){
 function renderPoolBar(model){
   const el=$('pool-bar');if(!el)return;
   const desired=model.known.filter(x=>x.amount>0).map(x=>({key:x.key,share:x.amount/model.total*100}));
+  el.setAttribute('role','img');el.setAttribute('aria-label',tr('quota.poolBarAria',{total:formatPoolTotal(model.total),unit:model.unit}));
   const current=[...el.children].filter(node=>node.dataset.segment);
   if(current.length===desired.length&&current.every((node,i)=>node.dataset.segment===desired[i].key)){
     desired.forEach((x,i)=>current[i].style.width=x.share.toFixed(3)+'%');
     return;
   }
-  el.setAttribute('role','img');el.setAttribute('aria-label',tr('quota.poolBarAria',{total:formatPoolTotal(model.total),unit:model.unit}));
   el.innerHTML=desired.map((x,i)=>`<span class="work-pool-segment ${x.key}" data-segment="${x.key}" style="width:${x.share.toFixed(3)}%;animation-delay:${i*70}ms"></span>`).join('');
 }
 function renderPool(providers){
