@@ -143,7 +143,8 @@
 
 /* Ambient low-density particles: decorative, non-interactive, behind cards. */
 .ambient-particles{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:0;opacity:.55}
-main,.sidebar{position:relative;z-index:1}
+main{position:relative;z-index:1}
+.sidebar{z-index:2}
 @media(prefers-reduced-motion:reduce){
  .ambient-particles{display:none}
  .view-panel:not([hidden]),.quota-section .quota-block,.pool-block.pool-state-changed,.work-pool-segment{animation:none}
