@@ -571,6 +571,22 @@ class RetainedEvidenceTests(IsolatedCase):
         self.assertEqual(first['events'][0]['type'], 'tool')
         self.assertEqual(len({event['id'] for event in first['events']}), ta.MAX_EVENTS)
 
+    def test_recent_activity_uses_retained_history_without_live_fetch(self):
+        task_id = 'job-0000000000000019'
+        task = self.task(task_id)
+        messages = [assistant('msg_a', sample_tokens(5, 1, 1, 1, 2, 0),
+                              parts=[tool_part('prt_one', inputs={'command': 'first'}),
+                                     tool_part('prt_two', inputs={'command': 'second'})])]
+        self.write_messages(task_id, messages)
+        with patch.object(common, 'api', side_effect=AssertionError('recent preview must stay local')):
+            recent = ta.recent_activity_for_task(task)
+        self.assertEqual([event['id'] for event in recent], ['prt_one', 'prt_two'])
+
+    def test_recent_activity_prefers_persisted_bounded_window(self):
+        saved = [{'id': 'one'}, {'id': 'two'}, {'id': 'three'}]
+        task = self.task('job-000000000000001a', status='running', recent_activity=saved)
+        self.assertEqual(ta.recent_activity_for_task(task, limit=2), saved[-2:])
+
 
 class WorkerSnapshotTests(IsolatedCase):
     def test_finish_persists_full_usage_snapshot(self):
@@ -703,6 +719,7 @@ class ConsoleIntegrationTests(IsolatedCase):
         self.assertEqual(entry['usage']['total'], 60)
         self.assertEqual(entry['usage']['source'], 'result')
         self.assertIsNone(entry['usage']['cache_read'])
+        self.assertEqual([event['id'] for event in entry['recent_activity']], ['prt_a'])
 
     def test_full_activity_message_endpoint_requires_auth_and_returns_complete_text(self):
         task_id = 'job-0000000000000031'

@@ -9,6 +9,7 @@ The entrypoint is `~/.local/bin/delegate-opencode`. The skill also works via
 delegate-opencode doctor
 delegate-opencode quota
 delegate-opencode quota --tier-guidance --compact
+delegate-opencode notify --title 'Release ready' --body 'TestFlight processing completed.'
 delegate-opencode console --open
 delegate-opencode submit --directory /absolute/repo --tier normal \
   --title 'Map configuration' 'Locate configuration loading and summarize precedence with file/line evidence.'
@@ -40,7 +41,9 @@ specifications. Fields: `directory`, `objective`, `title`, `acceptance` (string 
 `commands` (suggested checks; exact allowlist when Auto Approve is off), `resources` (shared lock-name array),
 `workspace` (`auto`/`shared`/`isolated`), `large`, `web`, and `notify_on_complete` (boolean).
 The CLI form is `--notify-on-complete`; use it only for a key user-facing milestone that merits
-one Bark alert after successful completion. Legacy `urgency` and
+one Bark event after successful completion. Each event is delivered independently to every
+configured client. For a verified milestone outside one worker task, use `notify --title ...
+--body ...`; routine progress stays silent. Legacy `urgency` and
 `complexity` remain accepted and are normalized into a tier.
 Do not put API keys or other secrets in tasks. With Auto Approve enabled (the default),
 all native tools, including web fetching, run without prompts. In restricted mode,

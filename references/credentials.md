@@ -67,15 +67,20 @@ delegate-opencode quota --refresh
 
 The same two references can be registered from **Models & routing → Quota query credentials** in the authenticated console. The form accepts only an environment-variable name or an absolute owner-only file path; it never accepts, stores in configuration, or echoes the secret value itself.
 
-Optional Bark notifications use the same boundary. Put the complete private Bark endpoint in one
-owner-only file outside every repository and register the fixed reference `bark-endpoint`:
+Optional Bark notifications use the same boundary. Put each complete private Bark endpoint in its
+own owner-only file outside every repository. Register `bark-endpoint` for the first client and a
+distinct `bark-*` reference for every additional client:
 
 ```sh
 delegate-opencode credential register bark-endpoint --file /private/path/bark-endpoint
+delegate-opencode credential register bark-ipad-endpoint --file /private/path/bark-ipad-endpoint
 ```
 
-The notification adapter resolves it only inside the service process and sends a bounded HTTPS
-POST. Configuration stores the reference name and notification preferences, never the endpoint.
+The notification adapter resolves each configured reference only inside the service process and
+sends the same bounded HTTPS POST independently to every client. A failed client does not prevent
+delivery to the others. Configuration stores reference names and notification preferences, never
+endpoints. Up to eight clients can be active. The authenticated console accepts one reference per
+line and can register additional `bark-*` file/environment references without reading their values.
 The adapter never persists or returns the endpoint, response body, headers or raw network error.
 The payload follows Bark's documented JSON POST fields; see the
 [official Bark tutorial](https://github.com/Finb/Bark/blob/master/docs/en-us/tutorial.md).

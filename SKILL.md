@@ -156,6 +156,15 @@ and request original detail only where needed. For isolated work review the patc
 JOB_ID` then `integrate JOB_ID --apply`, and verify afterward; integration never commits or deploys.
 An `uncertain` task keeps its ownership — recover and inspect it before any replacement.
 
+## Notify the user at meaningful milestones
+
+Use `--notify-on-complete` on a delegated task when its successful completion matters away from
+the desk, such as a finished deployment or processed TestFlight build. Routine tasks omit it.
+For a verified milestone outside one worker task, send a deliberate message with
+`notify --title 'Title' --body 'Result'`; do not use Bark for ordinary progress polling. The bridge
+fans each message out to every configured Bark client, while quota protection/exhaustion/recovery
+alerts remain automatic. Endpoints are private credential references, never prompt or task text.
+
 `transcript JOB_ID` reads actual messages, tool I/O and errors (paged, or `--full --output
 /private/path.json`; `--saved` reads retained evidence offline). `sessions --search`,
 `session rename/archive/restore/fork/bind/delete` and `cleanup` manage sessions and workspaces. Full

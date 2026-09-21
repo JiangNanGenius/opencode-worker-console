@@ -298,10 +298,11 @@ def observe_live_models_and_switches(t, messages):
     history = [dict(hop) if isinstance(hop, dict) else hop
                for hop in (t.get('route_history') or [])]
     usage = task_activity.usage_from_messages(messages, complete_history=True, source='live')
-    latest_events, _ = task_activity.events_from_messages(messages, t, limit=1)
+    recent_activity, _ = task_activity.events_from_messages(messages, t, limit=12)
+    latest_events = recent_activity[-1:]
     latest_activity = latest_events[-1] if latest_events else None
     changed = actual_models != (t.get('actual_models') or []) or usage != t.get('usage') or \
-        latest_activity != t.get('last_activity')
+        latest_activity != t.get('last_activity') or recent_activity != t.get('recent_activity')
     message_positions = {
         message.get('info', {}).get('id'): index
         for index, message in enumerate(messages)
@@ -337,7 +338,8 @@ def observe_live_models_and_switches(t, messages):
             break
     if changed:
         return update(t['id'], actual_models=actual_models, route_history=history,
-                      usage=usage, last_activity=latest_activity)
+                      usage=usage, last_activity=latest_activity,
+                      recent_activity=recent_activity)
     return t
 
 

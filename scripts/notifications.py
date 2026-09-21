@@ -1,6 +1,8 @@
 """Best-effort operator notifications without serializing notification secrets."""
+from concurrent.futures import ThreadPoolExecutor
 import json
 import math
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -17,11 +19,14 @@ DEFAULT_ICON = ('https://raw.githubusercontent.com/JiangNanGenius/'
 DEFAULTS = {
     'enabled': False,
     'credential': 'bark-endpoint',
+    'credentials': ['bark-endpoint'],
     'group': 'Worker Desk',
     'icon': DEFAULT_ICON,
     'quota_transitions': True,
     'model_switches': False,
 }
+MAX_CLIENTS = 8
+_CREDENTIAL_NAME = re.compile(r'^[A-Za-z][A-Za-z0-9_.-]{0,63}$')
 
 
 def normalize(value):
@@ -30,9 +35,17 @@ def normalize(value):
     for key in ('enabled', 'quota_transitions', 'model_switches'):
         if key in raw:
             result[key] = raw[key] is True
-    credential = raw.get('credential')
-    if isinstance(credential, str) and credential.strip():
-        result['credential'] = credential.strip()
+    configured = raw.get('credentials')
+    if isinstance(configured, list):
+        names = [item.strip() for item in configured
+                 if isinstance(item, str) and item.strip()]
+    else:
+        credential = raw.get('credential')
+        names = [credential.strip()] if isinstance(credential, str) and credential.strip() else []
+    names = list(dict.fromkeys(names))[:MAX_CLIENTS] or ['bark-endpoint']
+    result['credentials'] = names
+    # Preserve the legacy scalar for older installed clients during rolling upgrades.
+    result['credential'] = names[0]
     group = raw.get('group')
     if isinstance(group, str) and group.strip():
         result['group'] = group.strip()[:64]
@@ -49,8 +62,15 @@ def validate(value):
         if key in value and not isinstance(value[key], bool):
             raise ValueError('notifications.' + key + ' must be boolean')
     result = normalize(value)
-    if len(result['credential']) > 64:
-        raise ValueError('notifications.credential is too long')
+    raw_names = value.get('credentials')
+    if raw_names is not None and (not isinstance(raw_names, list) or not raw_names or
+                                  len(raw_names) > MAX_CLIENTS):
+        raise ValueError('notifications.credentials must contain 1-8 credential names')
+    if isinstance(raw_names, list) and any(not isinstance(name, str) or not name.strip()
+                                           for name in raw_names):
+        raise ValueError('notifications.credentials must contain non-empty strings')
+    if any(not _CREDENTIAL_NAME.fullmatch(name) for name in result['credentials']):
+        raise ValueError('notifications.credentials contains an invalid credential name')
     if not result['group']:
         raise ValueError('notifications.group cannot be empty')
     if len(result['icon']) > 2048:
@@ -76,18 +96,10 @@ def _endpoint(name):
     return endpoint
 
 
-def send(title, body, *, level='active', config=None):
-    """Send one bounded Bark notification and return only safe delivery metadata."""
-    settings = normalize(config if config is not None else common.config().get('notifications'))
-    if not settings['enabled']:
-        return {'sent': False, 'reason': 'disabled'}
-    message = {'title': str(title)[:120], 'body': str(body)[:1000],
-               'group': settings['group'], 'level': level}
-    if settings['icon']:
-        message['icon'] = settings['icon']
-    payload = json.dumps(message, ensure_ascii=False).encode()
+def _send_one(credential, payload):
+    """Send to one private endpoint and return value-free delivery metadata."""
     try:
-        request = urllib.request.Request(_endpoint(settings['credential']), data=payload,
+        request = urllib.request.Request(_endpoint(credential), data=payload,
                                          headers={'Content-Type': 'application/json; charset=utf-8'},
                                          method='POST')
         with urllib.request.build_opener(_NoRedirect).open(request, timeout=6) as response:
@@ -100,10 +112,30 @@ def send(title, body, *, level='active', config=None):
                 reply = {}
             if isinstance(reply, dict) and reply.get('code') not in (None, 200):
                 raise ValueError('Bark rejected the notification')
-        return {'sent': True, 'at': time.time()}
+        return {'credential': credential, 'sent': True, 'at': time.time()}
     except (credentials.CredentialError, ValueError, urllib.error.URLError, TimeoutError, OSError) as error:
         # Never persist the endpoint, response body, headers, or OS error text.
-        return {'sent': False, 'reason': type(error).__name__, 'at': time.time()}
+        return {'credential': credential, 'sent': False, 'reason': type(error).__name__, 'at': time.time()}
+
+
+def send(title, body, *, level='active', config=None):
+    """Fan one bounded Bark message out to every configured client."""
+    settings = normalize(config if config is not None else common.config().get('notifications'))
+    if not settings['enabled']:
+        return {'sent': False, 'reason': 'disabled', 'sent_count': 0, 'failed_count': 0}
+    message = {'title': str(title)[:120], 'body': str(body)[:1000],
+               'group': settings['group'], 'level': level}
+    if settings['icon']:
+        message['icon'] = settings['icon']
+    payload = json.dumps(message, ensure_ascii=False).encode()
+    names = settings['credentials']
+    # One unreachable phone must not make every other delivery wait for its
+    # network timeout. map preserves configured order in the safe result.
+    with ThreadPoolExecutor(max_workers=len(names)) as executor:
+        deliveries = list(executor.map(lambda name: _send_one(name, payload), names))
+    sent_count = sum(item['sent'] is True for item in deliveries)
+    return {'sent': sent_count > 0, 'sent_count': sent_count,
+            'failed_count': len(deliveries) - sent_count, 'deliveries': deliveries}
 
 
 def _state():

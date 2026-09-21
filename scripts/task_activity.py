@@ -825,6 +825,35 @@ def snapshot(task):
                     'usage': empty_usage()}
 
 
+def recent_activity_for_task(task, limit=12):
+    """Return a cheap initial activity window without making a live request.
+
+    The task list uses this while the full detail request is in flight. Workers
+    persist the same bounded window for new tasks. Older terminal tasks are
+    rebuilt from retained local artifacts, while active tasks use only the live
+    cache or their last persisted event. This avoids the misleading one-row
+    detail panel without turning the global state refresh into an OpenCode API
+    fan-out.
+    """
+    if not isinstance(task, dict):
+        return []
+    saved = task.get('recent_activity')
+    if isinstance(saved, list) and saved:
+        return saved[-limit:]
+    entry = _cached_live(task, fresh_only=False)
+    activity = entry.get('activity') if isinstance(entry, dict) else None
+    events = activity.get('events') if isinstance(activity, dict) else None
+    if isinstance(events, list) and events:
+        return events[-limit:]
+    if task.get('status') in common.TERMINAL:
+        retained = _retained_activity(task)
+        events = retained.get('events') if isinstance(retained, dict) else None
+        if isinstance(events, list) and events:
+            return events[-limit:]
+    last = task.get('last_activity')
+    return [last] if isinstance(last, dict) else []
+
+
 def usage_for_task(task):
     """Cheap per-task usage for the task list: cached live, snapshots, no history scans."""
     try:

@@ -434,7 +434,7 @@ class ConsoleHttpTests(unittest.TestCase):
         for secret in ('hash', 'salt', 'token', 'password', 'settings', 'allowed_origins', 'console_bind'):
             self.assertNotIn(secret, lowered)
 
-    def test_quota_credential_console_only_exposes_fixed_reference_metadata(self):
+    def test_console_exposes_builtin_and_bark_reference_metadata_only(self):
         self.start_server()
         cookie = self.cookie(self.login())
         headers = {'Cookie': cookie}
@@ -445,10 +445,12 @@ class ConsoleHttpTests(unittest.TestCase):
             self.assertEqual(created['status'], 200)
             self.assertNotIn(b'synthetic-secret', created['body'])
             credentials.register('unrelated-deploy-key', env='SYNTHETIC_ARK_AK')
+            credentials.register('bark-ipad-endpoint', env='SYNTHETIC_ARK_AK')
             listed = self.call('GET', '/console-api/credentials', headers=headers)
             self.assertEqual(listed['status'], 200)
             body = json.loads(listed['body'])
-            self.assertEqual([item['name'] for item in body['credentials']], ['volcengine-control-ak'])
+            self.assertEqual([item['name'] for item in body['credentials']],
+                             ['bark-ipad-endpoint', 'volcengine-control-ak'])
             self.assertNotIn('unrelated-deploy-key', listed['body'].decode())
             self.assertNotIn('synthetic-secret', listed['body'].decode())
             self.assertNotIn('SYNTHETIC_ARK_AK', listed['body'].decode())
@@ -456,6 +458,10 @@ class ConsoleHttpTests(unittest.TestCase):
                             body={'action': 'register', 'name': 'other', 'env': 'SYNTHETIC_ARK_AK'},
                             headers=headers)
         self.assertEqual(refused['status'], 400)
+        allowed = self.call('POST', '/console-api/credentials',
+                            body={'action': 'register', 'name': 'bark-tablet-endpoint',
+                                  'env': 'SYNTHETIC_ARK_AK'}, headers=headers)
+        self.assertEqual(allowed['status'], 200)
 
     def test_login_throttling_returns_429(self):
         self.start_server()

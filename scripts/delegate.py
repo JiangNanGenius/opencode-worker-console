@@ -591,6 +591,9 @@ def main():
     s = sub.add_parser('setup', help='Interactive bilingual setup wizard for this installation (terminal only)')
     s.add_argument('--lang', choices=['en', 'zh-CN'], help='Wizard language (default: auto-detect from locale)')
     s = sub.add_parser('console'); s.add_argument('--open', action='store_true')
+    s = sub.add_parser('notify', help='Send one operator-requested Bark message to configured clients')
+    s.add_argument('--title', required=True); s.add_argument('--body', required=True)
+    s.add_argument('--level', choices=['passive', 'active', 'timeSensitive'], default='active')
     s = sub.add_parser('steer'); s.add_argument('id'); s.add_argument('text'); s.add_argument('--request-id')
     s = sub.add_parser('sessions'); s.add_argument('--search', default=''); s.add_argument('--directory'); s.add_argument('--archived', action='store_true')
     s = sub.add_parser('session'); s.add_argument('action', choices=['rename','archive','restore','fork','delete','bind']); s.add_argument('id'); s.add_argument('--title'); s.add_argument('--directory'); s.add_argument('--yes', action='store_true')
@@ -639,6 +642,9 @@ def main():
     elif args.cmd == 'cleanup':
         import cleanup
         result = cleanup.run(apply=args.apply, force=args.force)
+    elif args.cmd == 'notify':
+        import notifications
+        result = notifications.send(args.title, args.body, level=args.level)
     elif args.cmd == 'submit':
         if args.spec is not None or args.spec_urlencoded is not None:
             spec = load_submit_spec(args)

@@ -45,6 +45,13 @@ test('activity shows the newest progress first without mutating the source event
  assert.deepEqual(events.map(event=>event.id),['old','new']);
 });
 
+test('activity renders every recent preview row while full detail is loading', () => {
+ const events=Array.from({length:12},(_,index)=>({id:'event-'+index,status:'completed',text:'step '+index,time:index}));
+ const html=View.activityHTML({events},display);
+ assert.equal((html.match(/data-event-id=/g)||[]).length,12);
+ assert.ok(html.indexOf('step 11') < html.indexOf('step 0'));
+});
+
 test('truncated activity expands to the complete cached message and can collapse again', () => {
  const activity={events:[{id:'evt-long',type:'assistant',label:'assistant',status:'completed',text:'preview…',truncated:true,time:2}]};
  const collapsed=View.activityHTML(activity,{...display,taskId:'job-1'});

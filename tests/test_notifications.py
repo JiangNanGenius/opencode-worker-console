@@ -46,6 +46,32 @@ class NotificationTests(unittest.TestCase):
             notifications.validate({'icon': 'http://example.test/icon.png'})
         self.assertEqual(notifications.validate({'icon': ''})['icon'], '')
 
+    def test_multiple_clients_are_deduplicated_and_fail_independently(self):
+        cfg = {'enabled': True,
+               'credentials': ['bark-endpoint', 'bark-ipad-endpoint', 'bark-endpoint']}
+        with patch.object(notifications.credentials, '_resolve_reference',
+                          side_effect=['https://api.day.app/first/',
+                                       notifications.credentials.CredentialError('unavailable')]), \
+             patch.object(notifications.urllib.request.OpenerDirector, 'open',
+                          return_value=_Response()) as opened:
+            result = notifications.send('Title', 'Body', config=cfg)
+        self.assertTrue(result['sent'])
+        self.assertEqual(result['sent_count'], 1)
+        self.assertEqual(result['failed_count'], 1)
+        self.assertEqual(opened.call_count, 1)
+        self.assertEqual([item['credential'] for item in result['deliveries']],
+                         ['bark-endpoint', 'bark-ipad-endpoint'])
+        self.assertNotIn('api.day.app', json.dumps(result))
+
+    def test_legacy_single_credential_normalizes_to_client_list(self):
+        value = notifications.normalize({'credential': 'bark-old-endpoint'})
+        self.assertEqual(value['credentials'], ['bark-old-endpoint'])
+        self.assertEqual(value['credential'], 'bark-old-endpoint')
+        with self.assertRaisesRegex(ValueError, '1-8'):
+            notifications.validate({'credentials': []})
+        with self.assertRaisesRegex(ValueError, 'non-empty strings'):
+            notifications.validate({'credentials': ['bark-phone', None]})
+
     def test_quota_events_seed_then_notify_only_on_transition(self):
         cfg = {'notifications': {'enabled': True, 'quota_transitions': True}}
         snapshot = {'ark': {'available': True}}

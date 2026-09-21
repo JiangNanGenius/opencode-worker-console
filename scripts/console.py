@@ -13,6 +13,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+import re
 import select
 import socket
 import time
@@ -74,11 +75,12 @@ def service_health():
 
 def quota_credential_refs():
     """Return only console-managed reference metadata, never secret values."""
-    allowed = {'volcengine-control-ak', 'volcengine-control-sk', 'bark-endpoint'}
+    allowed = {'volcengine-control-ak', 'volcengine-control-sk'}
     return {'credentials': [{key: item.get(key) for key in
                              ('name', 'source', 'available', 'registered_at')}
                             for item in credentials.listing().get('credentials', [])
-                            if item.get('name') in allowed]}
+                            if item.get('name') in allowed or
+                            re.fullmatch(r'bark-[a-z0-9][a-z0-9_.-]{0,58}', item.get('name', ''))]}
 
 
 def state():
@@ -91,6 +93,7 @@ def state():
         # Cheap per-task usage only: cached live sample or retained snapshot.
         # Global refresh never fetches sessions and never scans history.
         p['usage'] = task_activity.usage_for_task(t)
+        p['recent_activity'] = task_activity.recent_activity_for_task(t)
         entries.append(p)
     health = service_health()
     c = config()
@@ -485,10 +488,12 @@ class Handler(BaseHTTPRequestHandler):
             elif path == '/console-api/credentials':
                 action = body.get('action')
                 name = body.get('name')
-                # The console exposes only fixed references used by built-in adapters.
+                # The console exposes only allowlisted built-in references and
+                # bounded Bark client names.
                 # Values are never accepted or returned; source metadata points
                 # to an owner-only local file or a service environment variable.
-                if name not in ('volcengine-control-ak', 'volcengine-control-sk', 'bark-endpoint'):
+                if name not in ('volcengine-control-ak', 'volcengine-control-sk') and not \
+                        re.fullmatch(r'bark-[a-z0-9][a-z0-9_.-]{0,58}', name or ''):
                     raise ValueError('Unsupported credential reference')
                 if action == 'register':
                     registered = credentials.register(name, file=body.get('file'), env=body.get('env'))

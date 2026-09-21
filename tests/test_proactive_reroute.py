@@ -100,6 +100,8 @@ class ProactiveRerouteTests(unittest.TestCase):
                          ['ark/auto', 'ark/evolving'])
         self.assertIsInstance(active['last_activity'], dict)
         self.assertEqual(active['last_activity']['type'], 'status')
+        self.assertGreaterEqual(len(active['recent_activity']), 1)
+        self.assertEqual(active['recent_activity'][-1], active['last_activity'])
 
     def test_wrong_model_after_boundary_does_not_activate_switch(self):
         common.update('job-long', profile='ark-auto', message_id='msg_switch', route_history=[{
