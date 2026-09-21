@@ -76,19 +76,20 @@ test('completed details stop polling but can be explicitly refreshed', async () 
 // Minimal DOM adapter tests the real app's row reconciliation without a browser,
 // services, credentials or model calls. It does not assert visual rendering.
 class Element {
- constructor(name='div'){this.name=name;this.children=[];this.parentNode=null;this.dataset={};this.hidden=false;this.innerHTML='';this.value='';this.textContent='';this.listeners={};this.classList={toggle(){},add(){}};}
- append(node){this.insertBefore(node,null);}
- insertBefore(node,before){node.remove();const at=before?this.children.indexOf(before):this.children.length;if(at<0)throw Error('invalid anchor');this.children.splice(at,0,node);node.parentNode=this;}
- remove(){if(this.parentNode){const a=this.parentNode.children;a.splice(a.indexOf(this),1);this.parentNode=null;}}
- get firstElementChild(){return this.children[0]||null;}
- get nextElementSibling(){if(!this.parentNode)return null;const a=this.parentNode.children;return a[a.indexOf(this)+1]||null;}
- contains(node){return !!node&&(node===this||this.children.some(c=>c.contains(node)));}
- addEventListener(type,fn){this.listeners[type]=fn;}
- querySelector(){return null;}
- querySelectorAll(){return [];}
- getAttribute(key){return this[key]||null;}
- focus(){}
- scrollIntoView(){throw Error('Task expansion must not scroll the page');}
+  constructor(name='div'){this.name=name;this.children=[];this.parentNode=null;this.dataset={};this.attrs={};this.hidden=false;this.innerHTML='';this.value='';this.textContent='';this.style={};this.listeners={};this.classList={toggle(){},add(){},remove(){}};}
+  append(node){this.insertBefore(node,null);}
+  insertBefore(node,before){node.remove();const at=before?this.children.indexOf(before):this.children.length;if(at<0)throw Error('invalid anchor');this.children.splice(at,0,node);node.parentNode=this;}
+  remove(){if(this.parentNode){const a=this.parentNode.children;a.splice(a.indexOf(this),1);this.parentNode=null;}}
+  get firstElementChild(){return this.children[0]||null;}
+  get nextElementSibling(){if(!this.parentNode)return null;const a=this.parentNode.children;return a[a.indexOf(this)+1]||null;}
+  contains(node){return !!node&&(node===this||this.children.some(c=>c.contains(node)));}
+  addEventListener(type,fn){this.listeners[type]=fn;}
+  querySelector(){return null;}
+  querySelectorAll(){return [];}
+  getAttribute(key){return Object.prototype.hasOwnProperty.call(this.attrs,key)?this.attrs[key]:(this[key]??null);}
+  setAttribute(key,value){this.attrs[key]=value;}
+  focus(){}
+  scrollIntoView(){throw Error('Task expansion must not scroll the page');}
 }
 function appHarness(){
  const elements=new Map();const get=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);};
@@ -145,8 +146,53 @@ test('quota range distinguishes paused sampling, collection and burn estimates',
  assert.equal(h.run("estimatedBalanceRange({balances:[{consumption_estimate:{idle:true}}]})"),'quota.rangePaused');
  assert.equal(h.run("quotaPace({remaining_percent:70,duration_minutes:10080,resets_at:new Date(Date.now()+100*3600000).toISOString(),consumption_estimate:{hours:40}})[0]"),'tight');
  assert.doesNotMatch(h.run("quotaTrack(70,'remaining')"),/line|pace-marker/);
- assert.match(h.run("quotaWindows([{name:'AFPFiveHour',remaining_percent:70,duration_minutes:300,resets_at:new Date(Date.now()+3600000).toISOString()}],true)"),/quota-window-reset/);
+  assert.match(h.run("quotaWindows([{name:'AFPFiveHour',remaining_percent:70,duration_minutes:300,resets_at:new Date(Date.now()+3600000).toISOString()}],true)"),/quota-window-reset/);
 });
+
+test('work-pool model combines normalized balance and live plan allowance only', async () => {
+  const h=appHarness();await tick();
+  const source={unit:'AFP-equivalent',total:1400,complete:true,components:{
+    balance:{amount:1000,source_amount:2,unit:'AFP-equivalent',currency:'CNY',status:'ok',excluded_currencies:['USD']},
+    plan:{amount:400,source_amount:400,unit:'AFP',status:'ok'}}};
+  const model=h.run('PoolModel.view('+JSON.stringify(source)+')');
+  assert.equal(model.total,1400);
+  assert.equal(model.state,'ready');
+  assert.equal(model.balance.amount,1000);
+  assert.equal(model.plan.amount,400);
+  assert.equal(JSON.stringify(model.balance.excluded),JSON.stringify(['USD']));
+});
+
+test('work-pool model keeps zero, missing and single-source states distinct', async () => {
+  const h=appHarness();await tick();
+  const missing=h.run('PoolModel.view({})');
+  assert.equal(missing.total,0);assert.equal(missing.state,'unknown');
+  assert.equal(missing.balance.known,false);assert.equal(missing.plan.known,false);
+  const single=h.run('PoolModel.view({components:{balance:{amount:0,source_amount:0,status:"unavailable"},plan:{amount:300,source_amount:300,status:"ok"}}})');
+  assert.equal(single.total,300);assert.equal(single.state,'partial');
+  assert.equal(single.balance.known,true);assert.equal(single.plan.known,true);
+  const bothZero=h.run('PoolModel.view({components:{balance:{amount:0,source_amount:0,status:"ok"},plan:{amount:0,source_amount:0,status:"ok"}}})');
+  assert.equal(bothZero.state,'unavailable');
+});
+
+test('segmented pool bar renders one segment per positive source with full-width shares', async () => {
+  const h=appHarness();await tick();
+  h.run('data.economics={work_pool:{components:{balance:{amount:1000,source_amount:2,unit:"AFP-equivalent",currency:"CNY",status:"ok"},plan:{amount:400,source_amount:400,unit:"AFP",status:"ok"}}}};data.profiles={ds:{model:"deepseek/flash"},ark:{model:"volcengine-agent-plan/k3"}};renderQuota()');
+  const bar=h.get('pool-bar');
+  assert.match(bar.innerHTML,/data-segment="balance"[^>]*width:71\.429%/);
+  assert.match(bar.innerHTML,/data-segment="plan"[^>]*width:28\.571%/);
+  // tr() returns the key in the headless harness; real i18n interpolation is covered in web_setup.
+  assert.equal(bar.getAttribute('aria-label'),'quota.poolBarAria');
+  const components=h.get('pool-components').innerHTML;
+  assert.match(components,/quota\.poolBalance/);
+  assert.match(components,/quota\.poolPlan/);
+  assert.match(components,/¥2\.00/);
+  assert.match(components,/400 AFP/);
+  // Missing/zero plan keeps the card but renders only the balance segment.
+  h.run('data.economics={work_pool:{components:{balance:{amount:500,source_amount:1,unit:"AFP-equivalent",currency:"CNY",status:"ok"},plan:{status:"missing"}}}};renderQuota()');
+  assert.match(h.get('pool-bar').innerHTML,/data-segment="balance"/);
+  assert.doesNotMatch(h.get('pool-bar').innerHTML,/data-segment="plan"/);
+});
+
 
 test('cleanup result stays visible in the task row and raises a success toast', async () => {
  const h=appHarness();await tick();

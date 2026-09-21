@@ -99,3 +99,53 @@
 .stats-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin:18px 0 22px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}.stats-summary>div{display:grid;gap:5px;padding:18px 20px}.stats-summary>div+div{border-left:1px solid var(--line)}.stats-summary strong{font-size:25px;font-weight:650;font-variant-numeric:tabular-nums}.stats-summary span{font-size:10px;color:var(--muted)}.stats-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.stats-panel{min-width:0;margin:16px 0;padding:22px 24px;background:var(--surface);border:1px solid var(--line);border-radius:12px}.stats-panel h3{margin:0 0 18px;font-size:14px}.stats-panel-heading{display:flex;align-items:baseline;justify-content:space-between;gap:16px}.stats-panel-heading h3{margin-bottom:0}.stats-panel-heading .muted{font-size:10px}.stats-bars{display:grid;gap:15px}.stats-bar{display:grid;gap:6px}.stats-bar>div:first-child{display:flex;align-items:baseline;justify-content:space-between;gap:16px;font-size:10px}.stats-bar strong{max-width:68%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}.stats-bar span,.stats-bar small{color:var(--muted);font-variant-numeric:tabular-nums}.stats-bar small{font-size:9px}.stats-bar-track{height:7px;background:#e5ece9;border-radius:3px;overflow:hidden}.stats-bar-track i{display:block;height:100%;min-width:2px;background:var(--accent);border-radius:3px}.daily-bars{height:150px;display:flex;align-items:flex-end;gap:3px;padding-top:18px;border-bottom:1px solid var(--line)}.daily-bars span{height:100%;flex:1;display:flex;align-items:flex-end}.daily-bars i{display:block;width:100%;min-height:2px;background:#70a993;border-radius:2px 2px 0 0}.daily-axis{display:flex;justify-content:space-between;color:var(--muted);font-size:9px;margin-top:8px}.stats-quota{display:grid}.stats-quota-row{display:grid;grid-template-columns:minmax(170px,.8fr) minmax(250px,1.4fr) minmax(200px,1fr);gap:20px;align-items:baseline;padding:14px 0;border-bottom:1px solid var(--line)}.stats-quota-row:last-child{border-bottom:0}.stats-quota-row>div{display:grid;gap:4px}.stats-quota-row strong{font-size:12px}.stats-quota-row span,.stats-quota-row small{color:var(--muted);font-size:9px}.stats-quota-row p{margin:0;font-size:11px;overflow-wrap:anywhere}.stats-quota-row small{text-align:right;font-variant-numeric:tabular-nums}
 @media(max-width:900px){.credential-editor,.credential-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.credential-row>button{justify-self:start}.stats-grid{grid-template-columns:minmax(0,1fr)}.stats-quota-row{grid-template-columns:minmax(0,1fr)}.stats-quota-row small{text-align:left}}
 @media(max-width:760px){.stats-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.stats-summary>div:nth-child(3){border-left:0;border-top:1px solid var(--line)}.stats-summary>div:nth-child(4){border-top:1px solid var(--line)}.credential-editor,.credential-row{grid-template-columns:minmax(0,1fr)}.stats-panel{padding:18px}.daily-bars{height:120px}}
+
+/* Segmented total work pool: one normalized bar, balance vs. plan allowance. */
+.pool-block{grid-template-columns:minmax(150px,180px) minmax(0,1fr);column-gap:34px}
+.pool-visual{display:flex;flex-direction:column;justify-content:center;gap:12px;min-width:0}
+.work-pool-bar{display:flex;align-items:stretch;width:100%;height:12px;border-radius:5px;background:#e6ece9;overflow:hidden}
+.work-pool-segment{display:block;height:100%;min-width:0;border-radius:0;transition:width .55s cubic-bezier(.22,1,.36,1),background-color .3s ease}
+.work-pool-segment.balance{background:#67a4d1}
+.work-pool-segment.plan{background:#b593cd}
+.work-pool-segment:first-child{border-radius:5px 0 0 5px}
+.work-pool-segment:last-child{border-radius:0 5px 5px 0}
+.work-pool-segment:only-child{border-radius:5px}
+.pool-components{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 24px;min-width:0}
+.pool-component{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:9px;align-items:baseline;min-width:0}
+.component-dot{width:8px;height:8px;border-radius:50%;margin-top:2px}
+.component-dot.balance{background:#67a4d1}
+.component-dot.plan{background:#b593cd}
+.component-copy{display:flex;flex-direction:column;gap:2px;min-width:0}
+.component-copy strong{font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.component-copy small{font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.component-normalized{font-size:9px;color:var(--muted);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+.pool-block #pool-next{grid-column:1/-1}
+.pool-block .pool-total strong{font-size:26px}
+@media(max-width:1200px){.pool-block{grid-template-columns:minmax(140px,.45fr) minmax(0,1fr)}}
+@media(max-width:760px){.pool-block{row-gap:12px}.pool-visual,.pool-summary{grid-column:1}.pool-components{grid-template-columns:minmax(0,1fr);gap:8px}.component-normalized{text-align:left}.work-pool-bar{height:10px}}
+
+/* Restrained motion: tab indicator, view transition, card entry and state pulse. */
+.primary-nav button{position:relative;transition:background .28s ease,color .28s ease}
+.primary-nav button::after{content:"";position:absolute;left:0;top:12px;bottom:12px;width:3px;border-radius:3px;background:#7ed0b4;transform:scaleY(0);transform-origin:center;transition:transform .28s cubic-bezier(.22,1,.36,1)}
+.primary-nav button.selected::after{transform:scaleY(1)}
+.view-panel:not([hidden]){animation:view-enter .34s cubic-bezier(.22,1,.36,1) both}
+@keyframes view-enter{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.quota-section .quota-block{animation:card-enter .46s cubic-bezier(.22,1,.36,1) both}
+.quota-section .quota-block:nth-child(2){animation-delay:.05s}
+.quota-section .quota-block:nth-child(3){animation-delay:.1s}
+.quota-section .quota-block:nth-child(4){animation-delay:.15s}
+@keyframes card-enter{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.pool-block.pool-state-changed{animation:pool-pulse .62s ease both}
+@keyframes pool-pulse{0%{box-shadow:0 0 0 0 rgba(23,107,93,0)}35%{box-shadow:inset 0 0 0 2px rgba(23,107,93,.14)}100%{box-shadow:0 0 0 0 rgba(23,107,93,0)}}
+.work-pool-segment{animation:segment-grow .55s cubic-bezier(.22,1,.36,1) both}
+@keyframes segment-grow{from{opacity:.45;clip-path:inset(0 100% 0 0)}to{opacity:1;clip-path:inset(0 0 0 0)}}
+.stats-bar-track i{transition:width .5s cubic-bezier(.22,1,.36,1)}
+
+/* Ambient low-density particles: decorative, non-interactive, behind cards. */
+.ambient-particles{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:0;opacity:.55}
+main,.sidebar{position:relative;z-index:1}
+@media(prefers-reduced-motion:reduce){
+ .ambient-particles{display:none}
+ .view-panel:not([hidden]),.quota-section .quota-block,.pool-block.pool-state-changed,.work-pool-segment{animation:none}
+ .primary-nav button,.primary-nav button::after,.work-pool-segment,.stats-bar-track i{transition:none}
+}

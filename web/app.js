@@ -12,7 +12,8 @@ const externalIcon = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3H
 const folderIcon = '<svg viewBox="0 0 18 18" aria-hidden="true"><path d="M2 5h5l2 2h7v8H2zM2 5V3h5l2 2h7v2"/></svg>';
 let data = {tasks:[],quota:{}}, selectedGroup = '', selectedFilter = 'all', selectedTask = null, loading = false;
 let selectedTaskIds = new Set(), visibleSelectableIds = [];
-function setHTML(el, value) { if (el.innerHTML !== value) el.innerHTML = value; }
+function setHTML(el, value) { const changed=el.innerHTML !== value; if (changed) el.innerHTML = value; return changed; }
+function reducedMotion(){return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches===true;}
 function clock(seconds) { return seconds ? (I18n ? I18n.time(seconds,{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'}) : new Date(seconds * 1000).toLocaleTimeString('en-GB',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'})) : '—'; }
 function resetDate(value) { if (!value) return null; const d=new Date(typeof value==='number'?(value<1e12?value*1000:value):value);return Number.isNaN(d.getTime())?null:d; }
 function resetCountdown(d){const mins=Math.max(0,Math.ceil((d.getTime()-Date.now())/60000));return mins>=60?tr('quota.resetsInHours',{h:Math.floor(mins/60),m:mins%60}):tr('quota.resetsInMinutes',{m:mins});}
@@ -23,6 +24,91 @@ function windowRunway(w){const p=Number(w?.remaining_percent),d=resetDate(w?.res
 function expectedRemaining(w){const d=resetDate(w?.resets_at),duration=Number(w?.duration_minutes);if(!d||!Number.isFinite(duration)||duration<=0)return null;return Math.max(0,Math.min(100,(d.getTime()-Date.now())/(duration*60000)*100));}
 function quotaPace(w){const p=Number(w?.remaining_percent),runway=windowRunway(w),threshold=(data.tier_guidance?.runway_threshold_percent??75)/100;if(Number.isFinite(p)&&p<=0)return ['exhausted',tr('quota.paceExhausted')];if(runway==null)return ['unknown',tr('quota.paceUnknown')];if(runway<.35)return ['critical',tr('quota.paceCritical')];if(runway<threshold)return ['tight',tr('quota.paceTight')];if(runway<1.15)return ['on-track',tr('quota.paceOnTrack')];return ['healthy',tr('quota.paceHealthy')];}
 function quotaTrack(p,label){const value=Number.isFinite(Number(p))?Math.max(0,Math.min(100,Number(p))):0;return `<svg class="quota-track" viewBox="0 0 100 8" role="img" aria-label="${esc(label)}"><rect class="quota-track-bg" x="0" y="1" width="100" height="6" rx="3"/><rect class="quota-track-fill" x="0" y="1" width="${value}" height="6" rx="3"/></svg>`;}
+const PoolModel = {
+  number(value){const n=Number(value);return typeof value==='number'&&Number.isFinite(n)&&n>=0?n:null;},
+  component(raw,key,label){
+    raw=raw&&typeof raw==='object'?raw:{};
+    const amount=this.number(raw.amount);
+    const known=amount!==null&&['ok','stale','unavailable'].includes(raw.status);
+    return {key,label,known,amount:known?amount:0,sourceAmount:this.number(raw.source_amount),
+      unit:raw.unit||'',currency:raw.currency||'',status:known?raw.status:(raw.status==='unknown'?'unknown':'missing'),
+      stale:raw.stale===true,resetsAt:raw.resets_at||null,excluded:Array.isArray(raw.excluded_currencies)?raw.excluded_currencies:[]};
+  },
+  view(source){
+    source=source&&typeof source==='object'?source:{};
+    const balance=this.component(source.components?.balance,'balance',tr('quota.poolBalance'));
+    const plan=this.component(source.components?.plan,'plan',tr('quota.poolPlan'));
+    const components=[balance,plan];
+    const known=components.filter(x=>x.known);
+    const total=known.reduce((sum,x)=>sum+x.amount,0);
+    const stale=known.some(x=>x.stale);
+    const blocked=known.some(x=>x.status==='unavailable');
+    const allZero=known.length&&known.every(x=>x.amount===0);
+    const state=!known.length?'unknown':allZero?'unavailable':stale||blocked||known.length<components.length?'partial':'ready';
+    return {balance,plan,components,known,total,unit:source.unit||'AFP-equivalent',state,stale,
+      complete:source.complete===true&&known.length===components.length};
+  }
+};
+function formatPoolTotal(value){return number(Math.round(value));}
+function animatePoolValue(el,to){
+  const from=Number(el.dataset.value);
+  el.dataset.value=String(to);
+  if(!Number.isFinite(from)||from===to||reducedMotion()||!window.requestAnimationFrame){el.textContent=formatPoolTotal(to);return;}
+  const start=performance.now(),duration=520;
+  cancelAnimationFrame(el._poolFrame);
+  const step=now=>{const p=Math.min(1,(now-start)/duration),ease=1-Math.pow(1-p,3);el.textContent=formatPoolTotal(from+(to-from)*ease);if(p<1)el._poolFrame=requestAnimationFrame(step);};
+  el._poolFrame=requestAnimationFrame(step);
+}
+function poolComponentValue(x){
+  if(!x.known)return '—';
+  if(x.key==='balance')return (x.currency==='CNY'?'¥':'')+(I18n?I18n.number(x.sourceAmount,{minimumFractionDigits:2,maximumFractionDigits:2}):x.sourceAmount.toFixed(2));
+  return formatPoolTotal(x.sourceAmount??x.amount)+' AFP';
+}
+function poolComponentDetail(x){
+  if(!x.known)return tr(x.status==='unknown'?'quota.poolUnknown':'quota.poolUnavailable');
+  const prefix=x.key==='balance'?'≈ ':'';
+  return prefix+formatPoolTotal(x.amount)+' '+x.unit+(x.stale?' · '+tr('quota.state.stale'):'');
+}
+function poolStateText(model){
+  if(!model.known.length)return tr('quota.poolUnknown');
+  if(model.state==='unavailable')return tr('quota.poolUnavailable');
+  if(model.state==='stale')return tr('quota.poolStale');
+  if(model.state==='partial')return tr('quota.poolPartial');
+  return tr('quota.poolReady');
+}
+function renderPoolBar(model){
+  const el=$('pool-bar');if(!el)return;
+  const desired=model.known.filter(x=>x.amount>0).map(x=>({key:x.key,share:x.amount/model.total*100}));
+  const current=[...el.children].filter(node=>node.dataset.segment);
+  if(current.length===desired.length&&current.every((node,i)=>node.dataset.segment===desired[i].key)){
+    desired.forEach((x,i)=>current[i].style.width=x.share.toFixed(3)+'%');
+    return;
+  }
+  el.setAttribute('role','img');el.setAttribute('aria-label',tr('quota.poolBarAria',{total:formatPoolTotal(model.total),unit:model.unit}));
+  el.innerHTML=desired.map((x,i)=>`<span class="work-pool-segment ${x.key}" data-segment="${x.key}" style="width:${x.share.toFixed(3)}%;animation-delay:${i*70}ms"></span>`).join('');
+}
+function renderPool(providers){
+  const block=document.querySelector('.pool-block');
+  const relevant=providers.has('deepseek')||providers.has('volcengine-agent-plan');
+  block.hidden=!relevant;
+  if(!relevant)return;
+  const model=PoolModel.view(data.economics?.work_pool);
+  const previousState=block.dataset.poolState;
+  block.dataset.poolState=model.state;
+  const state=$('pool-state');
+  state.textContent=poolStateText(model);
+  state.className='quota-state '+(model.state==='ready'?'healthy':model.state==='unavailable'?'critical':model.state==='unknown'?'':'tight');
+  if(previousState&&previousState!==model.state&&!reducedMotion()){block.classList.remove('pool-state-changed');void block.offsetWidth;block.classList.add('pool-state-changed');setTimeout(()=>block.classList.remove('pool-state-changed'),650);}
+  setHTML($('pool-summary'),`<div class="pool-total"><strong id="pool-total-value">0</strong><span>${esc(tr('quota.poolTotalUnit',{unit:model.unit}))}</span></div>`);
+  animatePoolValue($('pool-total-value'),model.total);
+  renderPoolBar(model);
+  setHTML($('pool-components'),model.components.map(x=>`<div class="pool-component ${x.key}"><i class="component-dot ${x.key}" aria-hidden="true"></i><span class="component-copy"><strong>${esc(x.label)}</strong><small>${esc(poolComponentValue(x))}</small></span><span class="component-normalized">${esc(poolComponentDetail(x))}</span></div>`).join(''));
+  const notes=[];
+  if(model.balance.excluded.length)notes.push(tr('quota.poolExcludedCurrency',{currencies:model.balance.excluded.join(', ')}));
+  if(providers.has('kimi-for-coding'))notes.push(tr('quota.poolKimiSeparate'));
+  notes.push(tr('quota.poolNormalization'));
+  $('pool-next').textContent=notes.join(' · ');
+}
 function duration(item) { if (!item.started_at) return tr('duration.waiting'); const s = Math.max(0, Math.round((item.finished_at || Date.now()/1000)-item.started_at)); if(s<60)return tr('duration.seconds',{n:s}); if(s<3600)return tr('duration.minutes',{m:Math.floor(s/60),s:s%60}); return tr('duration.hours',{h:Math.floor(s/3600),m:Math.floor(s%3600/60)}); }
 let toastTimer=null;
 function showToast(title,message,tone='success',sticky=false){const toast=$('toast');if(!toast)return;clearTimeout(toastTimer);$('toast-title').textContent=title;$('toast-message').textContent=message||'';toast.className='toast '+tone;toast.hidden=false;if(!sticky)toastTimer=setTimeout(()=>{toast.hidden=true;},9000);}
@@ -33,8 +119,6 @@ function renderGroups() { let html=`<button class="nav-button ${!selectedGroup?'
  for(const [id,g] of grouped())html+=`<button class="nav-button ${id===selectedGroup?'selected':''}" data-group="${esc(id)}" aria-pressed="${id===selectedGroup}">${folderIcon}<span class="nav-name" title="${esc(g.name)}">${esc(g.name)}</span><span class="nav-count">${g.tasks.length}</span></button>`;setHTML($('groups'),html); }
 function windowName(w){if(w.name==='overall')return tr('quota.weekly');if(w.name==='AFPFiveHour')return tr('quota.fiveHour');if(w.name==='AFPDaily')return tr('quota.daily');if(w.name==='AFPWeekly')return tr('quota.weekly');if(w.name==='AFPMonthly')return tr('quota.monthly');return w.duration_minutes?tr('quota.hoursWindow',{h:w.duration_minutes/60}):tr('quota.limitWindow');}
 function quotaWindows(windows,showValues=false){return windows.length?windows.map(w=>{const p=w.remaining_percent,name=windowName(w),runway=windowRunway(w),expected=expectedRemaining(w),pace=quotaPace(w),display=p==null?'—':(I18n?I18n.number(Math.round(p)):Math.round(p))+'%';const delta=Number.isFinite(Number(p))&&Number.isFinite(expected)?Number(p)-expected:null;const comparison=delta==null?tr('quota.expectedRemaining'):tr(delta>=0?'quota.paceAhead':'quota.paceBehind',{value:I18n?I18n.number(Math.abs(Math.round(delta))):Math.abs(Math.round(delta))});return `<article class="quota-window ${pace[0]}"><div class="window-heading"><span>${esc(name)}</span><strong>${esc(display)}</strong></div>${quotaTrack(p,tr('quota.remainingAria',{name}))}<div class="quota-window-status"><strong class="quota-pace-label">${esc(pace[1])}</strong><span>${esc(estimatedRange(w))}</span></div><div class="quota-window-reset">${esc(resetTime(w.resets_at))}</div><details class="window-details"><summary>${esc(tr('table.details'))}</summary><div>${esc(comparison)}${runway==null?'':` · ${esc(fixed2(runway))}×`}${showValues&&w.remaining!=null?` · ${esc(number(Math.round(w.remaining)))} / ${esc(number(Math.round(w.limit)))} AFP`:''}</div></details></article>`}).join(''):'<p class="muted">'+tr('quota.unknown')+'</p>';}
-function poolProvider(provider,label,dot){const q=data.quota?.[provider]||{},valid=(q.windows||[]).filter(w=>w.valid!==false&&Number.isFinite(Number(w.remaining_percent)));if(!valid.length)return {provider,label,dot,known:false,available:q.available===true};const ranked=valid.map(w=>({w,runway:windowRunway(w)})).sort((a,b)=>(a.runway??Number(a.w.remaining_percent)/100)-(b.runway??Number(b.w.remaining_percent)/100));const chosen=ranked[0].w;return {provider,label,dot,known:true,available:q.available===true&&Number(chosen.remaining_percent)>0,window:chosen,p:Number(chosen.remaining_percent)};}
-function renderPool(providers){const list=[];if(providers.has('kimi-for-coding'))list.push(poolProvider('kimi-for-coding','Kimi','senior'));if(providers.has('volcengine-agent-plan'))list.push(poolProvider('volcengine-agent-plan',tr('quota.arkShort'),'deep'));const block=document.querySelector('.pool-block');block.hidden=!list.length;if(!list.length)return;const available=list.filter(x=>x.available).length;const state=$('pool-state');state.textContent=available===list.length?tr('quota.poolReady'):available?tr('quota.poolReduced'):tr('quota.poolUnavailable');state.className='quota-state '+(available===list.length?'healthy':available?'tight':'critical');setHTML($('pool-summary'),`<div class="pool-availability" role="img" aria-label="${esc(tr('quota.poolAvailable',{available,total:list.length}))}">${list.map(x=>`<span class="${x.available?'available':'unavailable'}"></span>`).join('')}</div><div class="pool-total"><strong>${available}/${list.length}</strong><span>${esc(tr('quota.plans'))}</span></div>`);setHTML($('pool-providers'),list.map(x=>{const pace=x.known?quotaPace(x.window):['unknown',tr('quota.paceUnknown')];return `<div class="pool-provider ${pace[0]}"><div><span><i class="model-dot ${x.dot}"></i>${esc(x.label)}${x.known?`<small>${esc(windowName(x.window))}</small>`:''}</span><strong>${x.known?Math.round(x.p)+'%':'—'}</strong></div>${x.known?quotaTrack(x.p,tr('quota.poolProviderAria',{provider:x.label})):''}<span class="pool-provider-state">${esc(pace[1])}</span></div>`}).join(''));const resets=list.map(x=>resetDate(x.window?.resets_at)).filter(Boolean).sort((a,b)=>a-b);$('pool-next').textContent=resets.length?tr('quota.poolNext',{time:resetTime(resets[0])}):tr('quota.poolNoReset');}
 function renderQuota(){const providers=new Set(Object.values(data.profiles||{}).map(p=>p.model.split('/')[0]));const hasArk=providers.has('volcengine-agent-plan');document.querySelector('.deepseek-block').hidden=!providers.has('deepseek');document.querySelector('.kimi-block').hidden=!providers.has('kimi-for-coding');document.querySelector('.ark-block').hidden=!hasArk;document.querySelector('.quota-section').hidden=!providers.has('deepseek')&&!providers.has('kimi-for-coding')&&!hasArk;const ds=data.quota.deepseek||{}, k=data.quota['kimi-for-coding']||{},ark=data.quota['volcengine-agent-plan']||{};
  renderPool(providers);
  $('ds-balance').textContent=ds.balances?.length?ds.balances.map(b=>(b.currency==='CNY'?'¥':b.currency==='USD'?'$':b.currency+' ')+fixed2(b.remaining)).join(' / '):'—';
@@ -167,6 +251,44 @@ $('close-detail').addEventListener('click',()=>{const id=selectedTask;detailCont
 $('refresh-detail').addEventListener('click',()=>detailController.refresh(true));
 $('refresh-quota').addEventListener('click',async()=>{const b=$('refresh-quota');b.disabled=true;try{await request('/console-api/quota',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});await refresh();}catch(e){$('error').textContent=e.message;$('error').hidden=false;}finally{b.disabled=false;}});
 $('toast-close').addEventListener('click',()=>{$('toast').hidden=true;clearTimeout(toastTimer);});
+function initAmbientParticles(){
+  const canvas=$('ambient-particles');
+  if(!canvas||!canvas.getContext)return;
+  const ctx=canvas.getContext('2d');
+  let particles=[],raf=0,last=0,width=0,height=0,dpr=1;
+  const reduced=()=>reducedMotion();
+  function make(){
+    const count=Math.max(8,Math.min(26,Math.round(width*height/72000)));
+    particles=Array.from({length:count},()=>({x:Math.random()*width,y:Math.random()*height,
+      r:1+Math.random()*1.8,vx:-.04+Math.random()*.08,vy:-.03+Math.random()*.06,
+      alpha:.035+Math.random()*.055}));
+  }
+  function resize(){
+    dpr=Math.min(window.devicePixelRatio||1,2);width=window.innerWidth||0;height=window.innerHeight||0;
+    canvas.width=Math.round(width*dpr);canvas.height=Math.round(height*dpr);
+    canvas.style.width=width+'px';canvas.style.height=height+'px';make();
+  }
+  function draw(now){
+    raf=0;
+    if(document.hidden||reduced())return;
+    if(now-last<42){raf=requestAnimationFrame(draw);return;}
+    const dt=Math.min(2,(now-(last||now))/16.7);last=now;
+    ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,width,height);
+    for(const p of particles){
+      p.x+=p.vx*dt;p.y+=p.vy*dt;
+      if(p.x<-6)p.x=width+6;if(p.x>width+6)p.x=-6;if(p.y<-6)p.y=height+6;if(p.y>height+6)p.y=-6;
+      ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,Math.PI*2);ctx.fillStyle=`rgba(23,107,93,${p.alpha})`;ctx.fill();
+    }
+    raf=requestAnimationFrame(draw);
+  }
+  function start(){if(reduced()||raf)return;if(!width)resize();last=0;raf=requestAnimationFrame(draw);}
+  function stop(){cancelAnimationFrame(raf);raf=0;ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,canvas.width,canvas.height);}
+  window.addEventListener('resize',()=>{resize();start();},{passive:true});
+  document.addEventListener('visibilitychange',()=>document.hidden?stop():start());
+  window.matchMedia?.('(prefers-reduced-motion: reduce)').addEventListener?.('change',e=>e.matches?stop():start);
+  start();
+}
+initAmbientParticles();
 refresh();setInterval(()=>{if(!document.hidden)refresh();},4000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});
 document.addEventListener('i18n:change',()=>{renderGroups();renderQuota();renderTasks();$('health').innerHTML='<i></i>'+(data.pool_healthy?tr('health.online'):tr('health.offline'));if(data.updated_at)$('updated').textContent=tr('updated.at',{time:clock(data.updated_at)});if(data.max_parallel_per_owner!=null)$('pool-limit').textContent=tr('pool.limit',{n:data.max_parallel_per_owner});if(selectedTask)renderInlineDetail(detailController.state());});
 

@@ -73,6 +73,89 @@ def _monthly_ark(quota_view):
     return None
 
 
+def _non_negative(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    return value if math.isfinite(value) and value >= 0 else None
+
+
+def work_pool(config, quota_view):
+    """Normalized, additive view of the total available work pool.
+
+    The normalization boundary lives here, next to the existing configurable
+    CNY->AFP-equivalent ruler, so the UI never sums raw CNY against AFP units.
+
+    * ``balance`` is every fresh CNY pay-as-you-go balance converted with the
+      configured cost ruler (1/``afp_cny_per_unit``). Non-CNY balances are
+      excluded: there is no defined FX normalization for them.
+    * ``plan`` is the authoritative live Ark monthly AFP allowance (the
+      control-plane AFPMonthly ``remaining`` value), never a nominal plan-price
+      estimate.
+
+    Each component carries its own status/unit/stale metadata so a missing,
+    zero or stale source renders as one segment or zero without being mistaken
+    for the other. Kimi is intentionally absent: its endpoint exposes no
+    additive work-unit allowance (see module note).
+    """
+    values = normalize((config or {}).get('economics'))
+    per_cny = 1.0 / values['afp_cny_per_unit']
+    view = quota_view if isinstance(quota_view, dict) else {}
+
+    balance_amount = 0.0
+    balance_source = 0.0
+    balance_currencies = []
+    balance_state = 'missing'
+    deepseek = view.get('deepseek') if isinstance(view.get('deepseek'), dict) else {}
+    if deepseek:
+        balances = deepseek.get('balances') or []
+        cny = [b for b in balances if isinstance(b, dict) and b.get('currency') == 'CNY']
+        balance_currencies = sorted({b.get('currency') for b in balances
+                                     if isinstance(b, dict) and b.get('currency')})
+        if cny:
+            known = [a for a in (_non_negative(b.get('remaining')) for b in cny) if a is not None]
+            if known:
+                balance_source = sum(known)
+                balance_amount = balance_source * per_cny
+                if deepseek.get('available') is False:
+                    balance_state = 'unavailable'
+                elif deepseek.get('stale'):
+                    balance_state = 'stale'
+                else:
+                    balance_state = 'ok'
+            else:
+                balance_state = 'unknown'
+        else:
+            balance_state = 'missing' if deepseek.get('state') in (None, 'ok') else 'unknown'
+
+    monthly = _monthly_ark(view)
+    ark = view.get('volcengine-agent-plan') if isinstance(view.get('volcengine-agent-plan'), dict) else {}
+    plan_amount = _non_negative(monthly['remaining']) if monthly else None
+    if plan_amount is None:
+        plan_state = 'missing' if not ark else ('unknown' if ark.get('state') not in (None, 'ok') else 'missing')
+    else:
+        plan_state = 'stale' if ark.get('stale') else 'ok'
+
+    balance = {'amount': 0.0 if balance_state == 'unavailable' else round(balance_amount, 3),
+               'unit': 'AFP-equivalent',
+               'source_amount': round(balance_source, 3), 'currency': 'CNY',
+               'status': balance_state, 'stale': balance_state == 'stale',
+               'excluded_currencies': [c for c in balance_currencies if c != 'CNY']}
+    plan = {'amount': round(plan_amount, 3) if plan_amount is not None else None,
+            'source_amount': round(plan_amount, 3) if plan_amount is not None else None,
+            'unit': 'AFP', 'status': plan_state, 'stale': plan_state == 'stale',
+            'resets_at': monthly.get('resets_at') if monthly else None}
+    return {'unit': 'AFP-equivalent', 'total': round(balance['amount'] + (plan['amount'] or 0.0), 3),
+            'components': {'balance': balance, 'plan': plan},
+            'complete': balance_state in ('ok', 'stale') and plan_state in ('ok', 'stale'),
+            'normalization': {'rule': 'cny_balance / settings.economics.afp_cny_per_unit',
+                              'afp_eq_per_cny': per_cny,
+                              'plan_source': 'live Ark AFPMonthly remaining',
+                              'kimi_included': False,
+                              'notes': {'balance_is_cost_ruler': True,
+                                        'plan_is_authoritative_afp': True}}}
+
+
 def summary(config, quota_view):
     values = normalize((config or {}).get('economics'))
     unit = values['afp_cny_per_unit']
@@ -97,6 +180,7 @@ def summary(config, quota_view):
         'baseline_formula': 'Ark AFP = %.2fD + %.2fN + %.2fS' % (
             coefficients['deep'], coefficients['normal'], coefficients['small']),
         'ark_monthly': monthly,
+        'work_pool': work_pool(config, quota_view),
         'notes': {
             'kimi_equivalence_is_nominal': True,
             'model_coefficients_are_configurable_estimates': True,
