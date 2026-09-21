@@ -1117,7 +1117,8 @@ def _policy_route(t, c, q, stages, batch=None):
                             entries, provider_by_profile, target,
                             _spillover_runway_view(spill_guidance, source_providers),
                             spill_guidance.get('runway_threshold_percent', 38),
-                            spill_config['max_share_percent'])
+                            spill_config['max_share_percent'],
+                            ceiling_active=int(spill_guidance.get('conservation_level') or 0) >= 2)
                         dynamic_reason += ':' + spill_reason
                         if any(entry['profile'] == target for entry in entries):
                             candidates.append(({'profile': target, 'weight': 1}, target_reason))
@@ -1408,7 +1409,8 @@ def routing_status(c, q):
                         _spillover_runway_view(spill_guidance, set(provider_by_profile.values()) -
                                                {target_provider}),
                         spill_guidance.get('runway_threshold_percent', 38),
-                        spill_config['max_share_percent'])
+                        spill_config['max_share_percent'],
+                        ceiling_active=int(spill_guidance.get('conservation_level') or 0) >= 2)
                     if spill_info:
                         reason += ':' + spill_reason
                         info = spill_info

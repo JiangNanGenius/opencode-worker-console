@@ -59,8 +59,9 @@ not mandatory.
 
 An optional `quota_spillover` rule fills the gap between healthy weighted routing and total
 fallback. Level 1 adds a later pay-as-you-go profile to the first Fast or Normal stage at a
-gradually increasing share. Level 2 temporarily replaces automatic Normal's source stage with
-the first available Fast source stage, then applies the same bounded share. Deep and explicit
+gradually increasing share. Level 2 holds the configured fallback ceiling as a stable share for
+eligible Fast/Normal admissions and temporarily replaces automatic Normal's source stage with
+the first available Fast source stage. Deep and explicit
 profiles never change. The Agent Plan preset uses 38% and 25% baselines with a 30% direct
 DeepSeek ceiling. These are adaptive guard rails: observed burn fits the combined work pool, and
 a nearby refill that materially improves the projected pool lowers both effective thresholds by

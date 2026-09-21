@@ -464,13 +464,14 @@ class RoutePolicyTests(unittest.TestCase):
             status = quota.routing_status(c, q)
             self.assertIn('quota_conservation_level2', status['background'][0]['reason'])
             self.assertEqual(set(status['background'][0]['members']), {'ark-auto', 'fallback'})
+            self.assertEqual(status['fast'][0]['members']['fallback']['effective_weight'], 30)
             self.assertNotIn('quota_conservation_level2', status['deep'][0]['reason'])
             self.assertEqual(quota.route(self.task(complexity='deep'), c, q)[0], 'ark-k3')
 
         fallback_weight = status['background'][0]['members']['fallback']['effective_weight']
         self.assertEqual(chosen.count('fallback'), fallback_weight)
         self.assertEqual(chosen.count('ark-auto'), 100 - fallback_weight)
-        self.assertLess(fallback_weight, 30)
+        self.assertEqual(fallback_weight, 30)
 
         # A fresh Kimi window restores the original strong Normal pool automatically.
         q['kimi-for-coding'] = provider(80)
@@ -1259,6 +1260,19 @@ class DynamicRunwayTests(unittest.TestCase):
             entries, providers, 'fallback', {'kimi-plan': .2, 'ark-plan': None}, 75, 30)
         self.assertEqual(unchanged, entries)
         self.assertEqual(reason, 'spillover_telemetry_unknown')
+
+    def test_level2_spillover_holds_configured_ceiling(self):
+        entries = [{'profile': 'ark', 'weight': 1}]
+        providers = {'ark': 'ark-plan', 'fallback': 'deepseek'}
+        effective, reason, info = routing.spillover(
+            entries, providers, 'fallback', {'ark-plan': .8}, 38, 33,
+            ceiling_active=True)
+        self.assertEqual(reason, 'quota_spillover_33pct')
+        self.assertEqual(effective, [
+            {'profile': 'ark', 'weight': 67},
+            {'profile': 'fallback', 'weight': 33},
+        ])
+        self.assertAlmostEqual(info['fallback']['share'], .33)
 
 
 if __name__ == '__main__':

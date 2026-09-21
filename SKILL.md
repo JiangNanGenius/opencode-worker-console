@@ -220,9 +220,10 @@ The threshold and native-K3 slot count are operator settings. A five-hour window
 mistaken for the weekly pool, and stale or missing telemetry does not invent a percentage.
 
 The optional conservation rule has two levels and protects strong subscription capacity before
-every plan reaches zero. Level 1 blends a bounded share of eligible Fast/Normal admissions into
-a configured later fallback such as direct DeepSeek. Level 2 temporarily serves automatic Normal
-work from the first available Fast source stage, then applies the same bounded fallback share.
+every plan reaches zero. Level 1 gradually blends a bounded share of eligible Fast/Normal
+admissions into a configured later fallback such as direct DeepSeek. Level 2 uses the configured
+fallback ceiling as a stable share for eligible Fast/Normal admissions and temporarily serves
+automatic Normal work from the first available Fast source stage.
 It never changes Deep or an explicit profile request. The installed Agent Plan baseline is 38%
 for Level 1 and 25% for Level 2, with a 30% fallback ceiling. These are guard rails rather than
 fixed switch points: the bridge fits the combined work pool from observed burn, then lowers the

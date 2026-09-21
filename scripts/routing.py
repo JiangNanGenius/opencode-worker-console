@@ -529,7 +529,7 @@ def dynamics(entries, provider_by_profile, quota_view=None, now=None, adaptive=N
 
 
 def spillover(entries, provider_by_profile, target_profile, runway_by_provider,
-              threshold_percent, max_share_percent):
+              threshold_percent, max_share_percent, ceiling_active=False):
     """Blend a later pay-as-you-go fallback into a constrained plan stage.
 
     The best known runway among the currently available plan providers controls the
@@ -558,9 +558,12 @@ def spillover(entries, provider_by_profile, target_profile, runway_by_provider,
                             not math.isfinite(value) for value in values):
         return original, 'spillover_telemetry_unknown', None
     best = max(0.0, max(float(value) for value in values))
-    if best >= threshold:
+    if not ceiling_active and best >= threshold:
         return original, 'spillover_runway_healthy', None
-    share = int(round(maximum * (1.0 - best / threshold)))
+    # Level 1 grows gradually as fitted runway falls. Once Level 2 is active,
+    # the operator has already crossed the stronger conservation guard, so use
+    # the configured fallback ceiling as a stable admission ratio.
+    share = maximum if ceiling_active else int(round(maximum * (1.0 - best / threshold)))
     if share <= 0:
         return original, 'spillover_below_one_percent', None
     share = min(maximum, share)
