@@ -12,8 +12,8 @@ import quota
 
 
 STATE_FILE = 'notifications.json'
-DEFAULT_ICON = ('https://cdn.jsdelivr.net/gh/JiangNanGenius/'
-                'opencode-worker-console@main/web/worker-desk-icon.png')
+DEFAULT_ICON = ('https://raw.githubusercontent.com/JiangNanGenius/'
+                'opencode-worker-console/main/web/worker-desk-icon.png')
 DEFAULTS = {
     'enabled': False,
     'credential': 'bark-endpoint',
