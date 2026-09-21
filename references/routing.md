@@ -70,6 +70,12 @@ off-peak even on official make-up workdays. A configurable, locally cached subsc
 weekday public holidays. Unknown calendar, balance or quota telemetry uses the lower cap and never
 invents a refill.
 
+The console's total-work-pool meter treats a pay-as-you-go balance increase as a new observation
+epoch. It never nets post-top-up balance against pre-top-up samples. When both observed balance
+burn and official token pricing are available, the higher burn rate bounds displayed endurance;
+one idle-heavy signal cannot lengthen the estimate. Routing conservation itself still excludes
+pay-as-you-go balance and follows subscription runway only.
+
 Budget guidance is provider-neutral. In **Models & routing**, each configured provider can use
 live telemetry when available, a manually entered rolling window (remaining percentage, duration
 and an explicit-zone reset time), a monetary balance threshold for pay-as-you-go accounts, or

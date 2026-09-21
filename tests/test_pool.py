@@ -225,15 +225,31 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(estimate['hours'], 600.0)
         self.assertEqual(estimate['task_count'], 3)
 
-    def test_payg_range_blends_long_balance_history_with_token_price(self):
+    def test_payg_range_uses_the_more_conservative_balance_or_token_rate(self):
         now = time.time()
         value = {'currency': 'CNY', 'remaining': 60.0}
         samples = [{'time': now - 12 * 3600, 'balances': {'CNY': 72.0}}]
         priced = {'rate_balance_per_hour': 0.4, 'sample_span_hours': 12}
         estimate = quota.balance_consumption_estimate(value, samples, now, priced)
-        self.assertEqual(estimate['source'], 'balance_and_official_pricing')
-        self.assertAlmostEqual(estimate['rate_balance_per_hour'], 0.85)
-        self.assertAlmostEqual(estimate['hours'], 70.59, places=2)
+        self.assertEqual(estimate['source'], 'conservative_balance_or_official_pricing')
+        self.assertAlmostEqual(estimate['rate_balance_per_hour'], 1.0)
+        self.assertAlmostEqual(estimate['hours'], 60.0, places=2)
+
+    def test_payg_topup_starts_a_new_balance_epoch(self):
+        now = time.time()
+        value = {'currency': 'CNY', 'remaining': 70.8}
+        samples = [
+            {'time': now - 8 * 3600, 'balances': {'CNY': 61.0}},
+            {'time': now - 3 * 3600, 'balances': {'CNY': 53.0}},
+            {'time': now - 1.5 * 3600, 'balances': {'CNY': 72.0}},
+        ]
+        priced = {'rate_balance_per_hour': .675, 'sample_span_hours': 8}
+        estimate = quota.balance_consumption_estimate(value, samples, now, priced)
+        self.assertEqual(estimate['source'], 'conservative_balance_or_official_pricing')
+        self.assertAlmostEqual(estimate['rate_balance_per_hour'], .8)
+        self.assertAlmostEqual(estimate['hours'], 88.5)
+        self.assertAlmostEqual(estimate['observed_capacity'], 72.0)
+        self.assertEqual(estimate['balance_epoch_started_at'], samples[-1]['time'])
 
     def test_quota_history_records_balance_numbers_without_provider_payload(self):
         now = time.time()

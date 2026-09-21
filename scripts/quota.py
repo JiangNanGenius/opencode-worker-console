@@ -535,7 +535,14 @@ def consumption_estimate(value, samples, now=None):
 
 
 def balance_consumption_estimate(value, samples, now=None, priced=None):
-    """Estimate PAYG range from official token prices and observed balance burn."""
+    """Estimate PAYG range from official token prices and observed balance burn.
+
+    A balance increase starts a new observation epoch. Mixing samples from before
+    and after a top-up can make net burn look close to zero and inflate remaining
+    runtime by hundreds of hours. When both balance burn and token pricing are
+    available, use the higher burn rate: this is a range estimate, so one weak or
+    idle-heavy signal must not lengthen the displayed endurance.
+    """
     now = time.time() if now is None else now
     remaining = number(value.get('remaining')) if isinstance(value, dict) else None
     currency = value.get('currency') if isinstance(value, dict) else None
@@ -548,6 +555,20 @@ def balance_consumption_estimate(value, samples, now=None, priced=None):
         if stamp is not None and prior is not None and 0 < now - stamp <= 7 * 86400:
             points.append((stamp, prior))
     points.sort()
+    # Segment balance history at the latest material increase. Provider balances
+    # are rounded, so ignore tiny corrections but treat an actual recharge as a
+    # new capacity epoch. Include the current reading to catch a top-up between
+    # the most recent stored sample and this response.
+    timeline = points + [(now, remaining)]
+    epoch_start = 0
+    for index in range(1, len(timeline)):
+        previous, current = timeline[index - 1][1], timeline[index][1]
+        threshold = max(.01, max(previous, current) * .005)
+        if current > previous + threshold:
+            epoch_start = index
+    topup_detected = epoch_start > 0
+    epoch_started_at = timeline[epoch_start][0] if topup_detected else None
+    points = timeline[epoch_start:-1]
     observed_capacity = max([remaining] + [prior for _, prior in points])
     # A five-minute burst extrapolates a wildly pessimistic range for model APIs.
     # Require one hour of wall-clock evidence, then use the longest available span
@@ -563,9 +584,8 @@ def balance_consumption_estimate(value, samples, now=None, priced=None):
     span_hours = (now - oldest[0]) / 3600 if oldest else number(priced.get('sample_span_hours')) or 0.0
     wall_rate = max(0.0, oldest[1] - remaining) / span_hours if oldest and span_hours > 0 else None
     if wall_rate is not None and priced_rate is not None:
-        wall_weight = .75 if span_hours >= 6 else .5
-        rate = wall_rate * wall_weight + priced_rate * (1 - wall_weight)
-        source = 'balance_and_official_pricing'
+        rate = max(wall_rate, priced_rate)
+        source = 'conservative_balance_or_official_pricing'
     elif wall_rate is not None:
         rate, source = wall_rate, 'wall_clock'
     else:
@@ -576,6 +596,8 @@ def balance_consumption_estimate(value, samples, now=None, priced=None):
                   'confidence': 'high' if span_hours >= 24 else 'medium' if span_hours >= 6 else 'low',
                   'sample_span_hours': round(span_hours, 2),
                   'observed_capacity': round(observed_capacity, 6)}
+        if topup_detected:
+            result['balance_epoch_started_at'] = epoch_started_at
         if isinstance(priced, dict):
             for key in ('estimated_spend_cny', 'tokens', 'task_count', 'pricing_effective'):
                 if key in priced:
@@ -588,6 +610,8 @@ def balance_consumption_estimate(value, samples, now=None, priced=None):
               'rate_balance_per_hour': round(rate, 6), 'source': source, 'idle': idle,
               'confidence': confidence, 'sample_span_hours': round(span_hours, 2),
               'observed_capacity': round(observed_capacity, 6)}
+    if topup_detected:
+        result['balance_epoch_started_at'] = epoch_started_at
     if isinstance(priced, dict):
         for key in ('estimated_spend_cny', 'tokens', 'task_count', 'pricing_effective'):
             if key in priced:

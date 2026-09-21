@@ -333,11 +333,12 @@ def _refill_forecast(components, capacity, now):
 def work_pool(config, quota_view, now=None, include_payg_balance=True):
     """Fit unlike provider quotas onto one actual-workload runtime axis.
 
-    Each slot's full width is its estimated runtime at its own observed burn
-    rate; the filled part is the fitted runtime still available. No AFP, token
-    price, or plan purchase price is used to weight this meter. Window duration
-    is a temporary cold-start prior only, allowing a reset source to reappear
-    before enough new-cycle samples exist.
+    Each slot's full width is its estimated runtime at its own conservative burn
+    rate; the filled part is the fitted runtime still available. DeepSeek may use
+    official token pricing to bound its balance range, but no AFP-equivalent or
+    plan purchase-price conversion weights unlike providers against each other.
+    Window duration is a temporary cold-start prior only, allowing a reset source
+    to reappear before enough new-cycle samples exist.
     """
     view = quota_view if isinstance(quota_view, dict) else {}
     deepseek = view.get('deepseek') if isinstance(view.get('deepseek'), dict) else {}
@@ -361,6 +362,8 @@ def work_pool(config, quota_view, now=None, include_payg_balance=True):
                               'payg_balance_included': bool(include_payg_balance),
                               'kimi_included': components['kimi'].get('capacity') is not None,
                               'notes': {'weights_use_observed_burn': True,
+                                        'balance_topups_start_new_epochs': True,
+                                        'balance_range_uses_conservative_rate': True,
                                         'afp_not_used_as_weight': True,
                                         'prices_not_used_as_weight': True}}}
 
