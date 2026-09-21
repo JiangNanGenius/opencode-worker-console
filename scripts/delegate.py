@@ -338,12 +338,24 @@ def daemon():
     # Per-job threads: no hidden executor cap across independent owners.
     threads = {}
     cleanup_thread = None
+    holiday_thread = None
+    last_holiday_refresh = 0
     last_refresh = 0
     last_cleanup = 0
     q = quota.view(read_json(STATE / 'quota.json', {}))
     while not stop.is_set():
         try:
             c = config()
+            import holiday_calendar
+            holiday_cfg = holiday_calendar.settings(c.get('deepseek_holiday_calendar'))
+            holiday_interval = holiday_cfg['refresh_hours'] * 3600
+            if holiday_cfg['enabled'] and \
+                    time.time() - last_holiday_refresh >= max(3600, holiday_interval) and \
+                    (holiday_thread is None or not holiday_thread.is_alive()):
+                last_holiday_refresh = time.time()
+                holiday_thread = threading.Thread(target=holiday_calendar.refresh,
+                                                  daemon=True, name='holiday-calendar')
+                holiday_thread.start()
             import cleanup
             cp = cleanup.policy()
             if cp['enabled'] and time.time() - last_cleanup >= cp['interval_seconds'] and \

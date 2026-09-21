@@ -59,13 +59,16 @@ not mandatory.
 
 An optional `quota_spillover` rule fills the gap between healthy weighted routing and total
 fallback. Level 1 adds a later pay-as-you-go profile to the first Fast or Normal stage at a
-gradually increasing share. Level 2 holds the configured fallback ceiling as a stable share for
-eligible Fast/Normal admissions and temporarily replaces automatic Normal's source stage with
-the first available Fast source stage. Deep and explicit
-profiles never change. The Agent Plan preset uses 38% and 25% baselines with a 30% direct
-DeepSeek ceiling. These are adaptive guard rails: observed burn fits the combined work pool, and
+gradually increasing share. Level 2 uses its own faster continuous curve and temporarily replaces
+automatic Normal's source stage with the first available Fast source stage. Deep and explicit
+profiles never change. The Agent Plan preset uses 38% and 25% baselines with a 33% Level 1/peak
+cap. During DeepSeek off-peak hours the Level 2 cap rises to 50% when fresh CNY balance remains
+at least 30. These are adaptive guard rails: observed burn fits the combined work pool, and
 a nearby refill that materially improves the projected pool lowers both effective thresholds by
-up to 30%. Unknown telemetry uses provider runway and never invents a refill.
+up to 30%. Beijing weekdays are peak only from 09:00-12:00 and 14:00-18:00; weekends remain
+off-peak even on official make-up workdays. A configurable, locally cached subscription identifies
+weekday public holidays. Unknown calendar, balance or quota telemetry uses the lower cap and never
+invents a refill.
 
 Budget guidance is provider-neutral. In **Models & routing**, each configured provider can use
 live telemetry when available, a manually entered rolling window (remaining percentage, duration
@@ -95,8 +98,10 @@ The stored shape is deliberately provider-neutral:
     "enabled": true,
     "profile": "backup",
     "tiers": ["fast", "background"],
-    "max_share_percent": 30,
-    "level2_runway_percent": 25
+    "max_share_percent": 33,
+    "level2_runway_percent": 25,
+    "level2_offpeak_share_percent": 50,
+    "level2_min_balance_cny": 30
   }
 }
 ```

@@ -221,11 +221,13 @@ mistaken for the weekly pool, and stale or missing telemetry does not invent a p
 
 The optional conservation rule has two levels and protects strong subscription capacity before
 every plan reaches zero. Level 1 gradually blends a bounded share of eligible Fast/Normal
-admissions into a configured later fallback such as direct DeepSeek. Level 2 uses the configured
-fallback ceiling as a stable share for eligible Fast/Normal admissions and temporarily serves
-automatic Normal work from the first available Fast source stage.
+admissions into a configured later fallback such as direct DeepSeek. Level 2 has its own faster
+continuous curve and temporarily serves automatic Normal work from the first available Fast
+source stage. The Level 2 cap may be higher during a provider's cheaper price window when its
+fresh monetary balance remains above the configured floor.
 It never changes Deep or an explicit profile request. The installed Agent Plan baseline is 38%
-for Level 1 and 25% for Level 2, with a 30% fallback ceiling. These are guard rails rather than
+for Level 1 and 25% for Level 2, with a 33% Level 1/peak cap and a 50% DeepSeek off-peak cap above
+a CNY 30 balance floor. These are guard rails rather than
 fixed switch points: the bridge fits the combined work pool from observed burn, then lowers the
 effective thresholds when a nearby refill will materially restore capacity. This lets strong
 models run when the pool can safely reach its refill while preserving enough capacity for a long
@@ -234,6 +236,9 @@ strong Normal pool automatically. Codex still chooses Fast, Normal or Deep from 
 and keeps `profile=auto`; it must not imitate these provider decisions in its own prompt. Read
 `conservation_level` from `quota --tier-guidance` when explaining current capacity: `0` is normal,
 `1` is bounded fallback sharing, and `2` is the temporary Normal-to-Fast source shift.
+For DeepSeek, Beijing weekdays are peak only during 09:00-12:00 and 14:00-18:00. Weekends remain
+off-peak even when they are official make-up workdays; a cached public-holiday subscription marks
+weekday holidays. Calendar or balance uncertainty keeps the lower cap.
 
 During either conservation level, the bridge may queue one proactive route continuation for an
 eligible long-running automatic Fast or Normal task after the configured age. It does not abort

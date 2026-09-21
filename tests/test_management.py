@@ -351,6 +351,7 @@ class ManagementTests(unittest.TestCase):
         self.assertEqual(set(result.keys()), {'profiles', 'max_parallel_per_owner',
                                               'kimi_reserve_percent', 'revision', 'cleanup', 'auto_approve',
                                               'kimi_monthly_reset', 'economics',
+                                              'deepseek_holiday_calendar',
                                               'kimi_low_weekly_threshold_percent',
                                               'kimi_low_weekly_k3_limit',
                                               'fast_bias_runway_percent',
@@ -361,6 +362,8 @@ class ManagementTests(unittest.TestCase):
                                               'notifications'})
         self.assertEqual(result['economics']['afp_cny_per_unit'], 0.002)
         self.assertEqual(result['economics']['kimi_plan_cny'], 699.0)
+        self.assertFalse(result['deepseek_holiday_calendar']['enabled'])
+        self.assertEqual(result['deepseek_holiday_calendar']['refresh_hours'], 24.0)
         self.assertEqual(result['max_parallel_per_owner'], 4)
         self.assertEqual(result['kimi_low_weekly_threshold_percent'], 5)
         self.assertEqual(result['kimi_low_weekly_k3_limit'], 1)
@@ -503,6 +506,21 @@ class ManagementTests(unittest.TestCase):
         self.assertEqual(stored['revision'], 1)
         self.assertTrue(stored['restart_required'])
         self.assertTrue(result['restart_required'])
+
+    def test_save_settings_round_trips_holiday_subscription(self):
+        body = self.valid_body()
+        body['deepseek_holiday_calendar'] = {
+            'enabled': True,
+            'urls': ['https://calendar.example/holidays.json'],
+            'refresh_hours': 12,
+        }
+        with patch.object(common, 'api', return_value={}):
+            result = management.save_settings(body)
+        self.assertEqual(result['deepseek_holiday_calendar'], {
+            'enabled': True,
+            'urls': ['https://calendar.example/holidays.json'],
+            'refresh_hours': 12.0,
+        })
 
     def test_save_settings_increments_existing_revision(self):
         config = self.base_config()

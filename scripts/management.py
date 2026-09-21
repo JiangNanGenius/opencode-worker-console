@@ -163,6 +163,9 @@ def settings():
     out['kimi_monthly_reset'] = quota.normalize_monthly_schedule(c.get('kimi_monthly_reset'))
     import economics
     out['economics'] = economics.normalize(c.get('economics'))
+    import holiday_calendar
+    out['deepseek_holiday_calendar'] = holiday_calendar.settings(
+        c.get('deepseek_holiday_calendar'))
     if isinstance(c.get('routing'), dict):
         out['routing'] = c['routing']
     # Expose the effective dispatch policy, not the raw record: a degraded reference is
@@ -270,6 +273,10 @@ def _validate_settings(body):
     if 'economics' in body:
         import economics
         result['economics'] = economics.validate(body['economics'])
+    if 'deepseek_holiday_calendar' in body:
+        import holiday_calendar
+        result['deepseek_holiday_calendar'] = holiday_calendar.validate(
+            body['deepseek_holiday_calendar'])
     routing = body.get('routing')
     if routing is not None:
         if not isinstance(routing, dict) or set(routing.keys()) != set(_ROUTING_KEYS):

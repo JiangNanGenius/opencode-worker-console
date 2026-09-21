@@ -1,6 +1,6 @@
 # Worker Desk
 
-**A local bridge for multi-model agent collaboration.**
+**Let Codex or Claude Code make the calls while OpenCode workers keep executing.**
 
 [简体中文](README.zh-CN.md) · [Installation](references/installation.md) · [Install with an AI agent](references/agent-install.md)
 
@@ -16,11 +16,20 @@ Reuse my existing OpenCode configuration and install in a permanent user directo
 Ask me only for a missing provider/model choice or a login I need to complete.
 ```
 
-The agent handles the installation steps and checks. If an account needs to be connected or a model chosen, it will guide you through that part.
+The agent handles installation, startup and health checks. You only step in for a provider login or a model choice.
 
-Let a capable coordinator handle planning, judgment and acceptance while OpenCode workers own complete execution tasks. Worker Desk connects them through a durable task queue, explicit workspaces, model profiles and an authenticated web console.
+Worker Desk is a local orchestration bridge. It turns a coordinator's judgment and OpenCode's execution into an operable worker pool: tasks have owners, workers have workspaces, models have routes, long jobs keep waiting, and results or errors return to the coordinator.
 
-The premise is that execution models are strong enough to deliver complete outcomes. Delegate repository investigation, implementation, test-and-fix, writing, SSH operations or deployment—not just tiny code fragments. Large-context workers can read substantial material and return concise findings with evidence. This can reduce reliance on premium-model capacity and overall monetary cost; **total tokens and savings depend on the workload, models and plans**.
+## Why it exists
+
+| Real constraint | Worker Desk response |
+| --- | --- |
+| Premium context is expensive and large repositories consume it quickly | Give complete investigation, implementation and test work to long-context workers; return compact evidence to the coordinator |
+| Several plans and models are useful, but manual selection drifts | The coordinator chooses Fast / Normal / Deep; the bridge chooses the actual model from capability, runway and price window |
+| Jobs can take tens of minutes and still need guidance or a model change | Durable queues, event-driven waits, same-session steering and boundary-safe rerouting keep work moving |
+| OpenCode sessions, workspaces, Tokens and retained evidence are fragmented | One authenticated console manages tasks, sessions, models, quota, statistics and cleanup |
+
+Execution models need to be capable, not identical to the frontier coordinator. Repository research, implementation, test repair, writing, SSH operations and routine deployment can all be delegated as complete outcomes. This often reduces premium-model allowance pressure and total monetary cost; **total Tokens and savings still depend on the workload, models and plans**.
 
 ## Architecture
 
@@ -112,18 +121,38 @@ unresolved system-wide causes, architecture trade-offs and unusually complex
 logic. File count, runtime, context size and importance do not make a task Deep, and genuinely
 Deep work has no separate task-count limit.
 
-## What you can manage
+## Product capabilities
 
-- **Tasks:** expand details directly under a task; cached metadata appears immediately while the full transcript loads with a bounded timeout. Inspect live activity and input/output/reasoning/cache tokens without leaving the console. Long model messages stay compact until **Expand full message** loads the complete redacted text on demand. The current filter shows recorded worker totals; these exclude coordinator usage and are not a cost estimate. Clearing a terminal task deletes its linked OpenCode conversation and disposable evidence after writing a compact token/cost/routing ledger. A `needs_attention` task becomes reclaimable after 24 idle hours or after a newer task appears under the same coordinator conversation. Integrated or unchanged isolated worktrees are released; unintegrated changes remain visible for review.
-- **Sessions:** search, create, rename, fork, archive/restore, workspace binding, deletion and native OpenCode links. Forking alone sends no prompt.
-- **Models, usage and economics:** visual profiles and route stages for one provider, primary/backup, fixed pools or opt-in quota adaptation; DeepSeek balance, Kimi plan windows and Ark AFP windows. Each provider can use live telemetry, a manual reset window, a monetary low-balance threshold, or opt out of dynamic guidance. Two-level conservation keeps quality as high as the fitted pool can sustain: Level 1 gradually shares Fast/Normal work with a later fallback; Level 2 holds that ceiling as a stable share for Fast/Normal and temporarily serves automatic Normal work from the Fast source pool, while Deep stays unchanged. The 38%/25% baselines are adjusted down when a nearby refill will materially restore capacity, using observed burn and the projected post-refill pool rather than fixed raw percentages. A low-weekly guard preserves the last Kimi allowance, and confirmed quota/429 stops can continue in the same session on the next route. Eligible long automatic Fast/Normal tasks can also queue a model change at a safe turn boundary during conservation; the current turn is never aborted, and Deep or explicitly pinned tasks stay fixed. The console fits every provider to runtime at its observed burn rate, so the colored total work-pool meter declines toward zero while its blank tail records consumed capacity; AFP values and purchase prices do not weight this meter. Only the tightest quota window shows a runway multiplier because that bottleneck governs the provider. Kimi and Ark keep their independent reset times, with the next refill and its projected post-refill pool shown separately instead of being counted early. It also shows each provider's expected pace, Beijing and local reset times, and live dynamic shares. DeepSeek runway combines observed balance burn with token-class pricing; its editable defaults follow the official Flash/Pro peak prices and off-peak multiplier. Cost comparison stays in Statistics and settings instead of being presented as a provider quota.
-- **Parallel work:** four running workers per owning Codex conversation by default; independent capacity across conversations. Conflicting files/resources and provider availability still govern dispatch.
-- **Workspaces:** disjoint shared scopes, remote operational targets or isolated Git worktrees; review patches before integration.
-- **Long jobs:** no artificial model-step, tool-call or total-runtime cap. Observe and guide through completion; never blindly replay uncertain operations.
-- **Statistics:** charts for the last hour, last 24 hours and last 30 days, plus Tokens by model/tier/status/profile, fallback counts and recent quota/balance samples. Cleaned-task Token, model and retention metadata lives in an expandable **History ledger** inside Statistics and loads only when opened.
-- **Host status:** the Tasks view reports CPU, memory, available disk space, system load and running/queued worker counts in real time.
-- **Notifications and credentials:** Bark alerts default to quota milestones only: conservation transitions and provider exhaustion/recovery. Per-task model-change alerts are optional and off by default. Notifications use the Worker Desk four-square icon through a configurable GitHub HTTPS URL; Bark caches it after download, and clearing the field keeps Bark's default icon. The Bark endpoint and Ark control-plane AK/SK are metadata-only references to environment variables or owner-only local files; values and source paths are never returned. Configure them under **Models & routing**. [Credential handling](references/credentials.md).
-- **Console:** password login, optional LAN/proxy access, and English, Simplified/Traditional Chinese, Japanese and Korean UI.
+### Delegate complete outcomes
+
+Workers can own investigation, implementation, test repair, writing, SSH operations and routine deployment instead of receiving tiny code fragments. Each task carries an objective, acceptance criteria, workspace, and file or remote-resource scope. The default is four concurrent workers per owning Codex conversation; separate conversations have independent capacity.
+
+### Route by capability
+
+The coordinator classifies uncertainty only: **Fast** for complete work with a clear direction and acceptance boundary, **Normal** for a concrete goal that still needs open investigation, and **Deep** for abstract goals, system-wide causes and difficult trade-offs. The bridge then selects a provider through a single model, ordered fallback chain, fixed pool or quota-adaptive pool. One provider is enough; multiple plans are an enhancement.
+
+Capacity protection uses two continuous curves. Level 1 gradually gives a later pay-as-you-go model some Fast/Normal work as subscription runway falls. Level 2 ramps faster and temporarily serves automatic Normal work from the Fast source pool. Deep and explicitly pinned models do not change. During DeepSeek off-peak hours, Level 2 can reach 50% when balance remains above the configured floor; peak hours or a low balance use the Level 1 ceiling. Weekends are always off-peak, while weekday public holidays come from a configurable, locally cached calendar subscription. See [routing and plan efficiency](references/routing.md).
+
+### Keep long jobs running
+
+There is no artificial model-step, tool-call or total-runtime cap. `wait` blocks and returns immediately when a result appears. Guidance and model changes can continue in the same OpenCode session at a safe turn boundary, preserving context and partial work. Confirmed quota exhaustion, usage-window limits and model-origin 429s continue through the next configured route without replaying the original task.
+
+### Operate from one console
+
+- Expand a task in place to inspect reverse-chronological activity, full redacted messages, input/output/reasoning/cache Tokens, and steer a running model.
+- Search, create, rename, fork, archive, bind, delete and open native OpenCode sessions.
+- Statistics reuse one usage snapshot every three seconds for the last hour, 24 hours and 30 days. Charts carry real Token scales plus model, tier, status and profile breakdowns.
+- Task scheduling reports CPU, memory, disk, load and worker counts. Cleaned-task Token, cost and route summaries remain in an expandable **History ledger**.
+
+### Clean safely and retain evidence
+
+Before deleting terminal work, Worker Desk writes a compact usage ledger, then removes the linked OpenCode session and disposable evidence. Integrated or unchanged managed worktrees are released; unintegrated changes stay for review. An idle `needs_attention` task becomes reclaimable after 24 hours or when a newer task exists under the same coordinator conversation.
+
+### Keep secrets local and alerts quiet
+
+OpenCode owns model authentication. Ark quota telemetry and Bark store only environment-variable names or owner-only file references; APIs and pages never return secret values. Bark defaults to conservation, exhaustion and recovery milestones. A coordinator may opt a key task into one completion alert. [Credential handling](references/credentials.md) · [Remote access](references/remote-access.md)
+
+The console supports English, Simplified and Traditional Chinese, Japanese and Korean. The dedicated Worker service defaults to Auto Approve and runs with the current user's privileges; scopes and resource locks coordinate work but are not an OS sandbox.
 
 ## First task
 

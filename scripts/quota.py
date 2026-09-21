@@ -1053,6 +1053,35 @@ def _spillover_runway_view(guidance, providers):
     return guidance.get('runway') or {}
 
 
+def _level2_spillover_cap(c, q, spill_config, target_provider, now=None):
+    """Return the Level 2 cap, using DeepSeek off-peak only with safe balance."""
+    base = int(spill_config.get('max_share_percent') or 0)
+    if target_provider != 'deepseek':
+        return base
+    offpeak = spill_config.get('level2_offpeak_share_percent', base)
+    floor = spill_config.get('level2_min_balance_cny', 0)
+    if isinstance(offpeak, bool) or not isinstance(offpeak, int) or offpeak < base:
+        return base
+    if isinstance(floor, bool) or not isinstance(floor, (int, float)) or not math.isfinite(floor):
+        return base
+    record = q.get('deepseek') if isinstance(q, dict) else None
+    if not isinstance(record, dict) or record.get('stale', True) or record.get('available') is not True:
+        return base
+    balances = [item.get('remaining') for item in record.get('balances') or []
+                if isinstance(item, dict) and item.get('currency') == 'CNY' and
+                isinstance(item.get('remaining'), (int, float)) and
+                not isinstance(item.get('remaining'), bool) and math.isfinite(item.get('remaining'))]
+    if not balances or sum(balances) < float(floor):
+        return base
+    try:
+        import economics
+        if economics.deepseek_peak(time.time() if now is None else now):
+            return base
+    except Exception:
+        return base
+    return min(routing.MAX_SPILLOVER_SHARE, offpeak)
+
+
 def _policy_route(t, c, q, stages, batch=None):
     """First stage with an admissible candidate, then a weighted choice within it.
 
@@ -1113,12 +1142,16 @@ def _policy_route(t, c, q, stages, batch=None):
                     spill_guidance = spill_guidance or tier_guidance(c, q)
                     if spill_guidance.get('quota_posture') == 'fast_preferred':
                         provider_by_profile[target] = target_provider
+                        level2_active = int(spill_guidance.get('conservation_level') or 0) >= 2
                         entries, spill_reason, _ = routing.spillover(
                             entries, provider_by_profile, target,
                             _spillover_runway_view(spill_guidance, source_providers),
                             spill_guidance.get('runway_threshold_percent', 38),
                             spill_config['max_share_percent'],
-                            ceiling_active=int(spill_guidance.get('conservation_level') or 0) >= 2)
+                            level2_threshold_percent=(spill_guidance.get('level2_runway_percent')
+                                                      if level2_active else None),
+                            level2_max_share_percent=(_level2_spillover_cap(
+                                c, q, spill_config, target_provider) if level2_active else None))
                         dynamic_reason += ':' + spill_reason
                         if any(entry['profile'] == target for entry in entries):
                             candidates.append(({'profile': target, 'weight': 1}, target_reason))
@@ -1404,13 +1437,17 @@ def routing_status(c, q):
                 target_ok, _ = allowed(target_provider, q, complexity, c.get('kimi_reserve_percent', 0))
                 if target_ok and target_provider not in set(provider_by_profile.values()):
                     provider_by_profile[target] = target_provider
+                    level2_active = int(spill_guidance.get('conservation_level') or 0) >= 2
                     effective, spill_reason, spill_info = routing.spillover(
                         effective, provider_by_profile, target,
                         _spillover_runway_view(spill_guidance, set(provider_by_profile.values()) -
                                                {target_provider}),
                         spill_guidance.get('runway_threshold_percent', 38),
                         spill_config['max_share_percent'],
-                        ceiling_active=int(spill_guidance.get('conservation_level') or 0) >= 2)
+                        level2_threshold_percent=(spill_guidance.get('level2_runway_percent')
+                                                  if level2_active else None),
+                        level2_max_share_percent=(_level2_spillover_cap(
+                            c, q, spill_config, target_provider) if level2_active else None))
                     if spill_info:
                         reason += ':' + spill_reason
                         info = spill_info

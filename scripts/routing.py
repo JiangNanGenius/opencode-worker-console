@@ -147,7 +147,8 @@ def validate_spillover(value, policy, profiles):
     if value in (None, {}):
         return None
     required = {'enabled', 'profile', 'tiers', 'max_share_percent'}
-    optional = {'level2_runway_percent'}
+    optional = {'level2_runway_percent', 'level2_offpeak_share_percent',
+                'level2_min_balance_cny'}
     if not isinstance(value, dict) or not required.issubset(value) or not set(value).issubset(required | optional):
         raise ValueError('quota_spillover requires enabled, profile, tiers and max_share_percent')
     enabled = value.get('enabled')
@@ -169,6 +170,15 @@ def validate_spillover(value, policy, profiles):
     if level2 is not None and (isinstance(level2, bool) or not isinstance(level2, int) or
                                not 0 <= level2 <= 100):
         raise ValueError('quota_spillover.level2_runway_percent must be an integer between 0 and 100')
+    offpeak = value.get('level2_offpeak_share_percent')
+    if offpeak is not None and (isinstance(offpeak, bool) or not isinstance(offpeak, int) or
+                                not maximum <= offpeak <= MAX_SPILLOVER_SHARE):
+        raise ValueError('quota_spillover.level2_offpeak_share_percent must be an integer between ' +
+                         str(maximum) + ' and ' + str(MAX_SPILLOVER_SHARE))
+    floor = value.get('level2_min_balance_cny')
+    if floor is not None and (isinstance(floor, bool) or not isinstance(floor, (int, float)) or
+                              not math.isfinite(floor) or not 0 <= floor <= 10000000):
+        raise ValueError('quota_spillover.level2_min_balance_cny must be a non-negative number')
     if not isinstance(policy, dict) or not policy:
         raise ValueError('quota_spillover requires routing_policy')
     for tier in tiers:
@@ -181,6 +191,10 @@ def validate_spillover(value, policy, profiles):
            'max_share_percent': maximum}
     if level2 is not None:
         out['level2_runway_percent'] = level2
+    if offpeak is not None:
+        out['level2_offpeak_share_percent'] = offpeak
+    if floor is not None:
+        out['level2_min_balance_cny'] = float(floor)
     return out
 
 
@@ -529,7 +543,8 @@ def dynamics(entries, provider_by_profile, quota_view=None, now=None, adaptive=N
 
 
 def spillover(entries, provider_by_profile, target_profile, runway_by_provider,
-              threshold_percent, max_share_percent, ceiling_active=False):
+              threshold_percent, max_share_percent, level2_threshold_percent=None,
+              level2_max_share_percent=None):
     """Blend a later pay-as-you-go fallback into a constrained plan stage.
 
     The best known runway among the currently available plan providers controls the
@@ -558,15 +573,32 @@ def spillover(entries, provider_by_profile, target_profile, runway_by_provider,
                             not math.isfinite(value) for value in values):
         return original, 'spillover_telemetry_unknown', None
     best = max(0.0, max(float(value) for value in values))
-    if not ceiling_active and best >= threshold:
+    if best >= threshold:
         return original, 'spillover_runway_healthy', None
-    # Level 1 grows gradually as fitted runway falls. Once Level 2 is active,
-    # the operator has already crossed the stronger conservation guard, so use
-    # the configured fallback ceiling as a stable admission ratio.
-    share = maximum if ceiling_active else int(round(maximum * (1.0 - best / threshold)))
+    share = maximum * (1.0 - best / threshold)
+    effective_maximum = maximum
+    level2_active = False
+    try:
+        level2_threshold = float(level2_threshold_percent) / 100.0
+        level2_maximum = int(level2_max_share_percent)
+        level2_active = 0 < level2_threshold < threshold and best <= level2_threshold and \
+            maximum <= level2_maximum <= MAX_SPILLOVER_SHARE
+    except (TypeError, ValueError):
+        level2_active = False
+    if level2_active:
+        # Continue smoothly from the Level 1 curve at the Level 2 boundary,
+        # then ramp faster to the Level 2 cap. The cap is reached when fitted
+        # runway falls to two thirds of the Level 2 threshold, not only at zero.
+        entry_share = maximum * (1.0 - level2_threshold / threshold)
+        full_share_runway = level2_threshold * (2.0 / 3.0)
+        progress = min(1.0, max(0.0, (level2_threshold - best) /
+                                max(0.000001, level2_threshold - full_share_runway)))
+        share = entry_share + (level2_maximum - entry_share) * progress
+        effective_maximum = level2_maximum
+    share = int(round(share))
     if share <= 0:
         return original, 'spillover_below_one_percent', None
-    share = min(maximum, share)
+    share = min(effective_maximum, share)
     source_budget = 100 - share
     total = sum(entry['weight'] for entry in original) or 1
     raw = [source_budget * entry['weight'] / total for entry in original]
@@ -593,7 +625,8 @@ def spillover(entries, provider_by_profile, target_profile, runway_by_provider,
                                'provider': provider_by_profile.get(entry['profile']),
                                'runway': runway_by_provider.get(provider_by_profile.get(entry['profile']))}
             for entry in out}
-    return out, 'quota_spillover_' + str(share) + 'pct', info
+    prefix = 'quota_spillover_level2_' if level2_active else 'quota_spillover_'
+    return out, prefix + str(share) + 'pct', info
 
 
 def advance(entries, credits):

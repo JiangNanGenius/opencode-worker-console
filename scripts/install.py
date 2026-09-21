@@ -92,8 +92,18 @@ DEFAULT_QUOTA_SPILLOVER = {
     'enabled': True,
     'profile': 'fallback',
     'tiers': ['fast', 'background'],
-    'max_share_percent': 30,
+    'max_share_percent': 33,
     'level2_runway_percent': 25,
+    'level2_offpeak_share_percent': 50,
+    'level2_min_balance_cny': 30.0,
+}
+DEFAULT_DEEPSEEK_HOLIDAY_CALENDAR = {
+    'enabled': True,
+    'urls': [
+        'https://www.shuyz.com/githubfiles/china-holiday-calender/master/holidayAPI.json',
+        'https://raw.githubusercontent.com/lanceliao/china-holiday-calender/master/holidayAPI.json',
+    ],
+    'refresh_hours': 24,
 }
 # Concurrency is capped per owning Codex conversation (owner_thread_id), never
 # globally or per provider; the scheduler reads max_parallel_per_owner (default 4).
@@ -351,6 +361,7 @@ def load_or_build_config(args, opencode):
         c['routing_policy'] = DEFAULT_ROUTING_POLICY
         c['routing_dynamics'] = DEFAULT_ROUTING_DYNAMICS
         c['quota_spillover'] = DEFAULT_QUOTA_SPILLOVER
+        c['deepseek_holiday_calendar'] = DEFAULT_DEEPSEEK_HOLIDAY_CALENDAR
     # Legacy global/provider cap fields (max_parallel, max_kimi_parallel,
     # provider_limits) are never written for new installs and are left inert
     # on disk for existing configs; max_parallel_per_owner is the only cap.

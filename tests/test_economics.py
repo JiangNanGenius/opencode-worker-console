@@ -5,6 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import economics
+import holiday_calendar
 
 
 class EconomicsTests(unittest.TestCase):
@@ -169,6 +170,15 @@ class EconomicsTests(unittest.TestCase):
         self.assertAlmostEqual(peak_cost['cost_cny'], 10.04)
         self.assertFalse(offpeak_cost['peak'])
         self.assertAlmostEqual(offpeak_cost['cost_cny'], 5.02)
+
+    def test_deepseek_weekends_and_public_holidays_are_offpeak(self):
+        # A make-up work Sunday is still off-peak under DeepSeek's weekend rule.
+        makeup_sunday = datetime(2026, 9, 20, 2, 0, tzinfo=timezone.utc).timestamp()
+        # The bundled State Council range marks Mid-Autumn Friday as a holiday.
+        holiday_friday = datetime(2026, 9, 25, 2, 0, tzinfo=timezone.utc).timestamp()
+        self.assertFalse(economics.deepseek_peak(makeup_sunday))
+        self.assertTrue(holiday_calendar.is_public_holiday(datetime(2026, 9, 25).date()))
+        self.assertFalse(economics.deepseek_peak(holiday_friday))
 
 
 if __name__ == '__main__':

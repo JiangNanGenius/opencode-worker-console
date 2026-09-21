@@ -85,7 +85,15 @@ def validate(value):
 def deepseek_peak(timestamp):
     """Return whether one timestamp falls in DeepSeek's Beijing peak band."""
     local = datetime.fromtimestamp(timestamp, timezone.utc) + timedelta(hours=8)
-    return local.weekday() < 5 and (9 <= local.hour < 12 or 14 <= local.hour < 18)
+    if local.weekday() >= 5:
+        return False  # Weekends stay off-peak even when they are make-up workdays.
+    try:
+        import holiday_calendar
+        if holiday_calendar.is_public_holiday(local.date()):
+            return False
+    except Exception:
+        pass  # The ordinary weekday/time rule remains a safe pricing fallback.
+    return 9 <= local.hour < 12 or 14 <= local.hour < 18
 
 
 def _usage_number(value):
