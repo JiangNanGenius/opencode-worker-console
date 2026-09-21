@@ -186,6 +186,20 @@ test('quota range distinguishes paused sampling, collection and burn estimates',
   assert.equal((details.match(/quota\.bottleneckRunway/g)||[]).length,1);
 });
 
+test('every provider header exposes a quota-level state', async () => {
+  const h=appHarness();await tick();
+  h.run(`data.profiles={ds:{model:"deepseek/flash"},kimi:{model:"kimi-for-coding/k3"},ark:{model:"volcengine-agent-plan/k3"}};
+    data.quota={deepseek:{available:true,balances:[{remaining:8,currency:"CNY"}]},
+      "kimi-for-coding":{available:false,windows:[{name:"overall",valid:true,remaining:0,remaining_percent:0}]},
+      "volcengine-agent-plan":{available:true,windows:[{name:"AFPWeekly",valid:true,remaining_percent:8,duration_minutes:10080,resets_at:new Date(Date.now()+100*3600000).toISOString(),consumption_estimate:{hours:10}}]}};
+    data.tier_guidance={runway_threshold_percent:38,budget_signals:{deepseek:{low:true}}};renderQuota()`);
+  assert.equal(h.get('ds-state').textContent,'quota.state.nearExhausted');
+  assert.equal(h.get('kimi-state').textContent,'quota.state.exhausted');
+  assert.equal(h.get('ark-state').textContent,'quota.state.nearExhausted');
+  assert.match(h.get('ds-state').className,/tight/);
+  assert.match(h.get('kimi-state').className,/critical/);
+});
+
 test('work pool uses fitted runtime, with DeepSeek as a small observed share', async () => {
   const h=appHarness();await tick();
   h.run('data.quota={deepseek:{available:true,balances:[{remaining:50,currency:"CNY"}]},"kimi-for-coding":{available:false,windows:[{name:"overall",remaining_percent:0}]},"volcengine-agent-plan":{available:true,windows:[{name:"AFPWeekly",remaining_percent:44}]}};data.tier_guidance={conservation_level:2};data.economics={work_pool:{capacity:321.667,total:80,remaining_percent:24.87,refills:[{provider:"kimi",resets_at:new Date(Date.now()+72000000).toISOString(),projected_remaining_percent:66}],components:{balance:{capacity:30,amount:25,remaining_percent:83.333},kimi:{capacity:166.667,amount:0,remaining_percent:0},plan:{capacity:125,amount:55,remaining_percent:44}}}};data.profiles={ds:{model:"deepseek/flash"},kimi:{model:"kimi-for-coding/k3"},ark:{model:"volcengine-agent-plan/k3"}};renderQuota()');

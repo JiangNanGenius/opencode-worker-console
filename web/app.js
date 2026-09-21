@@ -50,6 +50,31 @@ function resetTime(value) { const d=resetDate(value);if(!d)return tr('reset.unkn
 function windowRunway(w){const p=Number(w?.remaining_percent),d=resetDate(w?.resets_at),duration=Number(w?.duration_minutes),estimate=w?.consumption_estimate||{};if(!Number.isFinite(p)||!d||d.getTime()<=Date.now())return null;const resetHours=(d.getTime()-Date.now())/3600000,estimatedHours=estimate.hours==null?NaN:Number(estimate.hours);if(estimate.idle)return 4;if(Number.isFinite(estimatedHours)&&resetHours>0)return Math.max(0,Math.min(4,estimatedHours/resetHours));if(!Number.isFinite(duration)||duration<=0)return null;const fraction=Math.max(0,Math.min(1,(d.getTime()-Date.now())/(duration*60000)));return fraction>0?Math.max(0,Math.min(4,p/100/fraction)):null;}
 function expectedRemaining(w){const d=resetDate(w?.resets_at),duration=Number(w?.duration_minutes);if(!d||!Number.isFinite(duration)||duration<=0)return null;return Math.max(0,Math.min(100,(d.getTime()-Date.now())/(duration*60000)*100));}
 function quotaPace(w){const p=Number(w?.remaining_percent),runway=windowRunway(w),threshold=(data.tier_guidance?.runway_threshold_percent??38)/100;if(Number.isFinite(p)&&p<=0)return ['exhausted',tr('quota.paceExhausted')];if(runway==null)return ['unknown',tr('quota.paceUnknown')];if(runway<.35)return ['critical',tr('quota.paceCritical')];if(runway<threshold)return ['tight',tr('quota.paceTight')];if(runway<1.15)return ['on-track',tr('quota.paceOnTrack')];return ['healthy',tr('quota.paceHealthy')];}
+function planQuotaState(q,forcedExhausted=false){
+ q=q&&typeof q==='object'?q:{};
+ const windows=(q.windows||[]).filter(w=>w&&w.valid!==false&&Number.isFinite(Number(w.remaining_percent)));
+ const exhausted=forcedExhausted||q.available===false||windows.some(w=>Number(w.remaining_percent)<=0);
+ if(q.state==='no_credential')return {tone:'unknown',text:tr('quota.state.notConfigured')};
+ if(q.state==='auth_error')return {tone:'unknown',text:tr('quota.state.authError')};
+ if(exhausted)return {tone:'critical',text:tr('quota.state.exhausted')};
+ if(q.stale)return {tone:'unknown',text:tr('quota.state.stale')};
+ const paces=windows.map(w=>quotaPace(w)[0]);
+ if(paces.some(p=>p==='critical'||p==='tight'))return {tone:'tight',text:tr('quota.state.nearExhausted')};
+ if(q.available===true||windows.length)return {tone:'healthy',text:tr('quota.state.sufficient')};
+ return {tone:'unknown',text:tr('quota.state.unknown')};
+}
+function balanceQuotaState(q){
+ q=q&&typeof q==='object'?q:{};
+ const balances=(q.balances||[]).filter(b=>Number.isFinite(Number(b.remaining)));
+ const positive=balances.some(b=>Number(b.remaining)>0);
+ if(q.state==='auth_error')return {tone:'unknown',text:tr('quota.state.authError')};
+ if(q.available===false||(balances.length&&!positive))return {tone:'critical',text:tr('quota.state.exhausted')};
+ if(q.stale)return {tone:'unknown',text:tr('quota.state.stale')};
+ if(data.tier_guidance?.budget_signals?.deepseek?.low===true)return {tone:'tight',text:tr('quota.state.nearExhausted')};
+ if(q.available===true||positive)return {tone:'healthy',text:tr('quota.state.sufficient')};
+ return {tone:'unknown',text:tr('quota.state.unknown')};
+}
+function applyQuotaState(id,state){const el=$(id);if(!el)return;el.textContent=state.text;el.className='quota-state '+state.tone;}
 function quotaTrack(p,label){const value=Number.isFinite(Number(p))?Math.max(0,Math.min(100,Number(p))):0;return `<svg class="quota-track" viewBox="0 0 100 8" role="img" aria-label="${esc(label)}"><rect class="quota-track-bg" x="0" y="1" width="100" height="6" rx="3"/><rect class="quota-track-fill" x="0" y="1" width="${value}" height="6" rx="3"/></svg>`;}
 function poolStateText(state){
   if(state==='unavailable')return tr('quota.poolUnavailable');
@@ -155,14 +180,15 @@ function renderQuota(){const providers=new Set(Object.values(data.profiles||{}).
  renderPool(providers);
  $('ds-balance').textContent=ds.balances?.length?ds.balances.map(b=>(b.currency==='CNY'?'¥':b.currency==='USD'?'$':b.currency+' ')+fixed2(b.remaining)).join(' / '):'—';
  $('ds-range').textContent=estimatedBalanceRange(ds);
- $('ds-state').textContent=ds.state==='auth_error'?tr('quota.state.authError'):ds.available===false?tr('quota.state.unavailable'):ds.stale?tr('quota.state.stale'):ds.available===true?tr('quota.state.available'):tr('quota.state.unknown');
+ applyQuotaState('ds-state',balanceQuotaState(ds));
  $('ds-time').textContent=ds.sampled_at?tr('quota.sampledAt',{time:clock(ds.sampled_at)})+(ds.stale?tr('quota.lastSuccess'):''):tr('quota.noSample');
  const windows=k.windows||[];setHTML($('kimi-windows'),quotaWindows(windows));
  const monthlyExhausted=k.billing?.reason==='monthly_usage_limit';const endpointEmpty=k.billing?.telemetry_available===false||(!k.billing&&k.available===false)||windows.some(w=>w.valid!==false&&w.remaining===0);
+ applyQuotaState('kimi-state',planQuotaState(k,monthlyExhausted||endpointEmpty));
  $('kimi-time').textContent=tr('quota.kimiShared')+(k.sampled_at?tr('quota.sampleSuffix',{time:clock(k.sampled_at)}):'')+(k.stale?tr('quota.staleSuffix'):'')+(endpointEmpty?' · '+tr('quota.state.unavailable'):monthlyExhausted?' · '+tr('quota.monthlyExhausted'):k.state==='auth_error'?tr('quota.authErrorSuffix'):k.available===false?' · '+tr('quota.state.unavailable'):'');
  $('kimi-time').classList.toggle('danger-text',monthlyExhausted);
  const reset=k.monthly_reset;const next=$('kimi-monthly-next');next.hidden=!(reset?.enabled&&reset.next_reset_at);next.textContent=next.hidden?'':tr('quota.nextMonthlyReset',{time:resetTime(reset.next_reset_at),zone:reset.timezone});
- setHTML($('ark-windows'),quotaWindows(ark.windows||[],true));$('ark-state').textContent=ark.state==='no_credential'?tr('quota.state.notConfigured'):ark.state==='auth_error'?tr('quota.state.authError'):ark.available===false?tr('quota.state.unavailable'):ark.stale?tr('quota.state.stale'):ark.available===true?tr('quota.state.available'):tr('quota.state.unknown');$('ark-time').textContent=(ark.plan?.type?ark.plan.type+' · ':'')+(ark.sampled_at?tr('quota.sampledAt',{time:clock(ark.sampled_at)}):tr('quota.noSample'));
+ setHTML($('ark-windows'),quotaWindows(ark.windows||[],true));applyQuotaState('ark-state',planQuotaState(ark));$('ark-time').textContent=(ark.plan?.type?ark.plan.type+' · ':'')+(ark.sampled_at?tr('quota.sampledAt',{time:clock(ark.sampled_at)}):tr('quota.noSample'));
 }
 function ordered(items){const ids=new Set(items.map(t=>t.id)),out=[],seen=new Set();function visit(t,depth){if(seen.has(t.id))return;seen.add(t.id);out.push([t,depth]);items.filter(x=>x.parent_task_id===t.id).forEach(x=>visit(x,depth+1));}items.filter(t=>!ids.has(t.parent_task_id)).forEach(t=>visit(t,0));items.forEach(t=>visit(t,0));return out;}
 const detailPanel = $('detail');
