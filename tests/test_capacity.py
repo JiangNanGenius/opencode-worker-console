@@ -85,19 +85,34 @@ class CapacityTests(unittest.TestCase):
         pool = economics.work_pool(c, q, NOW, False)
         self.assertEqual(pool['total'], pool['components']['plan']['amount'])
 
-    def test_conservation_recovery_needs_margin_and_stable_period(self):
+    def test_conservation_recovery_requires_observed_replenishment(self):
         prior = {'level':2, 'at':NOW}
         held = capacity.transition(1, 27, [38,25], prior, NOW + 1)
         self.assertEqual(held['level'], 2)
-        pending = capacity.transition(1, 32, [38,25], held, NOW + 60)
-        self.assertEqual(pending['level'], 2)
-        released = capacity.transition(1, 32, [38,25], pending, NOW + 361)
+        # A better forecast, even after a long wait, is not proof of a top-up.
+        held = capacity.transition(1, 80, [38,25], held, NOW + 3600)
+        self.assertEqual(held['level'], 2)
+        released = capacity.transition(1, 32, [38,25], held, NOW + 3601, recovery=True)
         self.assertEqual(released['level'], 1)
         self.assertEqual(capacity.transition(2, 15, [38,25], released, NOW + 362)['level'],2)
         self.assertEqual(capacity.transition(0, 100, [38,25], prior, NOW + 1, recovery=True)['level'],0)
 
+    def test_quota_replenishment_requires_authoritative_counter_increase(self):
+        c = {'profiles': {'auto': {'model': 'ark/auto'}},
+             'routing_policy': {'fast': [[{'profile': 'auto', 'weight': 1}]],
+                                'background': [[{'profile': 'auto', 'weight': 1}]]}}
+        before = {'ark': provider([win('five', p=12)])}
+        unchanged = {'ark': provider([win('five', p=12)])}
+        topped_up = {'ark': provider([win('five', p=99)])}
+        observed = quota._plan_window_observation(c, before)
+        self.assertFalse(quota._observed_replenishment(observed,
+                                                       quota._plan_window_observation(c, unchanged)))
+        self.assertTrue(quota._observed_replenishment(observed,
+                                                      quota._plan_window_observation(c, topped_up)))
+
     def test_unknown_does_not_create_new_conservation(self):
-        self.assertEqual(capacity.transition(0,None,[38,25],{'level':2,'at':NOW},NOW+1)['level'],0)
+        self.assertEqual(capacity.transition(0,None,[38,25],{'level':2,'at':NOW},NOW+1)['level'],2)
+        self.assertEqual(capacity.transition(2,None,[38,25],{'level':0,'at':NOW},NOW+1)['level'],2)
 
     def test_capability_floor_filters_admission_and_recovery(self):
         c={'profiles':{'a':{'model':'a/normal'}, 'f':{'model':'b/fast'}, 'd':{'model':'a/deep'}},

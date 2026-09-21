@@ -1554,12 +1554,64 @@ def observe_load(c, q, now=None):
     signature = _control_policy(c)
     if previous.get('policy') != signature:
         previous = {}
+    observation = _plan_window_observation(c, q)
+    replenished = _observed_replenishment(previous.get('quota_observation'), observation)
     state = capacity.transition(raw['conservation_level'], raw['capacity_pressure_percent'],
                                 [raw['runway_threshold_percent'], raw['level2_runway_percent']],
-                                previous, now, raw['conservation_refill_safe'])
+                                previous, now, replenished)
     state['policy'] = signature
+    state['quota_observation'] = observation
+    state['replenished_at'] = now if replenished else previous.get('replenished_at')
     write_json(STATE / 'load-control.json', state)
     return state
+
+
+def _plan_window_observation(c, q):
+    """Return the persisted, non-secret counters used to prove a real refill."""
+    providers = set()
+    policy = routing.configured(c)
+    spill = routing.configured_spillover(c, policy)
+    spill_model = ((c.get('profiles') or {}).get((spill or {}).get('profile')) or {}).get('model')
+    spill_provider = spill_model.split('/', 1)[0] if isinstance(spill_model, str) and '/' in spill_model else None
+    for tier in ('fast', 'background'):
+        for stage in (policy or {}).get(tier) or []:
+            for entry in stage:
+                model = ((c.get('profiles') or {}).get(entry.get('profile')) or {}).get('model')
+                if isinstance(model, str) and '/' in model:
+                    provider = model.split('/', 1)[0]
+                    if provider != spill_provider:
+                        providers.add(provider)
+    result = {}
+    for provider in providers:
+        record = q.get(provider) or {}
+        if record.get('stale', True) or record.get('state') != 'ok':
+            continue
+        for index, window in enumerate(record.get('windows') or []):
+            if not isinstance(window, dict) or window.get('valid', True) is not True:
+                continue
+            value = window.get('remaining_percent')
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                continue
+            name = str(window.get('name') or f'window-{index}')
+            duration = window.get('duration_minutes')
+            key = f'{provider}|{name}|{duration}'
+            result[key] = {'remaining_percent': float(value), 'resets_at': window.get('resets_at')}
+    return result
+
+
+def _observed_replenishment(previous, current):
+    """True only when an authoritative quota counter has actually increased."""
+    if not isinstance(previous, dict) or not isinstance(current, dict):
+        return False
+    for key, value in current.items():
+        old = previous.get(key)
+        if not isinstance(old, dict) or not isinstance(value, dict):
+            continue
+        before, after = old.get('remaining_percent'), value.get('remaining_percent')
+        if all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+               for v in (before, after)) and float(after) >= float(before) + 0.5:
+            return True
+    return False
 
 
 def tier_guidance(c, q, _raw=False):
@@ -1706,14 +1758,9 @@ def tier_guidance(c, q, _raw=False):
             plan_signals[p] = 0.0
     reliable = bool(plan_signals) and all(v is not None for v in plan_signals.values())
     pressure_percent = max(plan_signals.values()) * 100 if reliable else None
-    # A refill is safe only if CURRENT usable providers individually reach it;
-    # summing simultaneous wall-clock runtimes would overstate coverage.
-    import capacity
-    ranges = [capacity.provider(q.get(p), now).get('hours') for p in plan_provider_ids
-              if (q.get(p) or {}).get('available') is True]
-    refill_safe = bool(reliable and refill and refill.get('restored_hours', 0) > 0 and
-                       0 <= float(refill.get('hours_until', 999)) <= 2 and ranges and
-                       all(h is not None and h >= float(refill['hours_until']) for h in ranges))
+    # Forecast refills are display-only. They must never release conservation
+    # before the authoritative provider telemetry actually reports a top-up.
+    refill_safe = False
     lost_normal = set(normal['configured']) - normal_providers
     fast_low = bool(overlap) and any(signals.get(provider, {}).get('low') is True for provider in overlap)
     alternates_healthy = any(signals.get(provider, {}).get('low') is False for provider in alternate)
@@ -1751,9 +1798,9 @@ def tier_guidance(c, q, _raw=False):
     raw_level = conservation_level
     if not _raw:
         control = read_json(STATE / 'load-control.json', {})
-        if control.get('policy') == _control_policy(c) and reliable and now - control.get('at', 0) <= 900:
+        if control.get('policy') == _control_policy(c) and reliable:
             held = int(control.get('level', raw_level))
-            if held > raw_level and not refill_safe:
+            if held > raw_level:
                 conservation_level = held
                 posture, fast_bias = 'fast_preferred', True
     return {'prefer_fast_when_both_fit': fast_bias, 'quota_posture': posture, 'reason': reason,

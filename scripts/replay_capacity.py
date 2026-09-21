@@ -20,6 +20,7 @@ def replay(history, config, limit=240):
     raw_counts, stable_counts = collections.Counter(), collections.Counter()
     raw_changes = stable_changes = 0
     old_raw = old_stable = None
+    previous_observation = None
     for now in points:
         views = {}
         for p, rows in series.items():
@@ -47,9 +48,12 @@ def replay(history, config, limit=240):
         with patch.object(time, 'time', return_value=now):
             guidance = quota.tier_guidance(config, views, _raw=True)
         raw = guidance['conservation_level']
+        observation = quota._plan_window_observation(config, views)
+        replenished = quota._observed_replenishment(previous_observation, observation)
         control = capacity.transition(raw, guidance['capacity_pressure_percent'],
                                       [guidance['runway_threshold_percent'], guidance['level2_runway_percent']],
-                                      control, now, guidance['conservation_refill_safe'])
+                                      control, now, replenished)
+        previous_observation = observation
         stable = control['level']
         raw_counts[raw] += 1
         stable_counts[stable] += 1

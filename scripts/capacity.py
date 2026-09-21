@@ -81,20 +81,21 @@ def provider(record, now):
 
 
 def transition(raw_level, pressure, thresholds, previous, now, recovery=False):
-    """Immediate protection, delayed recovery with a five-point exit margin.
+    """Immediate protection; release only after observed quota replenishment.
 
     Read/preview callers never update state. Refresh owns persistence. Unknown data
-    produces no new conservation action; a confirmed recovered pool can exit promptly.
+    produces no new conservation action. Forecast refills are deliberately ignored:
+    a lower conservation level is accepted only when fresh telemetry proves that at
+    least one subscription window was actually replenished.
     """
     previous = previous if isinstance(previous, dict) else {}
     old = previous.get('level', raw_level)
-    if old not in (0, 1, 2) or now - previous.get('at', 0) > 900:
+    if old not in (0, 1, 2):
         old = raw_level
-    if pressure is None or recovery or raw_level >= old:
+    if raw_level >= old:
         return {'level': raw_level, 'at': now, 'pending_since': None}
-    boundary = thresholds[old - 1] + 5
-    if pressure <= boundary:
+    if pressure is None:
         return {'level': old, 'at': now, 'pending_since': None}
-    pending = previous.get('pending_since') or now
-    return {'level': raw_level if now - pending >= 300 else old, 'at': now,
-            'pending_since': pending}
+    if recovery:
+        return {'level': raw_level, 'at': now, 'pending_since': None}
+    return {'level': old, 'at': now, 'pending_since': None}

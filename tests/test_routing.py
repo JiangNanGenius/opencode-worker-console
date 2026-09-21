@@ -490,6 +490,42 @@ class RoutePolicyTests(unittest.TestCase):
             self.assertIn(restored, {'senior-code', 'ark-k3'})
             self.assertNotIn('quota_conservation_level2', why)
 
+    def test_imminent_forecast_refill_never_cancels_level2(self):
+        now = 1_800_000_000
+        c = json.loads(json.dumps(self.c))
+        c['profiles']['ark-auto']['model'] = 'volcengine-agent-plan/ark-code-latest'
+        c['profiles']['ark-k3']['model'] = 'volcengine-agent-plan/kimi-k3'
+        c['routing_policy'] = {
+            'fast': [[{'profile': 'ark-auto', 'weight': 1}],
+                     [{'profile': 'fallback', 'weight': 1}]],
+            'background': [[{'profile': 'senior-code', 'weight': 1},
+                            {'profile': 'ark-k3', 'weight': 1}],
+                           [{'profile': 'ark-auto', 'weight': 1}],
+                           [{'profile': 'fallback', 'weight': 1}]],
+        }
+        c['quota_spillover'] = {'enabled': True, 'profile': 'fallback',
+                                 'tiers': ['fast', 'background'], 'max_share_percent': 30,
+                                 'level2_runway_percent': 25}
+
+        def observed(percent, hours, reset_hours, available=True):
+            return {'state': 'ok', 'available': available, 'stale': False,
+                    'windows': [{'name': 'window', 'valid': True,
+                                 'remaining_percent': percent, 'duration_minutes': 10080,
+                                 'resets_at': now + reset_hours * 3600,
+                                 'consumption_estimate': {'hours': hours}}]}
+
+        q = {'kimi-for-coding': observed(0, 0, 100, available=False),
+             'volcengine-agent-plan': observed(10, 10, 100),
+             'deepseek': {'state': 'ok', 'available': True, 'stale': False, 'windows': []}}
+        fitted = {'complete': True, 'remaining_percent': 2,
+                  'refills': [{'provider': 'volcengine-agent-plan', 'hours_until': 1,
+                               'restored_hours': 2, 'projected_remaining_percent': 3}]}
+        with patch('economics.work_pool', return_value=fitted), \
+             patch.object(quota.time, 'time', return_value=now):
+            guidance = quota.tier_guidance(c, q, _raw=True)
+        self.assertFalse(guidance['conservation_refill_safe'])
+        self.assertEqual(guidance['conservation_level'], 2)
+
     def test_level2_normal_inherits_the_fast_pools_continuous_curve(self):
         c = json.loads(json.dumps(self.c))
         c['kimi_reserve_percent'] = 0
