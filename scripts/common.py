@@ -18,11 +18,13 @@ STATE = Path(os.environ.get('DELEGATE_STATE', '~/.local/state/delegate-opencode'
 CONFIG = Path(os.environ.get('DELEGATE_CONFIG', '~/.config/opencode/delegate-pool.json')).expanduser()
 ACTIVE = {'starting', 'running', 'stopping', 'uncertain'}
 TERMINAL = {'completed', 'failed', 'cancelled', 'timed_out', 'needs_attention'}
+CANCEL_REASONS = {'user_requested', 'superseded', 'wrong_scope', 'duplicate', 'side_effect_risk',
+                  'service_stop'}
 
 
 def init():
     for p in [STATE, STATE / 'tasks', STATE / 'artifacts', STATE / 'logs', STATE / 'worktrees',
-              STATE / 'credentials']:
+              STATE / 'credentials', STATE / 'usage-ledger']:
         p.mkdir(parents=True, exist_ok=True, mode=0o700)
         p.chmod(0o700)
 
@@ -81,6 +83,28 @@ def update(task_id, **fields):
     with locked():
         t = task(task_id)
         t.update(fields, updated_at=time.time())
+        write_json(task_path(task_id), t)
+    return t
+
+
+def request_cancel(task_id, reason, source='cli'):
+    """Record an auditable cancellation request; elapsed time is not a reason.
+
+    The public CLI deliberately exposes only concrete outcome reasons. Internal service
+    shutdown uses ``service_stop`` after it has already confirmed the native worker abort.
+    """
+    if reason not in CANCEL_REASONS:
+        raise ValueError('Cancellation reason must be one of: ' + ', '.join(sorted(CANCEL_REASONS)))
+    if source not in ('cli', 'console', 'service'):
+        raise ValueError('Invalid cancellation source')
+    with locked():
+        t = task(task_id)
+        if t.get('status') in TERMINAL:
+            return t
+        now = time.time()
+        t.update(cancel_requested=True,
+                 cancellation={'reason': reason, 'source': source, 'requested_at': now},
+                 updated_at=now)
         write_json(task_path(task_id), t)
     return t
 
@@ -175,7 +199,7 @@ def public_task(t):
             'excluded_providers', 'session_id', 'session_deleted', 'session_directory', 'guidance',
             'route_history',
             'created_at', 'started_at', 'finished_at', 'reason', 'queue_reason', 'route_reason',
-            'actual_models', 'fallback_used', 'routing_notice', 'review_required', 'artifact_dir',
+            'actual_models', 'fallback_used', 'routing_notice', 'review_required', 'cancellation', 'artifact_dir',
             'summary', 'elapsed_seconds', 'errors', 'recovery', 'auto_approve']
     return {k: t[k] for k in keys if k in t}
 

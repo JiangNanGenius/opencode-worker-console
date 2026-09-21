@@ -20,26 +20,46 @@ Ordered fallback and weighted sharing can be mixed independently for each task t
 one subscription needs no policy at all; a user with one paid plan and one pay-as-you-go backup can
 use two one-model stages. The Ark/Kimi policy below is an optional example, not a platform default.
 
-Tier selection is based on reasoning shape, not workload size or a weak-to-strong model ranking.
-Fast can own a complete bounded feature, known fix, test, documentation change or routine
-deployment when its path and acceptance are clear. Normal is the capable default when a concrete
-outcome needs broader investigation or synthesis, even when it reads a large repository, changes
+Tier selection is based on unresolved ambiguity, not workload size or a weak-to-strong model
+ranking. Fast and Normal are both expected to complete work correctly. Fast can own a complete
+feature, fix, test, documentation change, migration or deployment when its direction, material
+constraints and acceptance are clear; it may choose ordinary implementation details. Normal is
+for a concrete outcome whose execution still needs open investigation or synthesis, even when it reads a large repository, changes
 many files, runs for a long time, or includes implementation, tests, documentation, packaging
 and deployment. Deep is for an
 abstract or unclear objective, an unresolved system-wide root cause, architecture trade-offs or
 logic with unusually difficult invariants. Large context and task importance alone are not Deep
 criteria. There is no separate total-task cap for work that genuinely needs Deep.
 
-Choose the lowest tier that covers the decisions the worker must make. Predetermined actions and
-rules are Fast. A clear outcome that still requires bounded investigation, classification or
-implementation choices is Normal. Defining the goal or rules, reconciling unclear requirements,
+Choose the lowest tier that covers the ambiguity the worker must remove. A firm direction,
+governing constraints and acceptance are Fast; the method need not be prescribed line by line.
+A clear outcome whose execution still requires open investigation, classification or several
+interdependent choices is Normal. Defining the goal or rules, reconciling unclear requirements,
 designing a new system structure, finding an unknown system-wide cause or solving unusually
 complex logic is Deep. The task's label does not decide the tier: an explicit document move is
 Fast, while sorting mixed evidence into keep, merge and delete decisions is Normal.
 
-A practical Fast gate is: the exact outcome, bounded method or area, and observable completion
-evidence are all known before dispatch. Difficult planning performed earlier does not make the
-remaining implementation Normal. If the worker must discover one of those answers, use Normal.
+A practical Fast gate is: the outcome, direction or governing constraints, and observable
+completion evidence are known before dispatch. Difficult planning performed earlier does not
+make the remaining implementation Normal. Fast may discover local details; use Normal when the
+execution still needs open investigation or significant interdependent judgments.
+
+Quota may break a genuine Fast/Normal tie, never redefine capability. Read
+`delegate-opencode quota --tier-guidance` once before a coherent batch. Its runway divides the
+remaining quota fraction by the fraction of time left until reset: 20% allowance with 20% of the
+window left is on pace (`1.0x`), while 20% with 40% of the window left is constrained (`0.5x`).
+When the Fast and Normal routes use the same constrained plan and no healthier Normal-plan peer
+is available, direction-fixed work should lean Fast. When Ark is constrained but Kimi still has
+healthy runway, retain eligible Normal work so it can use Kimi instead of putting more load on
+the Ark-only Fast stage.
+
+Budget guidance is provider-neutral. In **Models & routing**, each configured provider can use
+live telemetry when available, a manually entered rolling window (remaining percentage, duration
+and an explicit-zone reset time), a monetary balance threshold for pay-as-you-go accounts, or
+`ignore`. A manual current balance may stand in for a missing balance API. The configurable Fast
+tie-breaker runway threshold applies to live and manual windows; monetary providers use their own
+low-balance threshold. Unknown signals preserve ordinary routing instead of pretending the budget
+is full or empty.
 Do not restart productive work merely to change tiers and replay its context.
 
 The stored shape is deliberately provider-neutral:

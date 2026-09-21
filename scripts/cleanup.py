@@ -36,6 +36,7 @@ DEFAULTS = {
     'target_free_gb': 10.0,
     'min_age_days': 30,
     'keep_recent': 20,
+    'usage_retention_days': 365,
     'interval_seconds': 3600,
 }
 
@@ -62,14 +63,24 @@ def policy():
         value = raw.get(key)
         if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
             out[key] = float(value)
-    for key in ('min_age_days', 'keep_recent'):
+    for key in ('min_age_days', 'keep_recent', 'usage_retention_days'):
         value = raw.get(key)
-        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        minimum = 1 if key == 'usage_retention_days' else 0
+        if isinstance(value, int) and not isinstance(value, bool) and value >= minimum:
             out[key] = value
     value = raw.get('interval_seconds')
     if isinstance(value, int) and not isinstance(value, bool) and value > 0:
         out['interval_seconds'] = value
     return out
+
+
+def periodic():
+    """Hourly maintenance: expire compact usage records, then apply low-disk policy."""
+    import usage_ledger
+    expired = usage_ledger.prune_expired()
+    result = run(apply=True) if policy()['enabled'] else {'applied': False, 'skipped': 'disabled'}
+    result['expired_usage_records'] = expired
+    return result
 
 
 def free_bytes():

@@ -12,6 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import cleanup
 import common
+import usage_ledger
 
 
 class CleanupTests(unittest.TestCase):
@@ -159,6 +160,20 @@ class CleanupTests(unittest.TestCase):
         self.assertIn('artifact_after', kinds)
         self.assertIn('artifact_messages', kinds)
         self.assertTrue(all('path' in c or 'session_id' in c for c in result['candidates']))
+
+    def test_expired_usage_ledger_is_pruned_even_when_low_disk_cleanup_is_disabled(self):
+        self.write_config({'enabled': False, 'usage_retention_days': 1})
+        task = self.add_task('job-ledger', 'completed', age_days=2)
+        task['usage'] = {'input': 2, 'output': 1, 'reasoning': 0, 'cache_read': 3,
+                         'cache_write': 0, 'total': 6, 'cost': 0.01,
+                         'source': 'saved', 'complete': True}
+        usage_ledger.record(task, 1, now=100)
+        self.assertEqual(usage_ledger.prune_expired(now=100 + 86400 - 1), [])
+        with patch.object(usage_ledger.time, 'time', return_value=100 + 86400):
+            result = cleanup.periodic()
+        self.assertEqual(result['expired_usage_records'], ['job-ledger'])
+        self.assertEqual(result['skipped'], 'disabled')
+        self.assertFalse((self.state / 'usage-ledger' / 'job-ledger.json').exists())
 
     # -- caches ----------------------------------------------------------
     def test_disposable_caches_removed_with_release_retention(self):

@@ -5,7 +5,7 @@ import signal
 import subprocess
 import sys
 import time
-from common import ACTIVE, STATE, api, config, init, locked, read_json, tasks, update, write_json
+from common import ACTIVE, STATE, api, config, init, locked, read_json, request_cancel, tasks, write_json
 
 
 def identity(pid):
@@ -71,7 +71,7 @@ def stop():
                 from worker import stop as stop_worker
                 if not stop_worker(t):
                     raise RuntimeError('Worker abort not confirmed; service and ownership retained')
-                update(t['id'], cancel_requested=True)
+                request_cancel(t['id'], 'service_stop', source='service')
         records = read_json(STATE / 'services.json', {})
         for name in ('console', 'pool', 'server'):
             entry = records.get(name)

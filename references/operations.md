@@ -8,6 +8,7 @@ The entrypoint is `~/.local/bin/delegate-opencode`. The skill also works via
 ```sh
 delegate-opencode doctor
 delegate-opencode quota
+delegate-opencode quota --tier-guidance
 delegate-opencode console --open
 delegate-opencode submit --directory /absolute/repo --tier normal \
   --title 'Map configuration' 'Locate configuration loading and summarize precedence with file/line evidence.'
@@ -18,7 +19,7 @@ delegate-opencode submit --directory /absolute/repo --mode write --scope src/par
 delegate-opencode status
 delegate-opencode wait JOB_ID
 delegate-opencode collect JOB_ID
-delegate-opencode cancel JOB_ID
+delegate-opencode cancel JOB_ID --reason user_requested
 delegate-opencode stats
 ```
 
@@ -374,15 +375,26 @@ twice per second and returns immediately when work becomes terminal or an action
 blockage appears. Fifteen to forty minutes is normal for coherent implementation, compilation,
 tests or deep investigation; configured deep tasks may run longer.
 
-When a command runner yields a process/session ID while the wait command remains active, follow
-that same process with empty stdin polls using 60-second poll windows. Do not create a sequence of new
-short wait commands. A nonterminal response after the full window contains `terminal: false`,
-`continue_waiting: true` and `next_action: call_wait_again`; then call `wait` again in the same
-turn rather than ending with a progress-only response or asking the user to send “continue”.
-For independent jobs, long waits may run concurrently. Owner capacity, quiet intervals or the
-coordinator's desire to finish its turn are not cancellation reasons. Cancel only when the user
-requests it, the scope is confirmed wrong or unsafe, the objective is superseded, or a terminal
-condition requires it.
+Start ordinary observation with `wait JOB_ID` and no `--seconds`; this preserves the full tier
+window. When a command runner yields a process/session ID while that wait remains active, follow
+the same process with empty stdin using the longest blocking window the host supports (five
+minutes when that is the host cap). Do not issue a separate status query, reconsider the task, or
+create a sequence of new `wait --seconds 60` commands between transport waits. The bridge keeps
+checking inside the process, so a terminal or actionable result still returns immediately. These
+are transport continuations of one wait, not new model-visible status-review cycles.
+
+A nonterminal response after the full tier window contains `terminal: false`,
+`continue_waiting: true` and `next_action: call_wait_again`; call `wait` again in the same turn
+rather than ending with a progress-only response or asking the user to send “continue”. For
+independent jobs, long waits may run concurrently. Quiet output, unchanged status, no visible
+diff, a long investigation, high token use, ordinary tool retries or the coordinator's desire to
+take over do not prove a stall and are never cancellation reasons. After an accepted steer, give
+the worker time to execute it and continue waiting.
+
+Cancellation is an audited exception. Use `cancel JOB_ID --reason REASON`, where `REASON` is
+`user_requested`, `superseded`, `wrong_scope`, `duplicate` or `side_effect_risk`. Do not select a
+false allowed reason to disguise impatience. A worker remains owned until it completes, reports
+an error, asks for coordinator input, or one of those concrete reasons actually applies.
 
 
 ## Read complete conversations on demand

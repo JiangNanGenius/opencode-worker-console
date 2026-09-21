@@ -17,7 +17,8 @@ import select
 import socket
 import time
 import urllib.parse
-from common import STATE, api, artifact_dir, config, public_task, read_json, redact, task, tasks
+from common import (STATE, api, artifact_dir, config, public_task, read_json, redact,
+                    request_cancel, task, tasks)
 import console_auth
 import quota
 import service
@@ -84,6 +85,7 @@ def state():
     quota_view = quota.view(read_json(STATE / 'quota.json', {}))
     import economics
     return redact({'tasks': entries, 'quota': quota_view,
+                   'tier_guidance': quota.tier_guidance(c, quota_view),
                    'routing_status': quota.routing_status(c, quota_view),
                    'economics': economics.summary(c, quota_view),
                    'pool_healthy': all(health.values()), 'services': health,
@@ -375,11 +377,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def console_get(self, path):
         if path in ('/console-api/models', '/console-api/settings', '/console-api/sessions',
-                    '/console-api/workspaces', '/console-api/cleanup'):
+                    '/console-api/workspaces', '/console-api/cleanup', '/console-api/usage-history'):
             try:
                 fn = {'/console-api/models': management.catalog, '/console-api/settings': management.settings,
                       '/console-api/sessions': management.sessions, '/console-api/workspaces': management.workspaces,
-                      '/console-api/cleanup': __import__('cleanup').preview}[path]
+                      '/console-api/cleanup': __import__('cleanup').preview,
+                      '/console-api/usage-history':
+                          lambda: __import__('usage_ledger').summary(include_entries=True)}[path]
                 self.reply(200, redact(fn()))
             except (ValueError, HttpFailure) as e:
                 self.reply(503, {'error': str(e)})
@@ -466,7 +470,7 @@ class Handler(BaseHTTPRequestHandler):
                 result = management.update_session(path.rsplit('/', 1)[1], body)
             elif path.startswith('/console-api/task/') and path.endswith('/cancel'):
                 t = task(path.split('/')[-2])
-                result = public_task(update(t['id'], cancel_requested=True))
+                result = public_task(request_cancel(t['id'], 'user_requested', source='console'))
             else:
                 self.reply(404, {'error': 'Unknown console action'})
                 return

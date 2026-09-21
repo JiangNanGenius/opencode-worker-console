@@ -990,6 +990,37 @@ class PoolTests(unittest.TestCase):
         with patch.object(worker, 'call'), patch.object(worker, 'idle', return_value=True):
             self.assertTrue(worker.stop(t))
 
+    def test_cancellation_is_audited_and_rejects_impatience_reasons(self):
+        t = self.new(mode='read', scopes=[])
+        with self.assertRaisesRegex(ValueError, 'Cancellation reason'):
+            common.request_cancel(t['id'], 'taking_too_long')
+        self.assertFalse(common.task(t['id']).get('cancel_requested', False))
+
+        result = common.request_cancel(t['id'], 'wrong_scope', source='cli')
+        self.assertTrue(result['cancel_requested'])
+        self.assertEqual(result['cancellation']['reason'], 'wrong_scope')
+        self.assertEqual(result['cancellation']['source'], 'cli')
+        self.assertIsInstance(result['cancellation']['requested_at'], float)
+        self.assertEqual(common.public_task(result)['cancellation'], result['cancellation'])
+
+    def test_cli_cancel_requires_a_concrete_reason(self):
+        import service
+        t = self.new(mode='read', scopes=[])
+        with patch.object(sys, 'argv', ['delegate.py', 'cancel', t['id']]), \
+             self.assertRaises(SystemExit) as raised:
+            delegate.main()
+        self.assertEqual(raised.exception.code, 2)
+        self.assertFalse(common.task(t['id']).get('cancel_requested', False))
+
+        output = io.StringIO()
+        argv = ['delegate.py', 'cancel', t['id'], '--reason', 'superseded']
+        with patch.object(sys, 'argv', argv), patch.object(service, 'start'), redirect_stdout(output):
+            delegate.main()
+        saved = common.task(t['id'])
+        self.assertTrue(saved['cancel_requested'])
+        self.assertEqual(saved['cancellation']['reason'], 'superseded')
+        self.assertEqual(saved['cancellation']['source'], 'cli')
+
     def test_wait_result_requires_continuation_until_terminal(self):
         running = delegate.wait_result({'id': 'job-test', 'status': 'running'}, 30)
         self.assertFalse(running['terminal'])
@@ -1031,6 +1062,93 @@ class PoolTests(unittest.TestCase):
             result = delegate.wait_for_task(t['id'])
         pause.assert_not_called()
         self.assertTrue(result['terminal'])
+
+    def test_fast_tie_breaker_uses_combined_reset_aware_plan_runway(self):
+        now = 1_800_000_000
+        c = dict(self.c, fast_bias_runway_percent=75, kimi_reserve_percent=0,
+                 profiles={
+                     'ark-auto': {'model': 'volcengine-agent-plan/ark-code-latest'},
+                     'ark-evolving': {'model': 'volcengine-agent-plan/doubao-seed-evolving'},
+                     'senior-code': {'model': 'kimi-for-coding/kimi-for-coding'},
+                 }, routing_policy={
+                     'fast': [[{'profile': 'ark-auto', 'weight': 1}]],
+                     'background': [[{'profile': 'senior-code', 'weight': 1},
+                                     {'profile': 'ark-evolving', 'weight': 1}]],
+                 })
+
+        def provider(pct, hours_left, available=True):
+            return {'state': 'ok', 'available': available, 'stale': False, 'sampled_at': now,
+                    'windows': [{'valid': True, 'remaining_percent': pct,
+                                 'duration_minutes': 300, 'resets_at': now + hours_left * 3600}]}
+
+        # Twenty percent with one fifth of a five-hour window left is exactly on pace.
+        q = {'volcengine-agent-plan': provider(20, 1),
+             'kimi-for-coding': provider(0, 1, available=False)}
+        with patch.object(quota.time, 'time', return_value=now):
+            healthy = quota.tier_guidance(c, q)
+        self.assertAlmostEqual(healthy['runway']['volcengine-agent-plan'], 1.0)
+        self.assertFalse(healthy['prefer_fast_when_both_fit'])
+
+        # The same 20% with two hours left is only half-runway; with Kimi gone,
+        # direction-fixed work should favor the cheaper Ark Auto Fast stage.
+        q['volcengine-agent-plan'] = provider(20, 2)
+        with patch.object(quota.time, 'time', return_value=now):
+            constrained = quota.tier_guidance(c, q)
+        self.assertAlmostEqual(constrained['runway']['volcengine-agent-plan'], 0.5)
+        self.assertTrue(constrained['prefer_fast_when_both_fit'])
+        self.assertEqual(constrained['reason'], 'normal_pool_provider_unavailable')
+
+        # If Kimi is healthy, Ark pressure must not push more work onto Ark-only Fast.
+        q['kimi-for-coding'] = provider(80, 2)
+        with patch.object(quota.time, 'time', return_value=now):
+            split = quota.tier_guidance(c, q)
+        self.assertFalse(split['prefer_fast_when_both_fit'])
+        self.assertEqual(split['reason'], 'healthier_normal_plan_available')
+
+        # If Kimi is also consuming ahead of reset while Ark is healthy, Fast becomes
+        # the tie-breaker to protect the combined subscription runway.
+        q['volcengine-agent-plan'] = provider(80, 2)
+        q['kimi-for-coding'] = provider(30, 3)
+        with patch.object(quota.time, 'time', return_value=now):
+            combined_low = quota.tier_guidance(c, q)
+        self.assertTrue(combined_low['prefer_fast_when_both_fit'])
+        self.assertEqual(combined_low['reason'], 'normal_alternative_windows_low')
+
+    def test_fast_tie_breaker_accepts_manual_windows_and_payg_balance_thresholds(self):
+        now = 1_800_000_000
+        c = dict(self.c, fast_bias_runway_percent=75, kimi_reserve_percent=0,
+                 profiles={
+                     'payg-fast': {'model': 'deepseek/deepseek-v4.1-flash'},
+                     'payg-normal': {'model': 'deepseek/deepseek-v4.1-flash'},
+                     'plan-normal': {'model': 'kimi-for-coding/kimi-k2.8-preview'},
+                 }, routing_policy={
+                     'fast': [[{'profile': 'payg-fast', 'weight': 1}]],
+                     'background': [[{'profile': 'payg-normal', 'weight': 1},
+                                     {'profile': 'plan-normal', 'weight': 1}]],
+                 }, budget_signals={
+                     'deepseek': {'mode': 'monetary', 'currency': 'CNY',
+                                  'low_balance': 10, 'manual_balance': 5},
+                     'kimi-for-coding': {'mode': 'manual_window', 'remaining_percent': 80,
+                                         'duration_minutes': 300,
+                                         'resets_at': '2027-01-15T08:00:00+00:00'},
+                 })
+        q = {'deepseek': {'state': 'ok', 'available': True, 'stale': False},
+             'kimi-for-coding': {'state': 'ok', 'available': True, 'stale': False}}
+        with patch.object(quota.time, 'time', return_value=now):
+            result = quota.tier_guidance(c, q)
+        self.assertEqual(result['budget_signals']['deepseek']['mode'], 'monetary')
+        self.assertTrue(result['budget_signals']['deepseek']['low'])
+        self.assertFalse(result['budget_signals']['kimi-for-coding']['low'])
+        self.assertFalse(result['prefer_fast_when_both_fit'])
+
+        # If the alternate subscription also falls behind its reset-aware runway,
+        # direction-fixed work may use Fast. Required Normal and Deep stay unchanged.
+        c['budget_signals']['kimi-for-coding'].update(
+            remaining_percent=10, resets_at='2027-01-15T08:00:00+00:00')
+        with patch.object(quota.time, 'time', return_value=now):
+            result = quota.tier_guidance(c, q)
+        self.assertTrue(result['prefer_fast_when_both_fit'])
+        self.assertEqual(result['reason'], 'normal_alternative_windows_low')
 
     def console_server(self):
         import console_auth

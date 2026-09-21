@@ -148,10 +148,13 @@ def settings():
            'kimi_reserve_percent': c.get('kimi_reserve_percent'),
            'kimi_low_weekly_threshold_percent': c.get('kimi_low_weekly_threshold_percent', 5),
            'kimi_low_weekly_k3_limit': c.get('kimi_low_weekly_k3_limit', 1),
+           'fast_bias_runway_percent': c.get('fast_bias_runway_percent', 75),
            'auto_reroute_on_quota_exhaustion': c.get('auto_reroute_on_quota_exhaustion', True),
-           'revision': c.get('revision', 0), 'auto_approve': c.get('auto_approve', True)}
+           'budget_signals': {}, 'revision': c.get('revision', 0),
+           'auto_approve': c.get('auto_approve', True)}
     import cleanup
     import quota
+    out['budget_signals'] = quota.normalized_budget_signals(c.get('budget_signals'), c.get('profiles'))
     # Always export a complete, validated schedule: generic defaults when unset and a
     # fail-closed normalization when a legacy record is malformed. The personal day 19 is
     # never a default; it only appears when explicitly stored.
@@ -228,6 +231,12 @@ def _validate_settings(body):
             body, 'kimi_low_weekly_threshold_percent', 0, 100)
     if 'kimi_low_weekly_k3_limit' in body:
         result['kimi_low_weekly_k3_limit'] = _int_setting(body, 'kimi_low_weekly_k3_limit', 0, 16)
+    if 'fast_bias_runway_percent' in body:
+        result['fast_bias_runway_percent'] = _int_setting(
+            body, 'fast_bias_runway_percent', 0, 400)
+    if 'budget_signals' in body:
+        import quota
+        result['budget_signals'] = quota.validate_budget_signals(body['budget_signals'], profiles)
     if 'auto_reroute_on_quota_exhaustion' in body:
         if not isinstance(body['auto_reroute_on_quota_exhaustion'], bool):
             raise ValueError('auto_reroute_on_quota_exhaustion must be boolean')
@@ -282,7 +291,9 @@ def _validate_settings(body):
         if not isinstance(cp, dict) or not isinstance(cp.get('enabled'), bool):
             raise ValueError('Invalid cleanup policy')
         cleaned = {'enabled': cp['enabled']}
-        for key, low, high in [('min_free_gb', 1, 1000), ('target_free_gb', 1, 2000), ('min_age_days', 1, 3650), ('keep_recent', 1, 10000), ('interval_seconds', 60, 86400)]:
+        for key, low, high in [('min_free_gb', 1, 1000), ('target_free_gb', 1, 2000),
+                               ('min_age_days', 1, 3650), ('keep_recent', 1, 10000),
+                               ('usage_retention_days', 1, 3650), ('interval_seconds', 60, 86400)]:
             cleaned[key] = _int_setting(cp, key, low, high)
         if cleaned['target_free_gb'] < cleaned['min_free_gb']:
             raise ValueError('Cleanup target must be at least the trigger threshold')
@@ -422,11 +433,11 @@ def save_settings(body):
 
 
 def delete_tasks(body):
-    """Remove terminal task records from the console without touching work products.
+    """Remove terminal task rows while retaining an expiring accounting record.
 
     OpenCode sessions, artifacts and worktrees are deliberately retained. This keeps
-    task-list cleanup independent from evidence/session cleanup and makes a mistaken
-    selection recoverable from the retained underlying work.
+    task-list cleanup independent from evidence/session cleanup. A compact usage ledger
+    keeps routing, timing, model and token/cost fields for the configured retention period.
     """
     if not isinstance(body, dict):
         raise ValueError('JSON object required')
@@ -453,9 +464,18 @@ def delete_tasks(body):
         blocked = [item['id'] for item in selected if item.get('status') not in common.TERMINAL]
         if blocked:
             raise ValueError('Only terminal tasks can be deleted')
+        import cleanup
+        import usage_ledger
+        retention_days = cleanup.policy()['usage_retention_days']
+        # Persist every accounting record before removing any selected task row. If a
+        # snapshot fails, no task record is deleted, preserving accounting continuity.
+        for item in selected:
+            usage_ledger.record(item, retention_days)
         for item in selected:
             common.task_path(item['id']).unlink()
-    return {'deleted': len(selected), 'retained': ['sessions', 'artifacts', 'worktrees']}
+    return {'deleted': len(selected),
+            'retained': ['usage_ledger', 'sessions', 'artifacts', 'worktrees'],
+            'usage_retention_days': retention_days}
 
 
 def _archived_filter(value):

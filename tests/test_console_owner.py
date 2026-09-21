@@ -132,3 +132,16 @@ class ConsoleOwnerTests(unittest.TestCase):
         setup = app[app.index("const detailPanel = $('detail')"):app.index('function renderTasks')]
         self.assertNotIn('inlineDetailCell.append(detailPanel)', setup)
         self.assertIn('if(expanded){inlineDetailCell.append(detailPanel)', app)
+
+    def test_console_exposes_provider_neutral_budget_signal_settings(self):
+        project = Path(__file__).resolve().parents[1]
+        index = (project / 'web' / 'index.html').read_text()
+        manage = (project / 'web' / 'manage.js').read_text()
+        translations = (project / 'web' / 'i18n.js').read_text()
+        self.assertIn('id="budget-signal-list"', index)
+        for mode in ('manual_window', 'monetary', 'ignore'):
+            self.assertIn(mode, manage)
+        self.assertIn('budget_signals:readBudgetSignals()', manage)
+        for key in ('budget.manualWindow', 'budget.monetary', 'budget.lowBalance',
+                    'budget.manualBalanceHint'):
+            self.assertEqual(translations.count("'" + key + "'"), 5)

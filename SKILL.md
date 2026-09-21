@@ -1,6 +1,6 @@
 ---
 name: delegate-opencode
-description: Delegate complete authorized outcomes to general-purpose OpenCode agents. Every task category is eligible; decide only from the concrete tools, access and verification the outcome needs, never its domain or importance. Prefer delegation for substantial execution and bulk context gathering. Choose Fast, Normal or Deep; the subscription-first bridge selects the provider and model. Coordinate tasks, guidance, transcripts, sessions and recovery through the durable bridge.
+description: Delegate complete authorized outcomes to general-purpose OpenCode agents. Every task category is eligible; decide from uncertainty, tools and verification, never domain, importance or workload size. Direction-fixed work defaults to Fast; Normal adds open investigation and synthesis; Deep resolves abstract goals or exceptional logic. The bridge selects the provider and model. Coordinate tasks, guidance, transcripts, sessions and recovery through the durable bridge.
 ---
 
 # Delegate OpenCode work
@@ -116,19 +116,28 @@ provisioning or an HTTPS reverse proxy, see [references/remote-access.md](refere
 
 For every ordinary handoff, choose exactly one capability tier and keep `--profile auto`.
 The bridge owns profile, provider, allowance balancing and fallback selection. Profile IDs are
-configuration details, not roles for Codex to choose. Check `quota` after an availability error,
-not to manually reproduce the bridge's routing decision.
+configuration details, not roles for Codex to choose. Before the first handoff in a coherent
+batch, call `quota --tier-guidance` once or reuse a fresh result from this turn. Its
+`prefer_fast_when_both_fit` value is a tie-breaker only: when the direction is already firm and
+either Fast or Normal can fully solve the task, prefer Fast under constrained combined plan
+runway. Keep Normal or Deep whenever its extra judgment is actually needed. Runway is
+reset-aware (`remaining quota fraction / remaining time fraction`), so 20% with one fifth of the
+window left is healthy rather than automatically low. When two plans are available, a healthy
+Normal-only plan prevents a low Fast-only plan from incorrectly pushing work onto Fast.
 
 | Task shape | Selection |
 | --- | --- |
-| A bounded, concrete outcome with a known solution path and clear acceptance | `--profile auto --tier fast` |
-| A clear objective and acceptance criteria; use this strong default even for long, broad or cross-file execution | `--profile auto --tier normal` |
+| The direction, constraints and acceptance are clear; implementation details may remain | `--profile auto --tier fast` |
+| The direction is clear, but execution requires open investigation, synthesis or many interdependent judgments | `--profile auto --tier normal` |
 | An abstract or unclear objective, unresolved system-wide cause, architecture trade-off or unusually complex logic/invariants | `--profile auto --tier deep` |
 
-Fast is also a capable execution tier, not a mechanical-work bucket. It can own a complete
-feature, known bug fix, test addition, documentation update or routine deployment when the
-boundary, method and acceptance are clear and little exploration is required. Normal is the
-default capable-worker tier for work that needs broader investigation or synthesis. It may
+The tier measures how much ambiguity the worker must resolve, not model intelligence or expected
+quality. Fast and Normal are both expected to deliver a complete, correct outcome. Fast is a
+capable execution tier, not a mechanical-work bucket: it can own a complete feature, bug fix,
+test addition, documentation update, migration or deployment when the direction, material
+constraints and acceptance are clear. It may inspect files and choose ordinary implementation
+details; a line-by-line method is not required. Normal is for work that still needs broader,
+open-ended investigation or synthesis while executing. It may
 inspect a large repository and own complete implementation, refactoring, documentation,
 testing, packaging,
 deployment and terminal/headless verification when the requested result is concrete. Long
@@ -142,22 +151,25 @@ that truly meet the Deep criteria. Only a direct user requirement for a named mo
 controlled model comparison may bypass tier routing; then use the explicit profile with a
 concrete `profile_reason`.
 
-Classify the reasoning the worker must perform, never the task's noun or domain. Choose the
-lowest tier that fully covers the required judgment:
+Classify the ambiguity the worker must remove, never the task's noun, domain, duration or size.
+Start at Fast when the coordinator can state a firm direction; upgrade only for a concrete
+reason the execution itself must discover. Choose the lowest tier that covers that uncertainty:
 
-- Use Fast when the action, classification rules and acceptance are already supplied, so the
-  worker can inspect and execute without inventing the organizing principle.
+- Use Fast when the direction, governing constraints and acceptance are supplied, so the worker
+  can inspect, implement and verify without inventing the goal or organizing principle.
 - Use Normal when the result is clear but the worker must investigate evidence and make bounded
-  choices about classification, retention, prioritization or implementation.
+  yet open choices about classification, retention, prioritization or interdependent design.
 - Use Deep when the worker must define the goal or decision rules, reconcile unclear or
   conflicting requirements, design a new system structure, resolve an unknown system-wide cause,
   or reason through unusually complex logic.
 
-Use Fast whenever the handoff can answer all three questions before dispatch: what exact outcome
-changes, what method or bounded area should be used, and what observable evidence proves it is
-done. Prior investigation may have been difficult; once Codex, the user or another worker has
-turned it into a precise work order, the implementation can still be Fast. Use Normal when the
-worker must discover one of those answers while executing. Keep an already productive task on
+Use Fast whenever the handoff can answer all three questions before dispatch: what outcome must
+change, what direction or constraints govern the work, and what observable evidence proves it is
+done. The worker may still discover local details and choose the implementation. Prior planning
+may have been difficult; once Codex, the user or another worker has established a firm direction,
+the complete implementation can be Fast even when it is large or long-running. Use Normal when
+the worker must perform open investigation or resolve significant interdependent choices while
+executing. Keep an already productive task on
 its current tier rather than restarting it only to obtain a cheaper route; apply the clearer tier
 to the next handoff or a necessary continuation.
 
@@ -220,15 +232,28 @@ Use `status`, `wait JOB_ID`, and `collect JOB_ID`. With no `--seconds`, the brid
 observation window from the task tier: Fast 5 minutes, Normal 30 minutes, Deep 60 minutes.
 Explicit windows are accepted with a one-minute minimum. This is a maximum observation window,
 not a sleep or worker deadline: `wait` checks continuously and returns as soon as the task is
-completed, failed or needs attention. If the command tool yields a running process/session ID,
-continue that same process with its stdin/poll operation using 60-second poll windows;
-do not launch a series of new short wait commands. For several independent jobs, start their
-wait commands concurrently and keep following each returned process until it produces a result.
-While queued, starting or running, continue independent work or keep waiting in the same Codex
-turn. Do not cancel quiet workers, impose a time limit, or end with a progress message asking the
-user to say “continue”. Keep the main turn active until the dependent work reaches an actionable
-terminal state. Cancel for a user request, superseded objective, confirmed wrong scope or another
-concrete reason, not elapsed time or repeated tool failures alone.
+completed, failed or needs attention. This is an event-driven blocking wait, not a schedule for
+status checks. If the command tool yields a running process/session ID, follow that same process
+with an empty-stdin blocking poll for the longest duration the host supports (five minutes on a
+host whose process-follow API caps at five minutes). Do not issue `status`, reconsider the task,
+or launch a new `wait --seconds 60` between polls. The bridge watches continuously inside the
+same process, so completion, failure or required attention returns immediately. If the host can
+block for the entire remaining tier window, use that instead of waking every five minutes. For
+several independent jobs, start their wait commands concurrently and keep following each process.
+
+Start ordinary observation with `wait JOB_ID` and no `--seconds`, preserving the complete tier
+window. Quiet output, repeated unchanged status, no visible diff, a long investigation, high
+token use, or the coordinator's desire to take over never means that a worker is stalled. After
+an accepted `steer`, allow the worker to execute it and keep waiting; do not cancel a few minutes
+later merely because no edit is visible yet. While queued, starting or running, continue
+independent work or wait in the same Codex turn. Keep the turn active until the dependent work
+completes, reports an error, or genuinely needs coordinator input. Never end with a progress-only
+message asking the user to send “continue”.
+
+`cancel JOB_ID` requires `--reason` and is reserved for a real user request, a superseded
+objective, confirmed wrong scope, a duplicate job, or a concrete side-effect risk. Elapsed time,
+repeated `continue_waiting`, slow progress, no diff and ordinary tool retries are invalid reasons;
+never relabel one of them as an allowed reason just to stop waiting.
 
 Use `steer JOB_ID 'guidance' --request-id STABLE_ID` for useful batched corrections. Guidance
 is read at a model-step boundary, not necessarily an immediate interruption. Check delivery

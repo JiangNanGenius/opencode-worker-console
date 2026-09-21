@@ -106,17 +106,17 @@ These options initialize a **fresh** installation, not replace existing profiles
 Codex chooses Fast, Normal or Deep and submits with `profile=auto`; the bridge owns the profile, provider, allowance balance and fallback. The profile table above is an operator configuration view, not an agent role list. The preset uses `max` reasoning; other models need a variant their provider actually supports. Only a user-required named model or controlled comparison should pin a profile. [Routing and plan efficiency](references/routing.md).
 
 Fast can complete bounded, well-specified features, known fixes, tests, documentation and routine
-deployment; it is not a mechanical-work bucket. Normal is the strong default when a concrete
-outcome needs broader investigation or synthesis. Deep is for abstract or unclear goals,
+deployment; it is not a mechanical-work bucket. Normal is for a concrete outcome whose execution
+still needs open investigation or synthesis. Deep is for abstract or unclear goals,
 unresolved system-wide causes, architecture trade-offs and unusually complex
 logic. File count, runtime, context size and importance do not make a task Deep, and genuinely
 Deep work has no separate task-count limit.
 
 ## What you can manage
 
-- **Tasks:** expand details directly under a task; inspect live activity and input/output/reasoning/cache tokens without leaving the console. The current filter shows recorded worker totals; these exclude coordinator usage and are not a cost estimate. Parent/child ownership, live guidance, structured errors and full transcripts remain available.
+- **Tasks:** expand details directly under a task; inspect live activity and input/output/reasoning/cache tokens without leaving the console. The current filter shows recorded worker totals; these exclude coordinator usage and are not a cost estimate. Deleting task rows retains a compact token/cost/routing ledger for a configurable period. Parent/child ownership, live guidance, structured errors and full transcripts remain available.
 - **Sessions:** search, create, rename, fork, archive/restore, workspace binding, deletion and native OpenCode links. Forking alone sends no prompt.
-- **Models, usage and economics:** visual profiles and route stages for one provider, primary/backup, fixed pools or opt-in quota adaptation; DeepSeek balance, Kimi plan windows and Ark AFP windows. A configurable low-weekly guard reserves the last Kimi allowance for a bounded number of native K3 jobs, and confirmed quota/429 stops can continue in the same session on the next route. The console shows live dynamic shares and a configurable cost ruler (`1 AFP-equivalent = ¥0.002` by default); AFP-equivalent is not Kimi quota.
+- **Models, usage and economics:** visual profiles and route stages for one provider, primary/backup, fixed pools or opt-in quota adaptation; DeepSeek balance, Kimi plan windows and Ark AFP windows. Each provider can use live telemetry, a manual reset window, a monetary low-balance threshold, or opt out of dynamic guidance; the global reset-aware runway threshold is configurable. A configurable low-weekly guard reserves the last Kimi allowance for a bounded number of native K3 jobs, and confirmed quota/429 stops can continue in the same session on the next route. The console shows Beijing and local reset times, live dynamic shares and a configurable cost ruler (`1 AFP-equivalent = ¥0.002` by default); AFP-equivalent is not Kimi quota.
 - **Parallel work:** four running workers per owning Codex conversation by default; independent capacity across conversations. Conflicting files/resources and provider availability still govern dispatch.
 - **Workspaces:** disjoint shared scopes, remote operational targets or isolated Git worktrees; review patches before integration.
 - **Long jobs:** no artificial model-step, tool-call or total-runtime cap. Observe and guide through completion; never blindly replay uncertain operations.
@@ -137,7 +137,7 @@ This sends a real model request and can consume provider allowance. Use an exist
 ~/.local/bin/delegate-opencode collect JOB_ID
 ```
 
-Replace `JOB_ID` with the returned ID. The default wait window follows the task tier (Fast 5 minutes, Normal 30 minutes, Deep 60 minutes) and returns as soon as a result is available. Continue the same command process when the runner yields a session ID; call `wait` again only if the full window returns `continue_waiting: true`. An observation window is not a task deadline. Review evidence. Writes require `--mode write` and local `--scope`, operational `--target`, or both. [More examples](references/operations.md).
+Replace `JOB_ID` with the returned ID. The default wait window follows the task tier (Fast 5 minutes, Normal 30 minutes, Deep 60 minutes) and returns as soon as a result is available. Continue the same command process when the runner yields a session ID, using the longest supported blocking poll without separate status checks; call `wait` again only if the full window returns `continue_waiting: true`. An observation window is not a task deadline. Review evidence. Writes require `--mode write` and local `--scope`, operational `--target`, or both. [More examples](references/operations.md).
 
 ## Installed independently of your conversation
 

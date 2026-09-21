@@ -9,6 +9,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import common
 import management
+import usage_ledger
 
 
 def provider_body():
@@ -93,6 +94,11 @@ class ManagementTests(unittest.TestCase):
 
     def test_task_management_deletes_terminal_records_and_retains_work_products(self):
         self.add_task('job-complete', 'completed', 'ses_complete')
+        common.update('job-complete', objective='private prompt body', tier='normal', profile='senior-code',
+                      actual_models=['kimi-for-coding/k3'],
+                      usage={'input': 10, 'output': 3, 'reasoning': 2, 'cache_read': 20,
+                             'cache_write': 0, 'total': 35, 'cost': 0.25,
+                             'source': 'saved', 'complete': True})
         self.add_task('job-failed', 'failed', 'ses_failed')
         artifact = common.artifact_dir('job-complete') / 'report.json'
         artifact.write_text('{}')
@@ -102,11 +108,23 @@ class ManagementTests(unittest.TestCase):
 
         result = management.delete_tasks({'action': 'delete', 'ids': ['job-complete', 'job-failed']})
 
-        self.assertEqual(result, {'deleted': 2, 'retained': ['sessions', 'artifacts', 'worktrees']})
+        self.assertEqual(result, {'deleted': 2,
+                                  'retained': ['usage_ledger', 'sessions', 'artifacts', 'worktrees'],
+                                  'usage_retention_days': 365})
         self.assertFalse(common.task_path('job-complete').exists())
         self.assertFalse(common.task_path('job-failed').exists())
         self.assertTrue(artifact.exists())
         self.assertTrue((worktree / 'marker').exists())
+        ledger = usage_ledger.summary(include_entries=True)
+        self.assertEqual(ledger['count'], 2)
+        self.assertEqual(ledger['total_tokens'], 35)
+        self.assertEqual(ledger['known_token_count'], 1)
+        entry = next(item for item in ledger['entries'] if item['task_id'] == 'job-complete')
+        self.assertEqual(entry['actual_models'], ['kimi-for-coding/k3'])
+        self.assertEqual(entry['usage']['total'], 35)
+        self.assertAlmostEqual(entry['expires_at'] - entry['deleted_at'], 365 * 86400)
+        self.assertNotIn('private prompt body', json.dumps(entry))
+        self.assertNotIn('entries', usage_ledger.summary())
 
     def test_task_management_rejects_active_selection_atomically(self):
         self.add_task('job-done', 'completed')
@@ -267,12 +285,16 @@ class ManagementTests(unittest.TestCase):
                                               'kimi_monthly_reset', 'economics',
                                               'kimi_low_weekly_threshold_percent',
                                               'kimi_low_weekly_k3_limit',
+                                              'fast_bias_runway_percent',
+                                              'budget_signals',
                                               'auto_reroute_on_quota_exhaustion'})
         self.assertEqual(result['economics']['afp_cny_per_unit'], 0.002)
         self.assertEqual(result['economics']['kimi_plan_cny'], 699.0)
         self.assertEqual(result['max_parallel_per_owner'], 4)
         self.assertEqual(result['kimi_low_weekly_threshold_percent'], 5)
         self.assertEqual(result['kimi_low_weekly_k3_limit'], 1)
+        self.assertEqual(result['fast_bias_runway_percent'], 75)
+        self.assertEqual(result['budget_signals'], {})
         self.assertTrue(result['auto_reroute_on_quota_exhaustion'])
         self.assertEqual(result['profiles']['fallback'],
                          {'model': 'deepseek/deepseek-flash', 'label': 'Flash', 'variant': 'high', 'enabled': True})
@@ -282,6 +304,44 @@ class ManagementTests(unittest.TestCase):
         self.assertNotIn('max_steps', result)
         for leaked in ('server_url', 'console_url', 'opencode_binary'):
             self.assertNotIn(leaked, result)
+
+    def test_budget_signals_support_manual_windows_monetary_thresholds_and_ignore(self):
+        body = self.valid_body()
+        body['budget_signals'] = {
+            'kimi-for-coding': {'mode': 'manual_window', 'remaining_percent': 23.5,
+                                'duration_minutes': 10080,
+                                'resets_at': '2026-09-25T12:00:00+08:00'},
+            'deepseek': {'mode': 'monetary', 'currency': 'CNY', 'low_balance': 10,
+                         'manual_balance': 18.25},
+        }
+        with patch.object(common, 'api', return_value={}):
+            saved = management.save_settings(body)
+        self.assertEqual(saved['budget_signals'], body['budget_signals'])
+        self.assertEqual(management.settings()['budget_signals'], body['budget_signals'])
+
+        body = self.valid_body()
+        body['budget_signals'] = {'deepseek': {'mode': 'ignore'}}
+        with patch.object(common, 'api', return_value={}):
+            saved = management.save_settings(body)
+        self.assertEqual(saved['budget_signals'], {'deepseek': {'mode': 'ignore'}})
+
+    def test_budget_signals_reject_unknown_provider_invalid_thresholds_and_ambiguous_time(self):
+        cases = [
+            {'missing': {'mode': 'ignore'}},
+            {'deepseek': {'mode': 'manual_window', 'remaining_percent': 50,
+                          'duration_minutes': 300, 'resets_at': '2026-09-21T12:00:00'}},
+            {'deepseek': {'mode': 'manual_window', 'remaining_percent': 101,
+                          'duration_minutes': 300, 'resets_at': '2026-09-21T12:00:00+08:00'}},
+            {'deepseek': {'mode': 'monetary', 'currency': 'cny', 'low_balance': 1}},
+            {'deepseek': {'mode': 'monetary', 'currency': 'CNY', 'low_balance': -1}},
+        ]
+        before = self.config.read_bytes()
+        for signals in cases:
+            with self.subTest(signals=signals):
+                body = self.valid_body(); body['budget_signals'] = signals
+                with self.assertRaises(ValueError):
+                    management._validate_settings(body)
+        self.assertEqual(self.config.read_bytes(), before)
 
     def test_legacy_max_steps_is_ignored_dropped_and_never_exported(self):
         # The fixture config still carries an old max_steps: 80.

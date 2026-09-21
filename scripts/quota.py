@@ -10,6 +10,69 @@ from providers import ARK_PROVIDER
 import ark_quota
 import routing
 
+BUDGET_MODES = {'manual_window', 'monetary', 'ignore'}
+
+
+def validate_budget_signals(value, profiles):
+    """Validate optional guidance-only budget sources for providers without telemetry."""
+    if value in (None, {}):
+        return {}
+    if not isinstance(value, dict) or len(value) > 32:
+        raise ValueError('budget_signals must be an object with at most 32 providers')
+    known = {str(p.get('model', '')).split('/', 1)[0] for p in (profiles or {}).values()
+             if isinstance(p, dict) and '/' in str(p.get('model', ''))}
+    out = {}
+    for provider, raw in value.items():
+        if not isinstance(provider, str) or provider not in known or not isinstance(raw, dict):
+            raise ValueError('budget_signals provider must be configured')
+        mode = raw.get('mode')
+        if mode not in BUDGET_MODES:
+            raise ValueError('budget signal mode must be manual_window, monetary or ignore')
+        item = {'mode': mode}
+        if mode == 'manual_window':
+            remaining = raw.get('remaining_percent')
+            duration = raw.get('duration_minutes')
+            reset = raw.get('resets_at')
+            if isinstance(remaining, bool) or not isinstance(remaining, (int, float)) or \
+                    not math.isfinite(remaining) or not 0 <= remaining <= 100:
+                raise ValueError('manual window remaining_percent must be between 0 and 100')
+            if isinstance(duration, bool) or not isinstance(duration, (int, float)) or \
+                    not math.isfinite(duration) or not 1 <= duration <= 525600:
+                raise ValueError('manual window duration_minutes must be between 1 and 525600')
+            try:
+                parsed_reset = datetime.fromisoformat(reset.replace('Z', '+00:00')) \
+                    if isinstance(reset, str) and len(reset) <= 64 else None
+            except ValueError:
+                parsed_reset = None
+            if parsed_reset is None or parsed_reset.tzinfo is None or routing._iso_seconds(reset) is None:
+                raise ValueError('manual window resets_at must be ISO-8601 with an explicit time zone')
+            item.update(remaining_percent=float(remaining), duration_minutes=float(duration),
+                        resets_at=reset)
+        elif mode == 'monetary':
+            currency = raw.get('currency')
+            threshold = raw.get('low_balance')
+            manual = raw.get('manual_balance')
+            if not isinstance(currency, str) or not re.match(r'^[A-Z]{3,8}$', currency):
+                raise ValueError('monetary budget currency must use uppercase letters')
+            if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or \
+                    not math.isfinite(threshold) or threshold < 0:
+                raise ValueError('monetary low_balance must be non-negative')
+            if manual is not None and (isinstance(manual, bool) or not isinstance(manual, (int, float)) or
+                                       not math.isfinite(manual) or manual < 0):
+                raise ValueError('manual_balance must be non-negative when supplied')
+            item.update(currency=currency, low_balance=float(threshold))
+            if manual is not None:
+                item['manual_balance'] = float(manual)
+        out[provider] = item
+    return out
+
+
+def normalized_budget_signals(value, profiles):
+    try:
+        return validate_budget_signals(value, profiles)
+    except ValueError:
+        return {}
+
 
 def _telemetry_identity(provider):
     """Identity of the credential the quota sampler actually uses.
@@ -1047,6 +1110,129 @@ def routing_status(c, q):
         if stage_views:
             out[tier] = stage_views
     return out or None
+
+
+def tier_guidance(c, q):
+    """Quota-aware tie-breaker for work that is genuinely eligible for Fast or Normal.
+
+    This never changes a submitted tier and must never downgrade work that needs Normal.
+    It only tells the coordinator when the configured Fast plan deserves more of the
+    overlap: particularly when the preferred Normal pool has lost a provider or all
+    Normal alternatives to the Fast provider are also below the configured window floor.
+    """
+    threshold_percent = c.get('fast_bias_runway_percent', 75)
+    if isinstance(threshold_percent, bool) or not isinstance(threshold_percent, (int, float)):
+        threshold_percent = 75
+    threshold_percent = max(0.0, min(400.0, float(threshold_percent)))
+    threshold = threshold_percent / 100.0
+    now = time.time()
+    policy = routing.configured(c)
+
+    def configured_stages(tier):
+        if policy and policy.get(tier):
+            return policy[tier]
+        name = (c.get('routing') or {}).get(tier)
+        return [[{'profile': name, 'weight': 1}]] if isinstance(name, str) else []
+
+    def provider_for(entry):
+        profile = (c.get('profiles') or {}).get(entry.get('profile'))
+        if not isinstance(profile, dict) or profile.get('enabled') is False:
+            return None
+        model = profile.get('model')
+        return model.split('/', 1)[0] if isinstance(model, str) and '/' in model else None
+
+    def stage_state(tier):
+        for index, stage in enumerate(configured_stages(tier)):
+            configured = []
+            available = []
+            for entry in stage:
+                provider = provider_for(entry)
+                if not provider:
+                    continue
+                if provider not in configured:
+                    configured.append(provider)
+                ok, _ = allowed(provider, q, 'normal', c.get('kimi_reserve_percent', 0))
+                if ok and provider not in available:
+                    available.append(provider)
+            if available:
+                return {'index': index, 'configured': configured, 'available': available}
+        return {'index': None, 'configured': [], 'available': []}
+
+    def remaining(provider):
+        values = []
+        for window in (q.get(provider) or {}).get('windows') or []:
+            if not isinstance(window, dict):
+                continue
+            value = window.get('remaining_percent')
+            if window.get('valid', True) and isinstance(value, (int, float)) and not isinstance(value, bool) \
+                    and math.isfinite(value):
+                values.append(float(value))
+        return min(values) if values else None
+
+    budget_settings = normalized_budget_signals(c.get('budget_signals'), c.get('profiles'))
+
+    def signal(provider):
+        setting = budget_settings.get(provider) or {}
+        mode = setting.get('mode', 'telemetry')
+        if mode == 'ignore':
+            return {'mode': mode, 'value': None, 'low': None}
+        if mode == 'manual_window':
+            window = {'valid': True, 'remaining_percent': setting['remaining_percent'],
+                      'duration_minutes': setting['duration_minutes'], 'resets_at': setting['resets_at']}
+            value = routing._window_runway(window, now)
+            return {'mode': mode, 'value': value, 'low': value <= threshold if value is not None else None,
+                    'remaining_percent': setting['remaining_percent'], 'resets_at': setting['resets_at']}
+        if mode == 'monetary':
+            amount = setting.get('manual_balance')
+            source = 'manual'
+            if amount is None:
+                source = 'telemetry'
+                matches = [item.get('remaining') for item in (q.get(provider) or {}).get('balances') or []
+                           if isinstance(item, dict) and item.get('currency') == setting['currency'] and
+                           isinstance(item.get('remaining'), (int, float)) and
+                           not isinstance(item.get('remaining'), bool)]
+                amount = sum(matches) if matches else None
+            low = amount <= setting['low_balance'] if amount is not None else None
+            return {'mode': mode, 'value': amount, 'low': low, 'source': source,
+                    'currency': setting['currency'], 'low_balance': setting['low_balance']}
+        value = routing._runway(q.get(provider), now)
+        return {'mode': 'telemetry', 'value': value,
+                'low': value <= threshold if value is not None else None}
+
+    fast = stage_state('fast')
+    normal = stage_state('background')
+    fast_providers = set(fast['available'])
+    normal_providers = set(normal['available'])
+    overlap = fast_providers & normal_providers
+    alternate = normal_providers - fast_providers
+    providers = sorted(fast_providers | normal_providers)
+    readings = {provider: remaining(provider) for provider in providers}
+    signals = {provider: signal(provider) for provider in providers}
+    runways = {provider: item['value'] if item['mode'] in ('telemetry', 'manual_window') else None
+               for provider, item in signals.items()}
+    lost_normal = set(normal['configured']) - normal_providers
+    fast_low = bool(overlap) and any(signals.get(provider, {}).get('low') is True for provider in overlap)
+    alternates_healthy = any(signals.get(provider, {}).get('low') is not True for provider in alternate)
+    alternates_low = bool(alternate) and all(signals.get(provider, {}).get('low') is True
+                                             for provider in alternate)
+    fast_bias = threshold > 0 and bool(overlap) and not alternates_healthy and \
+        (fast_low or alternates_low)
+    if fast_bias and lost_normal and fast_low:
+        reason = 'normal_pool_provider_unavailable'
+    elif fast_bias and alternates_low:
+        reason = 'normal_alternative_windows_low'
+    elif fast_bias:
+        reason = 'shared_fast_plan_window_low'
+    elif overlap and alternates_healthy:
+        reason = 'healthier_normal_plan_available'
+    else:
+        reason = 'no_fast_bias'
+    return {'prefer_fast_when_both_fit': fast_bias, 'reason': reason,
+            'runway_threshold_percent': threshold_percent, 'fast_stage': fast,
+            'normal_stage': normal, 'remaining_percent': readings, 'runway': runways,
+            'budget_signals': signals,
+            'rule': ('Quota is only a tie-breaker. Keep Normal or Deep whenever the work needs it; '
+                     'prefer Fast only when both tiers can fully solve the task.')}
 
 
 def guidance(t, c, q):

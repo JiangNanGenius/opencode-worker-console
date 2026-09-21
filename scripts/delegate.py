@@ -15,7 +15,8 @@ import time
 import urllib.parse
 import uuid
 from common import (ACTIVE, CONFIG, STATE, TERMINAL, api, artifact_dir, config, init, locked,
-                    public_task, read_json, redact, task, task_path, tasks, update, write_json)
+                    public_task, read_json, redact, request_cancel, task, task_path, tasks, update,
+                    write_json)
 import quota
 import diagnostics
 import routing
@@ -344,7 +345,7 @@ def daemon():
             if cp['enabled'] and time.time() - last_cleanup >= cp['interval_seconds'] and \
                     (cleanup_thread is None or not cleanup_thread.is_alive()):
                 last_cleanup = time.time()
-                cleanup_thread = threading.Thread(target=cleanup.run, kwargs={'apply': True},
+                cleanup_thread = threading.Thread(target=cleanup.periodic,
                                                   daemon=True, name='cleanup')
                 cleanup_thread.start()
             all_tasks = tasks()
@@ -528,10 +529,16 @@ def main():
     s.add_argument('--saved', action='store_true', help='Read retained worker evidence instead of live OpenCode')
     s.add_argument('--output', help='Export to a new private JSON file and return only its location')
     s = sub.add_parser('cancel'); s.add_argument('id')
+    s.add_argument('--reason', required=True,
+                   choices=['user_requested', 'superseded', 'wrong_scope', 'duplicate',
+                            'side_effect_risk'],
+                   help='Concrete cancellation cause; elapsed time or lack of a diff is not a cause')
     s = sub.add_parser('wait'); s.add_argument('id')
     s.add_argument('--seconds', type=int,
                    help='Observation window; defaults by tier to fast=300, normal=1800, deep=3600; minimum 60')
     s = sub.add_parser('quota'); s.add_argument('--refresh', action='store_true')
+    s.add_argument('--tier-guidance', action='store_true',
+                   help='Include a quota-aware Fast/Normal tie-breaker without changing routing')
     s.add_argument('--retry-provider', metavar='PROVIDER',
                    help='Explicit local authorization to allow new attempts on a billing-blocked provider '
                         'until a further billing error re-blocks it; manual retry authorization, not proof '
@@ -612,13 +619,16 @@ def main():
     elif args.cmd == 'collect':
         result = diagnostics.collect(args.id, args.full)
     elif args.cmd == 'cancel':
-        t = task(args.id)
-        result = public_task(t if t['status'] in TERMINAL else update(args.id, cancel_requested=True))
+        result = public_task(request_cancel(args.id, args.reason, source='cli'))
     elif args.cmd == 'wait':
         result = wait_for_task(args.id, args.seconds)
     elif args.cmd == 'quota':
-        result = quota.retry_provider(args.retry_provider) if args.retry_provider \
-            else quota.refresh(force=args.refresh)
+        if args.retry_provider:
+            result = quota.retry_provider(args.retry_provider)
+        else:
+            snapshot = quota.refresh(force=args.refresh)
+            result = ({'providers': snapshot, 'tier_guidance': quota.tier_guidance(config(), snapshot)}
+                      if args.tier_guidance else snapshot)
     elif args.cmd == 'integrate':
         with locked():
             t = task(args.id)
