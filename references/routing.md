@@ -30,6 +30,18 @@ abstract or unclear objective, an unresolved system-wide root cause, architectur
 logic with unusually difficult invariants. Large context and task importance alone are not Deep
 criteria. There is no separate total-task cap for work that genuinely needs Deep.
 
+Choose the lowest tier that covers the decisions the worker must make. Predetermined actions and
+rules are Fast. A clear outcome that still requires bounded investigation, classification or
+implementation choices is Normal. Defining the goal or rules, reconciling unclear requirements,
+designing a new system structure, finding an unknown system-wide cause or solving unusually
+complex logic is Deep. The task's label does not decide the tier: an explicit document move is
+Fast, while sorting mixed evidence into keep, merge and delete decisions is Normal.
+
+A practical Fast gate is: the exact outcome, bounded method or area, and observable completion
+evidence are all known before dispatch. Difficult planning performed earlier does not make the
+remaining implementation Normal. If the worker must discover one of those answers, use Normal.
+Do not restart productive work merely to change tiers and replay its context.
+
 The stored shape is deliberately provider-neutral:
 
 ```json

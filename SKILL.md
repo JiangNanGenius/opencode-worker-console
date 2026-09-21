@@ -142,6 +142,31 @@ that truly meet the Deep criteria. Only a direct user requirement for a named mo
 controlled model comparison may bypass tier routing; then use the explicit profile with a
 concrete `profile_reason`.
 
+Classify the reasoning the worker must perform, never the task's noun or domain. Choose the
+lowest tier that fully covers the required judgment:
+
+- Use Fast when the action, classification rules and acceptance are already supplied, so the
+  worker can inspect and execute without inventing the organizing principle.
+- Use Normal when the result is clear but the worker must investigate evidence and make bounded
+  choices about classification, retention, prioritization or implementation.
+- Use Deep when the worker must define the goal or decision rules, reconcile unclear or
+  conflicting requirements, design a new system structure, resolve an unknown system-wide cause,
+  or reason through unusually complex logic.
+
+Use Fast whenever the handoff can answer all three questions before dispatch: what exact outcome
+changes, what method or bounded area should be used, and what observable evidence proves it is
+done. Prior investigation may have been difficult; once Codex, the user or another worker has
+turned it into a precise work order, the implementation can still be Fast. Use Normal when the
+worker must discover one of those answers while executing. Keep an already productive task on
+its current tier rather than restarting it only to obtain a cheaper route; apply the clearer tier
+to the next handoff or a necessary continuation.
+
+For example, moving documents from an explicit list into predetermined folders is Fast. Reading
+mixed material to decide what is current, duplicated, sensitive or safe to delete is Normal.
+Redesigning the information architecture when even the categories and retention policy are
+unclear may be Deep. Apply the same distinction to cleanup, migrations, tests, deployment and
+code changes; these examples do not create category-specific routing rules.
+
 Configured policy stages are tried in order before dispatch. Available members within one
 stage share admissions by weight. Treat the installed policy as authoritative: it may contain
 one plan, a primary/backup chain, a fixed pool or an explicitly quota-adaptive pair. Without a
