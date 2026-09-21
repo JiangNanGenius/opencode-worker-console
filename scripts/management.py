@@ -445,13 +445,16 @@ def delete_tasks(body):
     action = body.get('action')
     if action not in ('delete', 'clear_completed', 'clear_finished'):
         raise ValueError('Unknown task management action')
+    discard_cancelled = body.get('discard_cancelled_worktrees', False)
+    if not isinstance(discard_cancelled, bool):
+        raise ValueError('discard_cancelled_worktrees must be boolean')
     with common.locked():
         current = common.tasks()
         by_id = {item['id']: item for item in current}
         if action == 'clear_completed':
             selected = [item for item in current if item.get('status') == 'completed']
         elif action == 'clear_finished':
-            selected = [item for item in current if item.get('status') in ('completed', 'needs_attention')]
+            selected = [item for item in current if item.get('status') in common.TERMINAL]
         else:
             ids = body.get('ids')
             if not isinstance(ids, list) or not ids or len(ids) > 1000:
@@ -508,6 +511,10 @@ def delete_tasks(body):
 
         try:
             release = workspace.release_isolated(item)
+            if (not release.get('released') and discard_cancelled and
+                    item.get('status') == 'cancelled' and
+                    release.get('reason') == 'unintegrated_changes'):
+                release = workspace.discard_cancelled_isolated(item)
         except (OSError, RuntimeError, ValueError) as error:
             release = {'released': False, 'reason': 'worktree_release_failed', 'bytes': 0}
             result['errors'].append({'task_id': task_id, 'stage': 'worktree',

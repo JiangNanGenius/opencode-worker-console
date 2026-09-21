@@ -196,26 +196,45 @@ class ManagementTests(unittest.TestCase):
         self.assertEqual(result['deleted'], 2)
         self.assertEqual({item['id'] for item in common.tasks()}, {'job-attention', 'job-running'})
 
-    def test_task_management_clear_finished_includes_needs_attention(self):
+    def test_task_management_clear_finished_includes_every_terminal_status(self):
         self.add_task('job-done', 'completed')
         self.add_task('job-attention', 'needs_attention')
         self.add_task('job-failed', 'failed')
+        self.add_task('job-cancelled', 'cancelled')
+        self.add_task('job-timeout', 'timed_out')
         self.add_task('job-running', 'running')
 
         result = management.delete_tasks({'action': 'clear_finished'})
 
-        self.assertEqual(result['deleted'], 2)
-        self.assertEqual({item['id'] for item in common.tasks()}, {'job-failed', 'job-running'})
+        self.assertEqual(result['deleted'], 5)
+        self.assertEqual({item['id'] for item in common.tasks()}, {'job-running'})
 
     def test_task_management_validates_request_before_deleting(self):
         self.add_task('job-done', 'completed')
         bad_requests = [None, {}, {'action': 'unknown'}, {'action': 'delete', 'ids': []},
                         {'action': 'delete', 'ids': ['job-done', 'job-done']},
-                        {'action': 'delete', 'ids': ['job-missing']}]
+                        {'action': 'delete', 'ids': ['job-missing']},
+                        {'action': 'delete', 'ids': ['job-done'],
+                         'discard_cancelled_worktrees': 'true'}]
         for body in bad_requests:
             with self.subTest(body=body), self.assertRaises(ValueError):
                 management.delete_tasks(body)
             self.assertTrue(common.task_path('job-done').exists())
+
+    def test_task_management_explicitly_discards_cancelled_unintegrated_worktree(self):
+        self.add_task('job-cancelled', 'cancelled')
+        common.update('job-cancelled', workspace='isolated')
+        with patch.object(workspace, 'release_isolated',
+                          return_value={'released': False, 'reason': 'unintegrated_changes', 'bytes': 0}), \
+                patch.object(workspace, 'discard_cancelled_isolated',
+                             return_value={'released': True, 'reason': 'cancelled_discarded', 'bytes': 512}) as discard:
+            result = management.delete_tasks({'action': 'delete', 'ids': ['job-cancelled'],
+                                              'discard_cancelled_worktrees': True})
+        discard.assert_called_once()
+        self.assertEqual(result['deleted'], 1)
+        self.assertEqual(result['worktrees_released'], 1)
+        self.assertEqual(result['freed_bytes'], 512)
+        self.assertFalse(common.task_path('job-cancelled').exists())
 
     def test_delete_requires_confirmation_and_preserves_task_evidence(self):
         sid = 'ses_delete'

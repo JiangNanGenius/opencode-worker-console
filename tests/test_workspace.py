@@ -120,6 +120,25 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(status['reason'], 'unintegrated_changes')
         self.assertTrue(path.exists())
 
+    def test_explicit_discard_removes_cancelled_unintegrated_worktree_only(self):
+        task = self.isolated_task('job-isolated-cancelled')
+        task['status'] = 'cancelled'
+        path = Path(workspace.prepare(task))
+        (path / 'a.txt').write_text('discarded worker change\n')
+        result = workspace.discard_cancelled_isolated(task)
+        self.assertTrue(result['released'])
+        self.assertEqual(result['reason'], 'cancelled_discarded')
+        self.assertFalse(path.exists())
+
+        completed = dict(task, id='job-isolated-completed', title='completed', status='completed',
+                         directory=str(self.state / 'worktrees' / 'job-isolated-completed'))
+        completed_path = Path(workspace.prepare(completed))
+        (completed_path / 'a.txt').write_text('must stay\n')
+        refused = workspace.discard_cancelled_isolated(completed)
+        self.assertFalse(refused['released'])
+        self.assertEqual(refused['reason'], 'not_cancelled_isolated')
+        self.assertTrue(completed_path.exists())
+
     def test_release_integrated_worktree(self):
         task = self.isolated_task('job-isolated-integrated')
         path = Path(workspace.prepare(task))

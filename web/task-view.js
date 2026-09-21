@@ -26,7 +26,7 @@
   }
   function activityHTML(activity, { tr, esc, clock }) {
     activity = activity || {};
-    const events = Array.isArray(activity.events) ? activity.events : [];
+    const events = Array.isArray(activity.events) ? activity.events.slice().reverse() : [];
     const rows = events.map(event => {
       const labelKeys = {assistant:'activity.message',user:'activity.user',guidance:'activity.guidance',status:'activity.state'};
       const label = labelKeys[event.label] ? tr(labelKeys[event.label]) : (event.label || tr('activity.' + (event.type === 'tool' ? 'tool' : 'message')));

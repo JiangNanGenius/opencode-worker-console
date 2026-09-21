@@ -1,6 +1,6 @@
 ---
 name: delegate-opencode
-description: Delegate complete authorized outcomes to general-purpose OpenCode agents. Every task category is eligible; decide from uncertainty, tools and verification, never domain, importance or workload size. Direction-fixed work defaults to Fast; Normal adds open investigation and synthesis; Deep resolves abstract goals or exceptional logic. The bridge selects the provider and model. Coordinate tasks, guidance, transcripts, sessions and recovery through the durable bridge.
+description: Delegate complete authorized outcomes to general-purpose OpenCode agents. Every task category is eligible. Start classification at Fast; use Normal or Deep only for a named uncertainty the worker must resolve, never for domain, importance, repository size or workload. Check quota tier guidance before a batch. The bridge selects the provider and model and handles allowance-aware fallback. Coordinate tasks, guidance, transcripts, sessions and recovery through the durable bridge.
 ---
 
 # Delegate OpenCode work
@@ -124,6 +124,14 @@ runway. Keep Normal or Deep whenever its extra judgment is actually needed. Runw
 reset-aware (`remaining quota fraction / remaining time fraction`), so 20% with one fifth of the
 window left is healthy rather than automatically low. When two plans are available, a healthy
 Normal-only plan prevents a low Fast-only plan from incorrectly pushing work onto Fast.
+
+Start every classification at Fast. Before choosing Normal or Deep, name the specific unresolved
+question that requires its extra judgment. Reading a repository, finding the relevant files,
+ordinary debugging, making local implementation choices, writing tests, packaging, deployment
+and long execution are not by themselves such a question. If no concrete ambiguity can be named,
+submit Fast. When `prefer_fast_when_both_fit` is true because the Normal subscription provider is
+unavailable, direction-fixed work should remain Fast unless it meets an explicit Normal or Deep
+criterion below; do not default to Normal as a generic safe choice.
 
 | Task shape | Selection |
 | --- | --- |

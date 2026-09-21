@@ -27,6 +27,13 @@ test('activity escapes every untrusted field and marks a stale sample', () => {
  assert.match(html,/activity\.recentOnly/);
 });
 
+test('activity shows the newest progress first without mutating the source events', () => {
+ const events=[{id:'old',status:'completed',text:'older',time:1},{id:'new',status:'running',text:'newer',time:2}];
+ const html=View.activityHTML({events},display);
+ assert.ok(html.indexOf('newer') < html.indexOf('older'));
+ assert.deepEqual(events.map(event=>event.id),['old','new']);
+});
+
 test('polling cancels a closed task and ignores late replies', async () => {
  let resolve,signal;
  const c=View.createController({changed:()=>{},request:(_p,options)=>{signal=options.signal;return new Promise(r=>resolve=r);}});
@@ -135,6 +142,7 @@ test('quota range distinguishes paused sampling, collection and burn estimates',
  assert.equal(h.run("estimatedRange({consumption_estimate:{hours:null}})"),'quota.rangeCollecting');
  assert.equal(h.run("estimatedRange({consumption_estimate:{hours:12}})"),'quota.rangeHours');
  assert.equal(h.run("quotaPace({remaining_percent:70,duration_minutes:10080,resets_at:new Date(Date.now()+100*3600000).toISOString(),consumption_estimate:{hours:40}})[0]"),'tight');
+ assert.doesNotMatch(h.run("quotaTrack(70,'remaining')"),/line|pace-marker/);
 });
 
 test('cleanup result stays visible in the task row and raises a success toast', async () => {

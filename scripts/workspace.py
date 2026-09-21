@@ -284,3 +284,43 @@ def release_isolated(t):
     if expected.exists():
         raise RuntimeError('Git did not release the isolated worktree')
     return {'released': True, 'reason': status['reason'], 'bytes': status['bytes']}
+
+
+def discard_cancelled_isolated(t):
+    """Remove a cancelled task's managed worktree even when it has local changes.
+
+    This is deliberately narrower than ``release_isolated``: callers must make the
+    destructive choice explicit, only cancelled terminal tasks qualify, and the path
+    is derived from STATE rather than task-controlled data.
+    """
+    if not isinstance(t, dict) or t.get('status') != 'cancelled' or t.get('workspace') != 'isolated':
+        return {'released': False, 'reason': 'not_cancelled_isolated', 'bytes': 0}
+    task_id = t.get('id')
+    expected = STATE / 'worktrees' / str(task_id)
+    if expected.is_symlink():
+        return {'released': False, 'reason': 'unsafe_worktree_path', 'bytes': 0}
+    if not expected.exists():
+        return {'released': False, 'reason': 'worktree_missing', 'bytes': 0}
+    try:
+        if expected.resolve().parent != (STATE / 'worktrees').resolve():
+            return {'released': False, 'reason': 'unsafe_worktree_path', 'bytes': 0}
+    except OSError:
+        return {'released': False, 'reason': 'unsafe_worktree_path', 'bytes': 0}
+    source = Path(t.get('source_dir') or '')
+    root = git_root(source) if source.is_dir() else None
+    if root is None:
+        return {'released': False, 'reason': 'source_repository_missing', 'bytes': 0}
+    total = 0
+    for base, _, files in os.walk(str(expected), followlinks=False):
+        for name in files:
+            path = Path(base) / name
+            try:
+                if not path.is_symlink():
+                    total += path.stat().st_size
+            except OSError:
+                pass
+    run(['git', 'worktree', 'remove', '--force', str(expected)], root)
+    run(['git', 'worktree', 'prune'], root)
+    if expected.exists():
+        raise RuntimeError('Git did not discard the cancelled worktree')
+    return {'released': True, 'reason': 'cancelled_discarded', 'bytes': total}
