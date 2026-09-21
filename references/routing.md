@@ -51,7 +51,11 @@ window left is on pace (`1.0x`), while 20% with 40% of the window left is constr
 When the Fast and Normal routes use the same constrained plan and no healthier Normal-plan peer
 is available, direction-fixed work should lean Fast. When Ark is constrained but Kimi still has
 healthy runway, retain eligible Normal work so it can use Kimi instead of putting more load on
-the Ark-only Fast stage.
+the Ark-only Fast stage. The bridge exposes a `quota_posture` label: `fast_preferred` when
+constrained combined runway should break a tie toward Fast, `normal_flexible` when a healthy
+Normal-only plan allows either tier, and `neutral` when quota has no preference. Under
+`normal_flexible`, weigh error and rework risk, urgency and task size; Normal is available but
+not mandatory.
 
 Budget guidance is provider-neutral. In **Models & routing**, each configured provider can use
 live telemetry when available, a manually entered rolling window (remaining percentage, duration

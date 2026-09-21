@@ -1119,6 +1119,7 @@ class PoolTests(unittest.TestCase):
             healthy = quota.tier_guidance(c, q)
         self.assertAlmostEqual(healthy['runway']['volcengine-agent-plan'], 1.0)
         self.assertFalse(healthy['prefer_fast_when_both_fit'])
+        self.assertEqual(healthy['quota_posture'], 'neutral')
 
         # The same 20% with two hours left is only half-runway; with Kimi gone,
         # direction-fixed work should favor the cheaper Ark Auto Fast stage.
@@ -1127,6 +1128,7 @@ class PoolTests(unittest.TestCase):
             constrained = quota.tier_guidance(c, q)
         self.assertAlmostEqual(constrained['runway']['volcengine-agent-plan'], 0.5)
         self.assertTrue(constrained['prefer_fast_when_both_fit'])
+        self.assertEqual(constrained['quota_posture'], 'fast_preferred')
         self.assertEqual(constrained['reason'], 'normal_pool_provider_unavailable')
 
         # If Kimi is healthy, Ark pressure must not push more work onto Ark-only Fast.
@@ -1134,6 +1136,7 @@ class PoolTests(unittest.TestCase):
         with patch.object(quota.time, 'time', return_value=now):
             split = quota.tier_guidance(c, q)
         self.assertFalse(split['prefer_fast_when_both_fit'])
+        self.assertEqual(split['quota_posture'], 'normal_flexible')
         self.assertEqual(split['reason'], 'healthier_normal_plan_available')
 
         # If Kimi is also consuming ahead of reset while Ark is healthy, Fast becomes
@@ -1143,6 +1146,7 @@ class PoolTests(unittest.TestCase):
         with patch.object(quota.time, 'time', return_value=now):
             combined_low = quota.tier_guidance(c, q)
         self.assertTrue(combined_low['prefer_fast_when_both_fit'])
+        self.assertEqual(combined_low['quota_posture'], 'fast_preferred')
         self.assertEqual(combined_low['reason'], 'normal_alternative_windows_low')
 
     def test_fast_tie_breaker_accepts_manual_windows_and_payg_balance_thresholds(self):
@@ -1171,6 +1175,7 @@ class PoolTests(unittest.TestCase):
         self.assertTrue(result['budget_signals']['deepseek']['low'])
         self.assertFalse(result['budget_signals']['kimi-for-coding']['low'])
         self.assertFalse(result['prefer_fast_when_both_fit'])
+        self.assertEqual(result['quota_posture'], 'normal_flexible')
 
         # If the alternate subscription also falls behind its reset-aware runway,
         # direction-fixed work may use Fast. Required Normal and Deep stay unchanged.
@@ -1179,6 +1184,7 @@ class PoolTests(unittest.TestCase):
         with patch.object(quota.time, 'time', return_value=now):
             result = quota.tier_guidance(c, q)
         self.assertTrue(result['prefer_fast_when_both_fit'])
+        self.assertEqual(result['quota_posture'], 'fast_preferred')
         self.assertEqual(result['reason'], 'normal_alternative_windows_low')
 
     def console_server(self):

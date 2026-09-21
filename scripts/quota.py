@@ -1337,12 +1337,15 @@ def tier_guidance(c, q):
         reason = 'healthier_normal_plan_available'
     else:
         reason = 'no_fast_bias'
-    return {'prefer_fast_when_both_fit': fast_bias, 'reason': reason,
+    posture = ('fast_preferred' if fast_bias else
+               'normal_flexible' if reason == 'healthier_normal_plan_available' else 'neutral')
+    return {'prefer_fast_when_both_fit': fast_bias, 'quota_posture': posture, 'reason': reason,
             'runway_threshold_percent': threshold_percent, 'fast_stage': fast,
             'normal_stage': normal, 'remaining_percent': readings, 'runway': runways,
             'budget_signals': signals,
-            'rule': ('Quota is only a tie-breaker. Keep Normal or Deep whenever the work needs it; '
-                     'prefer Fast only when both tiers can fully solve the task.')}
+            'rule': ('Quota is only a tie-breaker. fast_preferred leans Fast when both tiers fit; '
+                     'normal_flexible permits Fast or Normal based on error/rework risk while a '
+                     'Normal-only subscription is healthy; neutral means classify by task needs.')}
 
 
 def guidance(t, c, q):

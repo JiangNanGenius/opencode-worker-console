@@ -1,6 +1,6 @@
 ---
 name: delegate-opencode
-description: Delegate complete authorized outcomes to general-purpose OpenCode agents. Every task category is eligible. Start classification at Fast; use Normal or Deep only for a named uncertainty the worker must resolve, never for domain, importance, repository size or workload. Check quota tier guidance before a batch. The bridge selects the provider and model and handles allowance-aware fallback. Coordinate tasks, guidance, transcripts, sessions and recovery through the durable bridge.
+description: Delegate complete authorized outcomes to general-purpose OpenCode agents. Every task category is eligible. Classify by uncertainty, then let fresh quota guidance break Fast/Normal ties; a healthy Normal-only subscription may favor Normal. Use Deep only for abstract goals, architecture trade-offs or exceptional logic, never for importance or workload size. The bridge selects the provider and model and handles allowance-aware fallback.
 ---
 
 # Delegate OpenCode work
@@ -125,19 +125,28 @@ reset-aware (`remaining quota fraction / remaining time fraction`), so 20% with 
 window left is healthy rather than automatically low. When two plans are available, a healthy
 Normal-only plan prevents a low Fast-only plan from incorrectly pushing work onto Fast.
 
-Start every classification at Fast. Before choosing Normal or Deep, name the specific unresolved
-question that requires its extra judgment. Reading a repository, finding the relevant files,
-ordinary debugging, making local implementation choices, writing tests, packaging, deployment
-and long execution are not by themselves such a question. If no concrete ambiguity can be named,
-submit Fast. When `prefer_fast_when_both_fit` is true because the Normal subscription provider is
-unavailable, direction-fixed work should remain Fast unless it meets an explicit Normal or Deep
-criterion below; do not default to Normal as a generic safe choice.
+Use Fast as the capability baseline, then apply the fresh quota tie-breaker before submitting.
+Before choosing Normal or Deep for capability, name the specific unresolved question that needs
+its extra judgment. Reading a repository, finding files, ordinary debugging, local implementation
+choices, tests, packaging, deployment and long execution are not by themselves such a question.
+Use the returned `quota_posture` label instead of interpreting raw percentages yourself:
+
+- `fast_preferred`: when Fast and Normal both fully fit, lean Fast; retain Normal or Deep when the
+  work needs their extra judgment.
+- `normal_flexible`: a Normal-only subscription such as Kimi is healthy. Choose Fast or Normal by
+  the task's error/rework risk, urgency and size; Normal is freely available but is not mandatory.
+- `neutral`: quota has no clear preference, so classify only from task needs.
+
+The legacy `prefer_fast_when_both_fit` boolean remains equivalent to the `fast_preferred` label.
 
 | Task shape | Selection |
 | --- | --- |
 | The direction, constraints and acceptance are clear; implementation details may remain | `--profile auto --tier fast` |
 | The direction is clear, but execution requires open investigation, synthesis or many interdependent judgments | `--profile auto --tier normal` |
 | An abstract or unclear objective, unresolved system-wide cause, architecture trade-off or unusually complex logic/invariants | `--profile auto --tier deep` |
+
+The table gives the minimum capability tier. Under `normal_flexible`, a Fast-capable task may use
+Normal when its stronger reasoning is likely to avoid meaningful errors or rework.
 
 The tier measures how much ambiguity the worker must resolve, not model intelligence or expected
 quality. Fast and Normal are both expected to deliver a complete, correct outcome. Fast is a
@@ -160,8 +169,9 @@ controlled model comparison may bypass tier routing; then use the explicit profi
 concrete `profile_reason`.
 
 Classify the ambiguity the worker must remove, never the task's noun, domain, duration or size.
-Start at Fast when the coordinator can state a firm direction; upgrade only for a concrete
-reason the execution itself must discover. Choose the lowest tier that covers that uncertainty:
+Treat Fast as the capability floor when the coordinator can state a firm direction; require a
+concrete execution uncertainty for a capability upgrade. Then apply the quota tie-breaker above,
+which may deliberately choose Normal to use healthy prepaid allowance:
 
 - Use Fast when the direction, governing constraints and acceptance are supplied, so the worker
   can inspect, implement and verify without inventing the goal or organizing principle.
