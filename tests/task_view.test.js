@@ -158,14 +158,14 @@ test('quota range distinguishes paused sampling, collection and burn estimates',
  assert.equal(h.run("estimatedRange({consumption_estimate:{hours:12}})"),'quota.rangeHours');
  assert.equal(h.run("estimatedBalanceRange({balances:[{consumption_estimate:{hours:31,idle:false}}]})"),'quota.rangeHours');
  assert.equal(h.run("estimatedBalanceRange({balances:[{consumption_estimate:{idle:true}}]})"),'quota.rangePaused');
- assert.equal(h.run("quotaPace({remaining_percent:70,duration_minutes:10080,resets_at:new Date(Date.now()+100*3600000).toISOString(),consumption_estimate:{hours:40}})[0]"),'tight');
+ assert.equal(h.run("quotaPace({remaining_percent:70,duration_minutes:10080,resets_at:new Date(Date.now()+100*3600000).toISOString(),consumption_estimate:{hours:40}})[0]"),'on-track');
  assert.doesNotMatch(h.run("quotaTrack(70,'remaining')"),/line|pace-marker/);
   assert.match(h.run("quotaWindows([{name:'AFPFiveHour',remaining_percent:70,duration_minutes:300,resets_at:new Date(Date.now()+3600000).toISOString()}],true)"),/quota-window-reset/);
 });
 
 test('work pool uses fitted runtime, with DeepSeek as a small observed share', async () => {
   const h=appHarness();await tick();
-  h.run('data.quota={deepseek:{available:true,balances:[{remaining:50,currency:"CNY"}]},"kimi-for-coding":{available:false,windows:[{name:"overall",remaining_percent:0}]},"volcengine-agent-plan":{available:true,windows:[{name:"AFPWeekly",remaining_percent:44}]}};data.economics={work_pool:{capacity:321.667,total:80,remaining_percent:24.87,refills:[{provider:"kimi",resets_at:new Date(Date.now()+72000000).toISOString(),projected_remaining_percent:66}],components:{balance:{capacity:30,amount:25,remaining_percent:83.333},kimi:{capacity:166.667,amount:0,remaining_percent:0},plan:{capacity:125,amount:55,remaining_percent:44}}}};data.profiles={ds:{model:"deepseek/flash"},kimi:{model:"kimi-for-coding/k3"},ark:{model:"volcengine-agent-plan/k3"}};renderQuota()');
+  h.run('data.quota={deepseek:{available:true,balances:[{remaining:50,currency:"CNY"}]},"kimi-for-coding":{available:false,windows:[{name:"overall",remaining_percent:0}]},"volcengine-agent-plan":{available:true,windows:[{name:"AFPWeekly",remaining_percent:44}]}};data.tier_guidance={conservation_level:2};data.economics={work_pool:{capacity:321.667,total:80,remaining_percent:24.87,refills:[{provider:"kimi",resets_at:new Date(Date.now()+72000000).toISOString(),projected_remaining_percent:66}],components:{balance:{capacity:30,amount:25,remaining_percent:83.333},kimi:{capacity:166.667,amount:0,remaining_percent:0},plan:{capacity:125,amount:55,remaining_percent:44}}}};data.profiles={ds:{model:"deepseek/flash"},kimi:{model:"kimi-for-coding/k3"},ark:{model:"volcengine-agent-plan/k3"}};renderQuota()');
   const bar=h.get('pool-bar');
   assert.match(bar.innerHTML,/data-segment="kimi"[^>]*width:0\.000%/);
   assert.match(bar.innerHTML,/data-segment="ark"[^>]*width:17\.098%/);
@@ -174,10 +174,11 @@ test('work pool uses fitted runtime, with DeepSeek as a small observed share', a
   assert.match(h.get('pool-summary').innerHTML,/25%/);
   const components=h.get('pool-components').innerHTML;
   assert.match(components,/¥50\.00/);
+  assert.doesNotMatch(components,/¥50\.00 · \d+%/);
   assert.match(components,/quota\.weekly · 0%/);
   assert.match(components,/quota\.weekly · 44%/);
   assert.doesNotMatch(h.get('pool-summary').innerHTML+components,/AFP-equivalent|≈/);
-  assert.equal(h.get('pool-state').textContent,'quota.poolReduced');
+  assert.equal(h.get('pool-state').textContent,'quota.conservationLevel2');
   assert.equal(h.get('pool-next').textContent,'quota.poolNextRefill');
 });
 

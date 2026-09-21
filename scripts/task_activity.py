@@ -77,6 +77,7 @@ _locks = {}
 _locks_guard = threading.Lock()
 _result_cache = {}
 _messages_cache = {}
+_full_text_cache = {}
 
 
 def _now():
@@ -391,6 +392,63 @@ def _message_events(messages):
     return events
 
 
+def _remember_full_batch(task_id, values):
+    if not isinstance(task_id, str) or not task_id or not isinstance(values, dict):
+        return
+    redacted = common.redact(values)
+    if not isinstance(redacted, dict):
+        return
+    with _cache_guard:
+        for event_id, text in redacted.items():
+            if not isinstance(event_id, str) or not event_id or not isinstance(text, str):
+                continue
+            if len(_full_text_cache) >= CACHE_LIMIT * 4 and (task_id, event_id) not in _full_text_cache:
+                _full_text_cache.pop(next(iter(_full_text_cache)))
+            _full_text_cache[(task_id, event_id)] = text
+
+
+def _remember_full(task_id, event_id, text):
+    if isinstance(event_id, str) and isinstance(text, str):
+        _remember_full_batch(task_id, {event_id: text})
+
+
+def _remember_message_texts(task, messages):
+    """Keep complete redacted display text server-side for on-demand expansion."""
+    task_id = task.get('id') if isinstance(task, dict) else None
+    if not isinstance(task_id, str) or not isinstance(messages, list):
+        return
+    values = {}
+    for message_index, message in enumerate(messages):
+        if not isinstance(message, dict):
+            continue
+        info = message.get('info') if isinstance(message.get('info'), dict) else {}
+        message_id = info.get('id') if isinstance(info.get('id'), str) and info.get('id') else \
+            'position:%d' % message_index
+        raw_error = info.get('error')
+        if isinstance(raw_error, dict):
+            data = raw_error.get('data') if isinstance(raw_error.get('data'), dict) else {}
+            event_id = _stable_id('model-error', message_id, raw_error.get('name'))
+            text = data.get('message') or raw_error.get('message') or raw_error.get('name') or 'Model error'
+            values[event_id] = text
+        for part_index, part in enumerate(message.get('parts') or []):
+            if not isinstance(part, dict):
+                continue
+            kind = part.get('type')
+            if kind == 'text' and isinstance(part.get('text'), str):
+                event_id = part.get('id') or _stable_id('text', message_id, part_index)
+                values[event_id] = part['text']
+            elif kind == 'tool':
+                tool = part.get('tool') if isinstance(part.get('tool'), str) and part.get('tool') else 'tool'
+                state = part.get('state') if isinstance(part.get('state'), dict) else {}
+                text = _tool_text(tool, state)
+                if state.get('status') == 'error' and isinstance(state.get('error'), str) and state['error'].strip():
+                    text = (text + ' — ' + state['error']) if text else state['error']
+                event_id = part.get('id') if isinstance(part.get('id'), str) and part.get('id') else \
+                    _stable_id('tool', message_id, part_index, tool, part.get('callID'))
+                values[event_id] = text
+    _remember_full_batch(task_id, values)
+
+
 def _pending_events(items, at, prefix='pending'):
     events = []
     if not isinstance(items, list):
@@ -522,9 +580,12 @@ def events_from_messages(messages, task=None, limit=MAX_EVENTS):
 
 
 def full_event_text(task, event_id):
-    """Return one complete redacted assistant text part on explicit request."""
+    """Return one complete redacted activity item on explicit request."""
     if not isinstance(task, dict) or not isinstance(event_id, str) or not event_id:
         raise ValueError('Invalid activity event')
+    cached = _full_text_cache.get((task.get('id'), event_id))
+    if isinstance(cached, str):
+        return cached
     messages = None
     if _live_candidate(task):
         try:
@@ -536,24 +597,34 @@ def full_event_text(task, event_id):
             messages = None
     if not isinstance(messages, list):
         messages, _ = _load_messages(task.get('id'))
-    for message_index, message in enumerate(messages or []):
-        if not isinstance(message, dict):
-            continue
-        info = message.get('info') if isinstance(message.get('info'), dict) else {}
-        if info.get('role') != 'assistant':
-            continue
-        message_id = info.get('id') if isinstance(info.get('id'), str) and info.get('id') else \
-            'position:%d' % message_index
-        for part_index, part in enumerate(message.get('parts') or []):
-            if not isinstance(part, dict) or part.get('type') != 'text' or not isinstance(part.get('text'), str):
-                continue
-            candidate = part.get('id') or _stable_id('text', message_id, part_index)
-            if candidate == event_id:
-                redacted = common.redact(part['text'])
-                if not isinstance(redacted, str):
-                    raise ValueError('Activity message unavailable')
-                return redacted
+    _remember_message_texts(task, messages)
+    cached = _full_text_cache.get((task.get('id'), event_id))
+    if isinstance(cached, str):
+        return cached
     result, _ = _read_json(common.STATE / 'artifacts' / str(task.get('id')) / 'result.json')
+    for index, item in enumerate(result.get('errors') if isinstance(result, dict) and
+                                 isinstance(result.get('errors'), list) else []):
+        if not isinstance(item, dict):
+            continue
+        text = item.get('message') or item.get('code') or 'Error'
+        candidate = _stable_id('result-error', item.get('message_id'), item.get('code'), text, index)
+        if candidate == event_id:
+            _remember_full(task.get('id'), candidate, text)
+            return _full_text_cache[(task.get('id'), candidate)]
+    pending = result.get('pending') if isinstance(result, dict) and isinstance(result.get('pending'), list) else []
+    for index, item in enumerate(pending):
+        if not isinstance(item, dict):
+            continue
+        text, item_id = 'Waiting for input', item.get('id') if isinstance(item.get('id'), str) and item.get('id') else index
+        if isinstance(item.get('questions'), list) and item['questions']:
+            question = item['questions'][0] if isinstance(item['questions'][0], dict) else {}
+            text = question.get('question') or question.get('header') or text
+        elif item.get('permission') or item.get('title'):
+            text = item.get('title') or item.get('permission')
+        candidate = _stable_id('result-pending', item_id)
+        if candidate == event_id:
+            _remember_full(task.get('id'), candidate, text)
+            return _full_text_cache[(task.get('id'), candidate)]
     report = result.get('worker_report') if isinstance(result, dict) else None
     summary = report.get('summary') if isinstance(report, dict) else None
     candidate = _stable_id('result-summary', task.get('id'), summary[:200]) if isinstance(summary, str) else None
@@ -561,11 +632,19 @@ def full_event_text(task, event_id):
         redacted = common.redact(summary)
         if isinstance(redacted, str):
             return redacted
+    for index, item in enumerate(task.get('guidance') or []):
+        if not isinstance(item, dict):
+            continue
+        candidate = _stable_id('guidance', task.get('id'), item.get('request_id') or index)
+        if candidate == event_id:
+            _remember_full(task.get('id'), candidate, item.get('text') if isinstance(item.get('text'), str) else '')
+            return _full_text_cache[(task.get('id'), candidate)]
     raise ValueError('Activity message unavailable')
 
 
 def activity_from_messages(messages, task=None, source='saved', sampled_at=None, has_more=False,
                            stale=False, error=None, limit=MAX_EVENTS):
+    _remember_message_texts(task, messages)
     events, truncated = _build_events(messages, task, limit=limit)
     return {'events': events, 'sampled_at': sampled_at, 'source': source,
             'stale': bool(stale), 'error': error, 'has_more': bool(has_more or truncated)}

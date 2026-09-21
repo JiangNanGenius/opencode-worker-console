@@ -361,7 +361,7 @@ class ManagementTests(unittest.TestCase):
         self.assertEqual(result['max_parallel_per_owner'], 4)
         self.assertEqual(result['kimi_low_weekly_threshold_percent'], 5)
         self.assertEqual(result['kimi_low_weekly_k3_limit'], 1)
-        self.assertEqual(result['fast_bias_runway_percent'], 75)
+        self.assertEqual(result['fast_bias_runway_percent'], 38)
         self.assertEqual(result['budget_signals'], {})
         self.assertTrue(result['auto_reroute_on_quota_exhaustion'])
         self.assertEqual(result['profiles']['fallback'],

@@ -86,10 +86,12 @@ class RoutingPolicyTests(unittest.TestCase):
     def test_spillover_requires_a_bounded_later_fallback(self):
         policy = {'background': BACKGROUND_POLICY}
         value = {'enabled': True, 'profile': 'fallback', 'tiers': ['background'],
-                 'max_share_percent': 30}
+                 'max_share_percent': 30, 'level2_runway_percent': 50}
         self.assertEqual(routing.validate_spillover(value, policy, profiles()), value)
         for invalid in (
             dict(value, max_share_percent=51),
+            dict(value, level2_runway_percent=101),
+            dict(value, level2_runway_percent=-1),
             dict(value, tiers=['deep']),
             dict(value, profile='senior-code'),
             dict(value, tiers=['background', 'background']),
@@ -414,6 +416,63 @@ class RoutePolicyTests(unittest.TestCase):
         self.assertEqual(quota.route(explicit, c, q)[0], 'senior-code')
         deep = self.task(complexity='deep')
         self.assertEqual(quota.route(deep, c, q)[0], 'deep-research')
+
+    def test_level2_conservation_uses_fast_pool_for_normal_but_never_deep(self):
+        now = 1_800_000_000
+        c = json.loads(json.dumps(self.c))
+        c['fast_bias_runway_percent'] = 38
+        c['kimi_reserve_percent'] = 0
+        c['routing_policy'] = {
+            'fast': [[{'profile': 'ark-auto', 'weight': 1}],
+                     [{'profile': 'fallback', 'weight': 1}]],
+            'background': [[{'profile': 'senior-code', 'weight': 1},
+                            {'profile': 'ark-k3', 'weight': 1}],
+                           [{'profile': 'ark-auto', 'weight': 1}],
+                           [{'profile': 'fallback', 'weight': 1}]],
+            'deep': DEEP_POLICY,
+        }
+        c['profiles']['ark-auto']['model'] = 'volcengine-agent-plan/ark-code-latest'
+        c['profiles']['ark-k3']['model'] = 'volcengine-agent-plan/kimi-k3'
+        c['quota_spillover'] = {'enabled': True, 'profile': 'fallback',
+                                 'tiers': ['fast', 'background'], 'max_share_percent': 30,
+                                 'level2_runway_percent': 25}
+
+        def provider(percent, available=True):
+            return {'state': 'ok', 'available': available, 'stale': False,
+                    'windows': [{'valid': True, 'remaining_percent': percent,
+                                 'duration_minutes': 300, 'resets_at': now + 4 * 3600}]}
+
+        # Ark runway is 37.2% / 80% = 46.5%, while the Kimi peer is unavailable.
+        q = {'kimi-for-coding': provider(0, available=False),
+             'volcengine-agent-plan': provider(37.2),
+             'deepseek': provider(100)}
+        admissions = routing.Admissions(c['routing_policy'])
+        chosen = []
+        with patch.object(quota.time, 'time', return_value=now):
+            self.assertEqual(quota.tier_guidance(c, q)['conservation_level'], 2)
+            for _ in range(100):
+                profile, why = quota.route(self.task(), c, q, admissions)
+                admissions.commit()
+                chosen.append(profile)
+                self.assertIn('quota_conservation_level2', why)
+            status = quota.routing_status(c, q)
+            self.assertIn('quota_conservation_level2', status['background'][0]['reason'])
+            self.assertEqual(set(status['background'][0]['members']), {'ark-auto', 'fallback'})
+            self.assertNotIn('quota_conservation_level2', status['deep'][0]['reason'])
+            self.assertEqual(quota.route(self.task(complexity='deep'), c, q)[0], 'ark-k3')
+
+        fallback_weight = status['background'][0]['members']['fallback']['effective_weight']
+        self.assertEqual(chosen.count('fallback'), fallback_weight)
+        self.assertEqual(chosen.count('ark-auto'), 100 - fallback_weight)
+        self.assertLess(fallback_weight, 30)
+
+        # A fresh Kimi window restores the original strong Normal pool automatically.
+        q['kimi-for-coding'] = provider(80)
+        q['volcengine-agent-plan'] = provider(80)
+        with patch.object(quota.time, 'time', return_value=now):
+            restored, why = quota.route(self.task(), c, q)
+            self.assertIn(restored, {'senior-code', 'ark-k3'})
+            self.assertNotIn('quota_conservation_level2', why)
 
     def test_recovery_alternatives_follow_policy_order(self):
         t = self.task(complexity='deep', requested_profile='deep-research')

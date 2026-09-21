@@ -77,6 +77,7 @@ class IsolatedCase(unittest.TestCase):
         ta._cache.clear()
         ta._result_cache.clear()
         ta._messages_cache.clear()
+        ta._full_text_cache.clear()
         ta._locks.clear()
 
     def tearDown(self):
@@ -507,6 +508,38 @@ class RetainedEvidenceTests(IsolatedCase):
         self.assertIn('complete tail marker', expanded)
         self.assertNotIn(FAKE_KEY, expanded)
         self.assertIn('<redacted>', expanded)
+
+    def test_long_user_tool_guidance_and_result_error_expand_from_their_sources(self):
+        task_id = 'job-0000000000000017'
+        user_text = 'user context ' * 40
+        tool_command = 'printf ' + ('x' * 700)
+        guidance = 'guidance detail ' * 40
+        error_text = 'failure detail ' * 40
+        messages = [user('msg_u', parts=[text_part('prt_user', user_text)]),
+                    assistant('msg_a', sample_tokens(5, 1, 1, 1, 2, 0), cost=0.01,
+                              parts=[tool_part('prt_tool', inputs={'command': tool_command})])]
+        task = self.task(task_id, guidance=[{'request_id': 'g1', 'text': guidance, 'status': 'accepted'}])
+        self.write_messages(task_id, messages)
+        self.write_result(task_id, {'errors': [{'source': 'tool', 'code': 'failed',
+                                                'message': error_text, 'message_id': 'm1'}]})
+        activity = ta.activity_from_messages(messages, task)
+        self.assertTrue(next(e for e in activity['events'] if e['id'] == 'prt_user')['truncated'])
+        self.assertTrue(next(e for e in activity['events'] if e['id'] == 'prt_tool')['truncated'])
+        self.assertEqual(ta.full_event_text(task, 'prt_user'), user_text)
+        self.assertEqual(ta.full_event_text(task, 'prt_tool'), tool_command)
+        guidance_id = ta._stable_id('guidance', task_id, 'g1')
+        error_id = ta._stable_id('result-error', 'm1', 'failed', error_text, 0)
+        self.assertEqual(ta.full_event_text(task, guidance_id), guidance)
+        self.assertEqual(ta.full_event_text(task, error_id), error_text)
+
+    def test_live_full_text_survives_upstream_part_compaction(self):
+        task = self.task('job-0000000000000018', status='running', session_deleted=False)
+        full = 'live detail ' * 80
+        messages = [assistant('msg_a', sample_tokens(5, 1, 1, 1, 2, 0), cost=0.01,
+                              parts=[text_part('prt_live', full)])]
+        ta.activity_from_messages(messages, task, source='live')
+        with patch.object(common, 'api', return_value=[]):
+            self.assertEqual(ta.full_event_text(task, 'prt_live'), full)
 
     def test_events_are_bounded_chronological_and_stable(self):
         parts = [tool_part('prt_%03d' % index, inputs={'command': 'echo %d' % index},

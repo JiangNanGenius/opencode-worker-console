@@ -58,12 +58,13 @@ Normal-only plan allows either tier, and `neutral` when quota has no preference.
 not mandatory.
 
 An optional `quota_spillover` rule fills the gap between healthy weighted routing and total
-fallback. Under `fast_preferred`, it can add a later pay-as-you-go profile to the first Fast or
-Normal stage at a gradually increasing share. The share is zero at the runway threshold and
-reaches the configured ceiling only near zero runway. It uses the best known runway among the
-available subscription providers, does nothing on unknown telemetry, never changes explicit
-profile requests, and applies only to configured tiers. The Agent Plan preset uses direct
-DeepSeek with a 30% ceiling for Fast and Normal; Deep is excluded by default.
+fallback. Level 1 adds a later pay-as-you-go profile to the first Fast or Normal stage at a
+gradually increasing share. Level 2 temporarily replaces automatic Normal's source stage with
+the first available Fast source stage, then applies the same bounded share. Deep and explicit
+profiles never change. The Agent Plan preset uses 38% and 25% baselines with a 30% direct
+DeepSeek ceiling. These are adaptive guard rails: observed burn fits the combined work pool, and
+a nearby refill that materially improves the projected pool lowers both effective thresholds by
+up to 30%. Unknown telemetry uses provider runway and never invents a refill.
 
 Budget guidance is provider-neutral. In **Models & routing**, each configured provider can use
 live telemetry when available, a manually entered rolling window (remaining percentage, duration
@@ -88,6 +89,13 @@ The stored shape is deliberately provider-neutral:
     "background": {
       "0": {"ladder": [[3, 1], [2, 1], [1, 1]]}
     }
+  },
+  "quota_spillover": {
+    "enabled": true,
+    "profile": "backup",
+    "tiers": ["fast", "background"],
+    "max_share_percent": 30,
+    "level2_runway_percent": 25
   }
 }
 ```

@@ -215,16 +215,20 @@ K3 Deep task may run globally. Other Deep work uses the configured Ark peer or l
 The threshold and native-K3 slot count are operator settings. A five-hour window is never
 mistaken for the weekly pool, and stale or missing telemetry does not invent a percentage.
 
-The optional early-spill rule protects strong subscription capacity before every plan reaches
-zero. When the combined reset-aware posture is `fast_preferred`, the bridge may blend a bounded
-share of eligible Fast/Normal admissions into a configured later fallback such as direct
-DeepSeek. The share rises gradually from zero as the best available plan runway falls below the
-threshold, and returns to zero after recovery. The healthier plan controls the calculation, so
-one low plan cannot trigger unnecessary paid fallback while another remains healthy. Unknown
-telemetry never triggers early spill. This is provider routing within the selected capability
-tier: Codex still chooses Fast, Normal or Deep from task uncertainty and keeps `profile=auto`.
-The Agent Plan preset defaults to Fast and Normal only with a 30% ceiling; Deep remains on its
-strong-model ladder unless the operator explicitly enables Deep spillover.
+The optional conservation rule has two levels and protects strong subscription capacity before
+every plan reaches zero. Level 1 blends a bounded share of eligible Fast/Normal admissions into
+a configured later fallback such as direct DeepSeek. Level 2 temporarily serves automatic Normal
+work from the first available Fast source stage, then applies the same bounded fallback share.
+It never changes Deep or an explicit profile request. The installed Agent Plan baseline is 38%
+for Level 1 and 25% for Level 2, with a 30% fallback ceiling. These are guard rails rather than
+fixed switch points: the bridge fits the combined work pool from observed burn, then lowers the
+effective thresholds when a nearby refill will materially restore capacity. This lets strong
+models run when the pool can safely reach its refill while preserving enough capacity for a long
+task to finish. Unknown or incomplete telemetry fails closed, and recovery or refill restores the
+strong Normal pool automatically. Codex still chooses Fast, Normal or Deep from task uncertainty
+and keeps `profile=auto`; it must not imitate these provider decisions in its own prompt. Read
+`conservation_level` from `quota --tier-guidance` when explaining current capacity: `0` is normal,
+`1` is bounded fallback sharing, and `2` is the temporary Normal-to-Fast source shift.
 
 Ark Auto (`ark-code-latest`) follows the model setting in the Ark console. Only a console
 setting of Auto enables provider-side automatic routing and its applicable discounts. It

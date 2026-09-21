@@ -345,7 +345,8 @@ def work_pool(config, quota_view, now=None):
     return {'unit': 'fitted-hours', 'total': round(total, 3),
             'capacity': round(capacity, 3), 'remaining_percent': _percent(total, capacity),
             'components': components, 'refills': refills,
-            'complete': bool(known) and all(item.get('status') in ('ok', 'stale') for item in known),
+            'complete': bool(known) and all(item.get('status') in ('ok', 'stale', 'unavailable')
+                                            for item in known),
             'normalization': {'rule': 'remaining_runtime / fitted_full_runtime',
                               'kimi_included': components['kimi'].get('capacity') is not None,
                               'notes': {'weights_use_observed_burn': True,

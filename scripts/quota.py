@@ -1002,6 +1002,57 @@ def _allowed_profile(name, t, c, q):
     return provider, ok, why
 
 
+def _first_available_policy_stage(tier, t, c, q, policy):
+    """Return the first usable stage without advancing its admission counter."""
+    for stage in (policy or {}).get(tier) or []:
+        candidates = []
+        providers = {}
+        for entry in stage:
+            provider, ok, why = _allowed_profile(entry['profile'], t, c, q)
+            if ok:
+                candidates.append((entry, why))
+                providers[entry['profile']] = provider
+        if candidates:
+            return candidates, providers
+    return [], {}
+
+
+def _level2_conservation_active(tier, spill_config, guidance):
+    """Second-level load shedding: Normal temporarily reuses the Fast source pool.
+
+    Level one is the ordinary bounded spillover. Level two is deliberately narrower:
+    it affects only automatic Normal work, requires complete reset-aware telemetry,
+    and never changes Deep routing or an explicit profile request.
+    """
+    if tier != 'background' or not spill_config or not spill_config.get('enabled') or \
+            tier not in spill_config.get('tiers', ()) or \
+            guidance.get('quota_posture') != 'fast_preferred' or \
+            guidance.get('conservation_refill_safe'):
+        return False
+    threshold = guidance.get('level2_runway_percent', spill_config.get('level2_runway_percent', 0))
+    if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or threshold <= 0:
+        return False
+    combined = guidance.get('combined_remaining_percent')
+    if guidance.get('combined_remaining_complete') and isinstance(combined, (int, float)) and \
+            not isinstance(combined, bool) and math.isfinite(combined):
+        return float(combined) <= float(threshold)
+    runways = guidance.get('runway') or {}
+    values = list(runways.values()) if isinstance(runways, dict) else []
+    if not values or any(isinstance(value, bool) or not isinstance(value, (int, float)) or
+                         not math.isfinite(value) for value in values):
+        return False
+    return max(float(value) for value in values) <= float(threshold) / 100.0
+
+
+def _spillover_runway_view(guidance, providers):
+    """Use the fitted combined plan pool when complete, else provider runway."""
+    combined = guidance.get('combined_remaining_percent')
+    if guidance.get('combined_remaining_complete') and isinstance(combined, (int, float)) and \
+            not isinstance(combined, bool) and math.isfinite(combined):
+        return {provider: max(0.0, float(combined) / 100.0) for provider in providers}
+    return guidance.get('runway') or {}
+
+
 def _policy_route(t, c, q, stages, batch=None):
     """First stage with an admissible candidate, then a weighted choice within it.
 
@@ -1035,9 +1086,21 @@ def _policy_route(t, c, q, stages, batch=None):
             for entry, _ in candidates:
                 profile = c['profiles'].get(entry['profile']) or {}
                 provider_by_profile[entry['profile']] = str(profile.get('model', '')).split('/', 1)[0]
-            adaptive = routing.dynamic_stage(c, tier, index)
+            level2 = False
+            if spill_config and spill_config['enabled'] and index == 0:
+                spill_guidance = spill_guidance or tier_guidance(c, q)
+                if _level2_conservation_active(tier, spill_config, spill_guidance):
+                    fast_candidates, fast_providers = _first_available_policy_stage('fast', t, c, q, policy)
+                    if fast_candidates:
+                        candidates = fast_candidates
+                        base_entries = [entry for entry, _ in candidates]
+                        provider_by_profile = fast_providers
+                        level2 = True
+            adaptive = None if level2 else routing.dynamic_stage(c, tier, index)
             entries, dynamic_reason, _ = routing.dynamics(
                 base_entries, provider_by_profile, q, adaptive=adaptive)
+            if level2:
+                dynamic_reason = 'quota_conservation_level2:' + dynamic_reason
             # A later fallback may absorb a bounded share before subscriptions hit
             # zero. Explicit profile requests never reach this function, and only
             # stage zero is blended; once a stage is unavailable, normal ordered
@@ -1052,8 +1115,8 @@ def _policy_route(t, c, q, stages, batch=None):
                         provider_by_profile[target] = target_provider
                         entries, spill_reason, _ = routing.spillover(
                             entries, provider_by_profile, target,
-                            spill_guidance.get('runway') or {},
-                            spill_guidance.get('runway_threshold_percent', 75),
+                            _spillover_runway_view(spill_guidance, source_providers),
+                            spill_guidance.get('runway_threshold_percent', 38),
                             spill_config['max_share_percent'])
                         dynamic_reason += ':' + spill_reason
                         if any(entry['profile'] == target for entry in entries):
@@ -1314,13 +1377,23 @@ def routing_status(c, q):
                 ok, _ = allowed(provider, q, complexity, c.get('kimi_reserve_percent', 0))
                 if ok:
                     candidates.append(entry)
+            level2 = False
+            if spill_config and spill_config['enabled'] and index == 0 and \
+                    _level2_conservation_active(tier, spill_config, spill_guidance):
+                fast_candidates, _ = _first_available_policy_stage(
+                    'fast', {'complexity': 'normal'}, c, q, policy)
+                if fast_candidates:
+                    candidates = [entry for entry, _ in fast_candidates]
+                    level2 = True
             provider_by_profile = {}
             for entry in candidates:
                 profile = c['profiles'].get(entry['profile']) or {}
                 provider_by_profile[entry['profile']] = str(profile.get('model', '')).split('/', 1)[0]
-            adaptive = routing.dynamic_stage(c, tier, index, policy)
+            adaptive = None if level2 else routing.dynamic_stage(c, tier, index, policy)
             effective, reason, info = routing.dynamics(
                 candidates, provider_by_profile, q, adaptive=adaptive)
+            if level2:
+                reason = 'quota_conservation_level2:' + reason
             if spill_config and index == 0 and tier in spill_config['tiers'] and \
                     spill_guidance.get('quota_posture') == 'fast_preferred':
                 target = spill_config['profile']
@@ -1332,8 +1405,9 @@ def routing_status(c, q):
                     provider_by_profile[target] = target_provider
                     effective, spill_reason, spill_info = routing.spillover(
                         effective, provider_by_profile, target,
-                        spill_guidance.get('runway') or {},
-                        spill_guidance.get('runway_threshold_percent', 75),
+                        _spillover_runway_view(spill_guidance, set(provider_by_profile.values()) -
+                                               {target_provider}),
+                        spill_guidance.get('runway_threshold_percent', 38),
                         spill_config['max_share_percent'])
                     if spill_info:
                         reason += ':' + spill_reason
@@ -1353,13 +1427,50 @@ def tier_guidance(c, q):
     overlap: particularly when the preferred Normal pool has lost a provider or all
     Normal alternatives to the Fast provider are also below the configured window floor.
     """
-    threshold_percent = c.get('fast_bias_runway_percent', 75)
-    if isinstance(threshold_percent, bool) or not isinstance(threshold_percent, (int, float)):
-        threshold_percent = 75
-    threshold_percent = max(0.0, min(400.0, float(threshold_percent)))
-    threshold = threshold_percent / 100.0
+    threshold_base = c.get('fast_bias_runway_percent', 38)
+    if isinstance(threshold_base, bool) or not isinstance(threshold_base, (int, float)):
+        threshold_base = 38
+    threshold_base = max(0.0, min(400.0, float(threshold_base)))
     now = time.time()
     policy = routing.configured(c)
+
+    spill_config = routing.configured_spillover(c, policy)
+    level2_base = (spill_config or {}).get('level2_runway_percent', 0)
+    if isinstance(level2_base, bool) or not isinstance(level2_base, (int, float)):
+        level2_base = 0
+    level2_base = max(0.0, min(100.0, float(level2_base)))
+
+    # For the built-in provider family, use the same fitted work pool shown in
+    # the console. The percentage already reflects observed burn speed. A nearby
+    # refill with a material gain lowers both guard rails by up to 30%, so a plan
+    # that can safely coast for another hour or two is not downgraded merely for
+    # displaying a small raw percentage. Unsupported/custom providers continue
+    # to use their provider-neutral reset-aware runway below.
+    configured_provider_ids = set()
+    for tier_name in ('fast', 'background'):
+        for stage in (policy or {}).get(tier_name) or []:
+            for entry in stage:
+                model = ((c.get('profiles') or {}).get(entry.get('profile')) or {}).get('model')
+                if isinstance(model, str) and '/' in model:
+                    configured_provider_ids.add(model.split('/', 1)[0])
+    supported_pool_ids = {'deepseek', 'kimi-for-coding', 'volcengine-agent-plan'}
+    pool_fit = None
+    if configured_provider_ids and configured_provider_ids.issubset(supported_pool_ids):
+        import economics
+        candidate = economics.work_pool(c, q, now=now)
+        if candidate.get('complete') and isinstance(candidate.get('remaining_percent'), (int, float)):
+            pool_fit = candidate
+    refill = (pool_fit.get('refills') or [None])[0] if pool_fit else None
+    relief = 0.0
+    if refill and isinstance(refill.get('hours_until'), (int, float)) and \
+            isinstance(refill.get('projected_remaining_percent'), (int, float)):
+        current = float(pool_fit['remaining_percent'])
+        gain = max(0.0, float(refill['projected_remaining_percent']) - current)
+        imminence = max(0.0, min(1.0, 1.0 - float(refill['hours_until']) / 24.0))
+        relief = imminence * max(0.0, min(1.0, gain / 30.0))
+    threshold_percent = threshold_base * (1.0 - 0.30 * relief)
+    level2_threshold = level2_base * (1.0 - 0.30 * relief)
+    threshold = threshold_percent / 100.0
 
     def configured_stages(tier):
         if policy and policy.get(tier):
@@ -1439,17 +1550,26 @@ def tier_guidance(c, q):
     overlap = fast_providers & normal_providers
     alternate = normal_providers - fast_providers
     providers = sorted(fast_providers | normal_providers)
-    readings = {provider: remaining(provider) for provider in providers}
-    signals = {provider: signal(provider) for provider in providers}
+    configured_providers = sorted(set(fast['configured']) | set(normal['configured']))
+    readings = {provider: remaining(provider) for provider in configured_providers}
+    signals = {provider: signal(provider) for provider in configured_providers}
     runways = {provider: item['value'] if item['mode'] in ('telemetry', 'manual_window') else None
                for provider, item in signals.items()}
+    combined_remaining = pool_fit.get('remaining_percent') if pool_fit else None
+    combined_complete = bool(pool_fit)
+    refill_safe = bool(pool_fit and refill and isinstance(refill.get('hours_until'), (int, float)) and
+                       0 <= float(refill['hours_until']) <= 2.0 and
+                       isinstance(pool_fit.get('total'), (int, float)) and
+                       float(pool_fit['total']) >= float(refill['hours_until']))
     lost_normal = set(normal['configured']) - normal_providers
     fast_low = bool(overlap) and any(signals.get(provider, {}).get('low') is True for provider in overlap)
     alternates_healthy = any(signals.get(provider, {}).get('low') is not True for provider in alternate)
     alternates_low = bool(alternate) and all(signals.get(provider, {}).get('low') is True
                                              for provider in alternate)
+    combined_low = not refill_safe and combined_complete and isinstance(combined_remaining, (int, float)) and \
+        combined_remaining <= threshold_percent
     fast_bias = threshold > 0 and bool(overlap) and not alternates_healthy and \
-        (fast_low or alternates_low)
+        (fast_low or alternates_low or combined_low)
     if fast_bias and lost_normal and fast_low:
         reason = 'normal_pool_provider_unavailable'
     elif fast_bias and alternates_low:
@@ -1462,9 +1582,33 @@ def tier_guidance(c, q):
         reason = 'no_fast_bias'
     posture = ('fast_preferred' if fast_bias else
                'normal_flexible' if reason == 'healthier_normal_plan_available' else 'neutral')
+    level2_low = False
+    if spill_config and spill_config.get('enabled') and 'background' in spill_config.get('tiers', ()) and \
+            not refill_safe and posture == 'fast_preferred' and level2_threshold > 0:
+        if combined_complete and isinstance(combined_remaining, (int, float)):
+            level2_low = combined_remaining <= level2_threshold
+        else:
+            values = list(runways.values())
+            level2_low = bool(values) and all(isinstance(value, (int, float)) and
+                                               not isinstance(value, bool) and math.isfinite(value)
+                                               for value in values) and \
+                max(float(value) for value in values) <= level2_threshold / 100.0
+    conservation_level = (2 if level2_low else
+                          1 if spill_config and spill_config.get('enabled') and
+                          posture == 'fast_preferred' else 0)
     return {'prefer_fast_when_both_fit': fast_bias, 'quota_posture': posture, 'reason': reason,
-            'runway_threshold_percent': threshold_percent, 'fast_stage': fast,
+            'conservation_level': conservation_level,
+            'runway_threshold_percent': threshold_percent,
+            'runway_threshold_base_percent': threshold_base,
+            'level2_runway_percent': level2_threshold,
+            'level2_runway_base_percent': level2_base,
+            'threshold_refill_relief': relief,
+            'next_refill': refill,
+            'conservation_refill_safe': refill_safe,
+            'fast_stage': fast,
             'normal_stage': normal, 'remaining_percent': readings, 'runway': runways,
+            'combined_remaining_percent': combined_remaining,
+            'combined_remaining_complete': combined_complete,
             'budget_signals': signals,
             'rule': ('Quota is only a tie-breaker. fast_preferred leans Fast when both tiers fit; '
                      'normal_flexible permits Fast or Normal based on error/rework risk while a '

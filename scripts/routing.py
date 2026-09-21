@@ -146,7 +146,9 @@ def validate_spillover(value, policy, profiles):
     """
     if value in (None, {}):
         return None
-    if not isinstance(value, dict) or set(value) != {'enabled', 'profile', 'tiers', 'max_share_percent'}:
+    required = {'enabled', 'profile', 'tiers', 'max_share_percent'}
+    optional = {'level2_runway_percent'}
+    if not isinstance(value, dict) or not required.issubset(value) or not set(value).issubset(required | optional):
         raise ValueError('quota_spillover requires enabled, profile, tiers and max_share_percent')
     enabled = value.get('enabled')
     if not isinstance(enabled, bool):
@@ -163,6 +165,10 @@ def validate_spillover(value, policy, profiles):
     if isinstance(maximum, bool) or not isinstance(maximum, int) or not 1 <= maximum <= MAX_SPILLOVER_SHARE:
         raise ValueError('quota_spillover.max_share_percent must be an integer between 1 and ' +
                          str(MAX_SPILLOVER_SHARE))
+    level2 = value.get('level2_runway_percent')
+    if level2 is not None and (isinstance(level2, bool) or not isinstance(level2, int) or
+                               not 0 <= level2 <= 100):
+        raise ValueError('quota_spillover.level2_runway_percent must be an integer between 0 and 100')
     if not isinstance(policy, dict) or not policy:
         raise ValueError('quota_spillover requires routing_policy')
     for tier in tiers:
@@ -171,8 +177,11 @@ def validate_spillover(value, policy, profiles):
                      if any(entry.get('profile') == profile for entry in stage)]
         if not positions or positions[0] == 0:
             raise ValueError('quota_spillover.profile must be a later fallback in routing_policy.' + tier)
-    return {'enabled': enabled, 'profile': profile, 'tiers': list(tiers),
-            'max_share_percent': maximum}
+    out = {'enabled': enabled, 'profile': profile, 'tiers': list(tiers),
+           'max_share_percent': maximum}
+    if level2 is not None:
+        out['level2_runway_percent'] = level2
+    return out
 
 
 def runtime_spillover(value, policy, profiles):

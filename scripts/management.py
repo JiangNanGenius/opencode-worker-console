@@ -148,7 +148,7 @@ def settings():
            'kimi_reserve_percent': c.get('kimi_reserve_percent'),
            'kimi_low_weekly_threshold_percent': c.get('kimi_low_weekly_threshold_percent', 5),
            'kimi_low_weekly_k3_limit': c.get('kimi_low_weekly_k3_limit', 1),
-           'fast_bias_runway_percent': c.get('fast_bias_runway_percent', 75),
+           'fast_bias_runway_percent': c.get('fast_bias_runway_percent', 38),
            'auto_reroute_on_quota_exhaustion': c.get('auto_reroute_on_quota_exhaustion', True),
            'budget_signals': {}, 'revision': c.get('revision', 0),
            'auto_approve': c.get('auto_approve', True)}

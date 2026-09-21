@@ -39,7 +39,7 @@ function estimatedBalanceRange(q){const rows=(q?.balances||[]).map(b=>b.consumpt
 function resetTime(value) { const d=resetDate(value);if(!d)return tr('reset.unknown');const opts={month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false};const beijing=I18n?I18n.date(d,{...opts,timeZone:'Asia/Shanghai'}):d.toLocaleString('zh-CN',{...opts,timeZone:'Asia/Shanghai'});const zone=Intl.DateTimeFormat().resolvedOptions().timeZone||'Local';const local=I18n?I18n.date(d,opts):d.toLocaleString();return zone==='Asia/Shanghai'?tr('quota.resetBeijing',{time:beijing,left:resetCountdown(d)}):tr('quota.resetDual',{beijing,local,zone,left:resetCountdown(d)}); }
 function windowRunway(w){const p=Number(w?.remaining_percent),d=resetDate(w?.resets_at),duration=Number(w?.duration_minutes),estimate=w?.consumption_estimate||{};if(!Number.isFinite(p)||!d||d.getTime()<=Date.now())return null;const resetHours=(d.getTime()-Date.now())/3600000,estimatedHours=estimate.hours==null?NaN:Number(estimate.hours);if(estimate.idle)return 4;if(Number.isFinite(estimatedHours)&&resetHours>0)return Math.max(0,Math.min(4,estimatedHours/resetHours));if(!Number.isFinite(duration)||duration<=0)return null;const fraction=Math.max(0,Math.min(1,(d.getTime()-Date.now())/(duration*60000)));return fraction>0?Math.max(0,Math.min(4,p/100/fraction)):null;}
 function expectedRemaining(w){const d=resetDate(w?.resets_at),duration=Number(w?.duration_minutes);if(!d||!Number.isFinite(duration)||duration<=0)return null;return Math.max(0,Math.min(100,(d.getTime()-Date.now())/(duration*60000)*100));}
-function quotaPace(w){const p=Number(w?.remaining_percent),runway=windowRunway(w),threshold=(data.tier_guidance?.runway_threshold_percent??75)/100;if(Number.isFinite(p)&&p<=0)return ['exhausted',tr('quota.paceExhausted')];if(runway==null)return ['unknown',tr('quota.paceUnknown')];if(runway<.35)return ['critical',tr('quota.paceCritical')];if(runway<threshold)return ['tight',tr('quota.paceTight')];if(runway<1.15)return ['on-track',tr('quota.paceOnTrack')];return ['healthy',tr('quota.paceHealthy')];}
+function quotaPace(w){const p=Number(w?.remaining_percent),runway=windowRunway(w),threshold=(data.tier_guidance?.runway_threshold_percent??38)/100;if(Number.isFinite(p)&&p<=0)return ['exhausted',tr('quota.paceExhausted')];if(runway==null)return ['unknown',tr('quota.paceUnknown')];if(runway<.35)return ['critical',tr('quota.paceCritical')];if(runway<threshold)return ['tight',tr('quota.paceTight')];if(runway<1.15)return ['on-track',tr('quota.paceOnTrack')];return ['healthy',tr('quota.paceHealthy')];}
 function quotaTrack(p,label){const value=Number.isFinite(Number(p))?Math.max(0,Math.min(100,Number(p))):0;return `<svg class="quota-track" viewBox="0 0 100 8" role="img" aria-label="${esc(label)}"><rect class="quota-track-bg" x="0" y="1" width="100" height="6" rx="3"/><rect class="quota-track-fill" x="0" y="1" width="${value}" height="6" rx="3"/></svg>`;}
 function poolStateText(state){
   if(state==='unavailable')return tr('quota.poolUnavailable');
@@ -71,11 +71,9 @@ function poolBalanceSource(q){
 }
 function attachPoolFit(source,component){
   component=component&&typeof component==='object'?component:{};
-  const capacity=Number(component.capacity),remaining=Number(component.amount),percent=Number(component.remaining_percent);
+  const capacity=Number(component.capacity),remaining=Number(component.amount);
   source.capacity=Number.isFinite(capacity)&&capacity>0?capacity:null;
   source.remaining=Number.isFinite(remaining)&&remaining>=0?remaining:null;
-  source.fill=Number.isFinite(percent)?Math.max(0,Math.min(100,percent)):null;
-  if(source.key==='deepseek'&&source.fill!==null)source.detail+=' · '+Math.round(source.fill)+'%';
   return source;
 }
 function renderPoolBar(sources,pool){
@@ -109,7 +107,8 @@ function renderPool(providers){
   const previousState=block.dataset.poolState;
   block.dataset.poolState=stateValue;
   const state=$('pool-state');
-  state.textContent=poolStateText(stateValue);
+  const conservation=Number(data.tier_guidance?.conservation_level)||0;
+  state.textContent=conservation===2?tr('quota.conservationLevel2'):conservation===1?tr('quota.conservationLevel1'):poolStateText(stateValue);
   state.className='quota-state '+(stateValue==='ready'?'healthy':stateValue==='unavailable'?'critical':stateValue==='unknown'?'':'tight');
   if(previousState&&previousState!==stateValue&&!reducedMotion()){block.classList.remove('pool-state-changed');void block.offsetWidth;block.classList.add('pool-state-changed');setTimeout(()=>block.classList.remove('pool-state-changed'),650);}
   setHTML($('pool-summary'),`<div class="pool-health"><strong>${Number.isFinite(remainingPercent)?Math.round(remainingPercent)+'%':'—'}</strong><span>${esc(tr('quota.poolRemaining'))}</span></div>`);

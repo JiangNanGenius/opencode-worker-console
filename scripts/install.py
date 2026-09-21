@@ -93,6 +93,7 @@ DEFAULT_QUOTA_SPILLOVER = {
     'profile': 'fallback',
     'tiers': ['fast', 'background'],
     'max_share_percent': 30,
+    'level2_runway_percent': 25,
 }
 # Concurrency is capped per owning Codex conversation (owner_thread_id), never
 # globally or per provider; the scheduler reads max_parallel_per_owner (default 4).
