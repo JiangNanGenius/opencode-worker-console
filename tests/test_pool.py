@@ -1254,7 +1254,7 @@ class PoolTests(unittest.TestCase):
                                   'low_balance': 10, 'manual_balance': 5},
                      'kimi-for-coding': {'mode': 'manual_window', 'remaining_percent': 80,
                                          'duration_minutes': 300,
-                                         'resets_at': '2027-01-15T08:00:00+00:00'},
+                                         'resets_at': '2027-01-15T12:00:00+00:00'},
                  })
         q = {'deepseek': {'state': 'ok', 'available': True, 'stale': False},
              'kimi-for-coding': {'state': 'ok', 'available': True, 'stale': False}}
@@ -1269,7 +1269,7 @@ class PoolTests(unittest.TestCase):
         # If the alternate subscription also falls behind its reset-aware runway,
         # direction-fixed work may use Fast. Required Normal and Deep stay unchanged.
         c['budget_signals']['kimi-for-coding'].update(
-            remaining_percent=10, resets_at='2027-01-15T08:00:00+00:00')
+            remaining_percent=10, resets_at='2027-01-15T12:00:00+00:00')
         with patch.object(quota.time, 'time', return_value=now):
             result = quota.tier_guidance(c, q)
         self.assertTrue(result['prefer_fast_when_both_fit'])

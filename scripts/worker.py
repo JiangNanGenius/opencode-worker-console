@@ -466,6 +466,19 @@ def proactive_reroute_if_needed(t, native_status):
         return False
     if not profile or profile == t.get('profile'):
         return False
+    if not quota.meets_capability_floor(profile, t, c):
+        return False
+    # Do not pay a context handoff for a task likely to finish soon. Only use
+    # calibrated history; missing estimates retain the operator's age guard.
+    current_provider = str((c['profiles'].get(t.get('profile')) or {}).get('model', '')).split('/')[0]
+    load = (q.get(current_provider) or {}).get('workload') or {}
+    jobs = load.get('active_jobs', 0)
+    if load.get('prediction_samples', 0) == jobs and jobs > 0:
+        remaining = load.get('expected_remaining_seconds', 0) / jobs
+        if remaining < 300:
+            return False
+    if any(h.get('switch_state') == 'queued' for h in t.get('route_history', []) if isinstance(h, dict)):
+        return False
     policy = routing.configured(c)
     spill = routing.configured_spillover(c, policy)
     if level == 1 and (not spill or profile != spill.get('profile')):

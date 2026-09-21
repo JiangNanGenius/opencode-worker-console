@@ -17,7 +17,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: python -m unittest discover -s tests -v
+      - run: python scripts/run_tests.py -v
       - run: node --check web/i18n.js
       - run: node --check web/app.js
       - run: node --check web/manage.js

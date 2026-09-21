@@ -8,7 +8,7 @@ The entrypoint is `~/.local/bin/delegate-opencode`. The skill also works via
 ```sh
 delegate-opencode doctor
 delegate-opencode quota
-delegate-opencode quota --tier-guidance
+delegate-opencode quota --tier-guidance --compact
 delegate-opencode console --open
 delegate-opencode submit --directory /absolute/repo --tier normal \
   --title 'Map configuration' 'Locate configuration loading and summarize precedence with file/line evidence.'
@@ -32,8 +32,11 @@ raw task text as shell code. Independent specs may be submitted with `Promise.al
 every result and wait only on successfully returned job IDs. Use a private file for very large
 specifications. Fields: `directory`, `objective`, `title`, `acceptance` (string array),
 `tier` (`fast`/`normal`/`deep`), `profile` (`auto` for ordinary use), `profile_reason`
-(required for the exceptional explicit profile), `mode` (`read`/`write`), `scopes` (literal relative
-path array, repository-local), `targets` (operational target array such as `ssh:example.com:nginx`),
+(required for the exceptional explicit profile), `capability_floor` (optional
+`fast`/`normal`/`deep`, never higher than `tier`) with a required nonempty
+`capability_reason` of 1-500 characters; see [routing](routing.md), `mode` (`read`/`write`),
+`scopes` (literal relative path array, repository-local),
+`targets` (operational target array such as `ssh:example.com:nginx`),
 `commands` (suggested checks; exact allowlist when Auto Approve is off), `resources` (shared lock-name array),
 `workspace` (`auto`/`shared`/`isolated`), `large`, `web`, and `notify_on_complete` (boolean).
 The CLI form is `--notify-on-complete`; use it only for a key user-facing milestone that merits
@@ -51,18 +54,27 @@ implementation, checks and a concise report. Use `steer` for refinements to that
 instead of creating a sequence of microtasks. Split tasks when deliverables or writable
 scopes are genuinely independent.
 
-Choose one tier and keep `--profile auto`: Fast for a bounded, concrete outcome with a known
-path and clear acceptance; Normal as the strong default when a concrete outcome needs broader
-investigation or synthesis; Deep for an abstract or unclear objective, an unresolved system-wide
+Choose one tier from the uncertainty the worker must resolve and keep `--profile auto`:
+Fast is the capable default for a bounded, concrete outcome with a firm direction and clear
+acceptance; Normal when a concrete outcome needs broader investigation, synthesis or several
+interdependent judgments; Deep for an abstract or unclear objective, an unresolved system-wide
 root cause, architecture trade-offs or unusually complex logic. Fast can own complete features,
 known fixes, tests, documentation and routine deployment. Large context, many files, long runtime
 and importance alone do not make a task Deep, and genuinely Deep work has no separate task-count
 limit.
+The optional `capability_floor` deliberately prevents conservation or fallback from serving the
+task below that tier (CLI: `--capability-floor` plus `--capability-reason`); it is for deliberate
+no-downgrade requirements, never a routine tier upgrade, and continuations inherit it.
 The first available policy stage wins; members in that stage share actual admissions by
-weight. See [routing and plan efficiency](routing.md) for the Ark/Kimi baseline, bounded
+weight. See [routing and plan efficiency](routing.md) for quota guidance, bounded
 quota-aware ratios, fallbacks and configuration. A direct user requirement for a named model or
 a controlled comparison may pin one model with an explicit profile and `--profile-reason`;
 ordinary coordination never chooses a profile.
+
+For ordinary coordinator routing, read `delegate-opencode quota --tier-guidance --compact`: it
+returns the `quota_posture` tie-breaker, `conservation_level`, confidence and next-refill labels
+without the full provider dump. Use the verbose `quota --tier-guidance` and `quota` views only
+for operator investigation.
 
 Without a policy, `auto` uses the legacy single-profile mapping for the selected tier.
 It does not infer semantic properties from task text. Every tier is a general-purpose agent;

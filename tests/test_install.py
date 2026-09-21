@@ -31,7 +31,10 @@ class InstallTests(unittest.TestCase):
         for target, value in [('ROOT', self.src), ('INSTALL', self.install_dir),
                               ('STATE', self.state), ('CONFIG', self.config)]:
             patch.object(install, target, value).start()
-        patch.dict(os.environ, {'HOME': str(self.home)}).start()
+        env = dict(os.environ, HOME=str(self.home))
+        env.pop('DELEGATE_STATE', None)
+        env.pop('DELEGATE_CONFIG', None)
+        patch.dict(os.environ, env, clear=True).start()
         patch.object(install.shutil, 'which', return_value='/usr/bin/opencode').start()
 
     def tearDown(self):

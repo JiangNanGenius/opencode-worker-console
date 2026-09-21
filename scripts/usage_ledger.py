@@ -2,7 +2,10 @@
 
 The ledger excludes objectives, prompts, messages, file contents and credentials. It keeps
 only routing/timing/status metadata plus the final provider-reported usage snapshot so
-debugging and plan-cost analysis remain continuous after a task row is cleared.
+debugging and plan-cost analysis remain continuous after a task row is cleared. Usage keeps
+validated scalar counters only, including an optional compact per-model breakdown, so mixed
+provider tasks can still be priced by DeepSeek segment later without retaining prompts,
+messages or secrets.
 """
 import math
 import time
@@ -10,8 +13,58 @@ import time
 import common
 
 
+# Scalar usage counters shared by the task snapshot and each per-model row.
+_USAGE_FIELDS = ('input', 'output', 'reasoning', 'cache_read', 'cache_write', 'total', 'cost')
+_MAX_MODELS = 32
+_MAX_MODEL_NAME = 200
+_SOURCES = {'none', 'live', 'saved', 'result', 'task', 'cache', 'ledger', 'unknown'}
+
+
 def _number(value):
-    return value if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else None
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0 else None
+
+
+def _by_model(value):
+    """Keep compact per-model rows; drop unnamed, non-dict or oversized entries.
+
+    Only the model identifier and known scalar counters survive. Nested objects
+    and free-text fields are never copied, so a future task schema can add fields
+    without leaking prompts, messages or secrets into the retained ledger.
+    """
+    if not isinstance(value, list):
+        return None
+    rows = []
+    for item in value[:_MAX_MODELS]:
+        if not isinstance(item, dict):
+            continue
+        model = item.get('model')
+        if not isinstance(model, str) or not model.strip() or len(model) > _MAX_MODEL_NAME:
+            continue
+        row = {key: _number(item.get(key)) for key in _USAGE_FIELDS}
+        row['model'] = model
+        row['source'] = item.get('source') if isinstance(item.get('source'), str) and item.get('source') in _SOURCES else 'none'
+        row['complete'] = item.get('complete') is True
+        rows.append(row)
+    return rows
+
+
+def _usage(value):
+    """Validate one usage snapshot down to compact scalar fields only."""
+    value = value if isinstance(value, dict) else {}
+    entry = {key: _number(value.get(key)) for key in _USAGE_FIELDS}
+    entry['source'] = value.get('source') if isinstance(value.get('source'), str) and value.get('source') in _SOURCES else 'none'
+    entry['complete'] = value.get('complete') is True
+    models = _by_model(value.get('by_model'))
+    if models is not None:
+        entry['by_model'] = models
+    return entry
+
+
+def _entry(value):
+    """Re-validate a stored entry so only compact usage leaves the ledger."""
+    cleaned = dict(value)
+    cleaned['usage'] = _usage(value.get('usage'))
+    return cleaned
 
 
 def _path(task_id):
@@ -30,8 +83,6 @@ def record(task, retention_days, now=None):
     usage = task_activity.snapshot(task).get('usage')
     if not isinstance(usage, dict):
         usage = task_activity.empty_usage('none')
-    keep = ('input', 'output', 'reasoning', 'cache_read', 'cache_write', 'total', 'cost',
-            'source', 'complete')
     entry = {
         'task_id': task['id'], 'title': task.get('title'), 'status': task.get('status'),
         'tier': task.get('tier'), 'profile': task.get('profile'),
@@ -44,7 +95,7 @@ def record(task, retention_days, now=None):
         'finished_at': _number(task.get('finished_at')),
         'elapsed_seconds': _number(task.get('elapsed_seconds')),
         'cancellation': task.get('cancellation') if isinstance(task.get('cancellation'), dict) else None,
-        'usage': {key: usage.get(key) for key in keep},
+        'usage': _usage(usage),
         'deleted_at': now, 'expires_at': now + retention_days * 86400,
     }
     common.write_json(_path(task['id']), entry)
@@ -65,7 +116,7 @@ def entries(now=None, include_expired=False):
         expires = _number(value.get('expires_at'))
         if expires is None or (not include_expired and expires <= now):
             continue
-        found.append(value)
+        found.append(_entry(value))
     return sorted(found, key=lambda item: item.get('deleted_at') or 0, reverse=True)
 
 

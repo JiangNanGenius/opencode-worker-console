@@ -20,8 +20,13 @@ def _number(value):
 
 def _usage(value):
     value = value if isinstance(value, dict) else {}
-    return {key: _number(value.get(key)) for key in
-            ('input', 'output', 'reasoning', 'cache_read', 'cache_write', 'total', 'cost')}
+    result = {key: _number(value.get(key)) for key in
+              ('input', 'output', 'reasoning', 'cache_read', 'cache_write', 'total', 'cost')}
+    if isinstance(value.get('by_model'), list):
+        result['by_model'] = [{'model': item['model'], 'total': _number(item.get('total'))}
+                              for item in value['by_model'] if isinstance(item, dict) and
+                              isinstance(item.get('model'), str)]
+    return result
 
 
 def _task_record(task):
@@ -45,8 +50,10 @@ def _ledger_record(entry):
 
 def _model(record, profiles):
     actual = [item for item in record.get('actual_models', []) if isinstance(item, str) and item]
+    if len(set(actual)) > 1:
+        return 'mixed / unattributed'
     if actual:
-        return actual[-1]
+        return actual[0]
     profile = profiles.get(record.get('profile')) if isinstance(profiles, dict) else None
     return profile.get('model') if isinstance(profile, dict) and isinstance(profile.get('model'), str) \
         else record.get('profile') or 'unknown'
@@ -64,6 +71,25 @@ def _breakdown(records, key):
             row['known_tokens'] += 1
     return [dict(name=name, **values) for name, values in
             sorted(groups.items(), key=lambda item: (-item[1]['tokens'], -item[1]['tasks'], item[0]))]
+
+
+def _models(records):
+    parts = []
+    for record in records:
+        segments = record['usage'].get('by_model')
+        if not segments:
+            parts.append(record)
+            continue
+        known = sum(item['total'] for item in segments if item['total'] is not None)
+        total = record['usage'].get('total')
+        if total is not None and known > total:
+            parts.append(dict(record, model='mixed / unattributed'))
+            continue
+        for item in segments:
+            parts.append(dict(record, model=item['model'], usage={'total': item['total']}))
+        if total is not None and known < total:
+            parts.append(dict(record, model='mixed / unattributed', usage={'total': total - known}))
+    return _breakdown(parts, 'model')
 
 
 def _daily(records, now):
@@ -152,7 +178,7 @@ def summary(now=None):
                    'known_cost': len(costs),
                    'fallbacks': sum(record['fallback_used'] for record in records)},
         'by_tier': _breakdown(records, 'tier'),
-        'by_model': _breakdown(records, 'model'),
+        'by_model': _models(records),
         'by_profile': _breakdown(records, 'profile'),
         'by_status': _breakdown(records, 'status'),
         'recent': {'hour': _timeline(records, now, 3600, 12),

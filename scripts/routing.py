@@ -349,39 +349,14 @@ def _credit(value):
 def _window_runway(w, now):
     """Reset-aware runway pressure for one valid window, or None when unusable.
 
-    runway = remaining_fraction / time_fraction_remaining, so a provider exactly
-    on track to deplete at its window reset reads ~1, a provider burning ahead
-    of schedule reads <1 (more constrained) and a provider with surplus relative
-    to time-to-reset reads >1. Timing comes from subscribed_at→resets_at when
-    both are valid, else duration_minutes ending at resets_at; when no usable
-    timing exists it falls back safely to the bare remaining fraction. The value
-    is capped at RUNWAY_MAX so surplus stops shifting weights past a bound.
+    Observed working-pace hours divided by time until reset is the primary
+    signal. With no burn samples, remaining fraction / remaining window time
+    fraction is a cold-start prior. Values below 1 predict exhaustion before
+    reset; surplus is capped by the shared forecast. Expired data is unusable.
     """
-    if not isinstance(w, dict) or w.get('valid') is not True:
-        return None
-    pct = w.get('remaining_percent')
-    if isinstance(pct, bool) or not isinstance(pct, (int, float)):
-        return None
-    remaining_fraction = max(0.0, min(100.0, float(pct))) / 100.0
-    resets = _iso_seconds(w.get('resets_at'))
-    start = _iso_seconds(w.get('subscribed_at'))
-    duration = w.get('duration_minutes')
-    duration_seconds = duration * 60 if isinstance(duration, (int, float)) and not isinstance(duration, bool) and duration > 0 else None
-    time_fraction = None
-    if resets is not None and resets > now:
-        total = None
-        if start is not None and resets > start:
-            total = resets - start
-        elif duration_seconds:
-            total = duration_seconds
-        if total and total > 0:
-            left = resets - now
-            time_fraction = max(0.0, min(1.0, left / total))
-    if time_fraction is None or time_fraction <= 0:
-        pressure = remaining_fraction
-    else:
-        pressure = remaining_fraction / time_fraction
-    return max(0.0, min(RUNWAY_MAX, pressure))
+    import capacity
+    forecast = capacity.window(w, now)
+    return forecast['runway'] if forecast is not None and not forecast['expired'] else None
 
 
 def _iso_seconds(value):
@@ -416,18 +391,11 @@ def _runway(provider_view, now):
     stage with a zero effective weight. One provider yields one signal no matter
     how many of its profiles sit in the stage.
     """
-    if not isinstance(provider_view, dict) or provider_view.get('stale', True):
+    import capacity
+    forecast = capacity.provider(provider_view, now)
+    if not forecast['fresh'] or provider_view.get('available') is not True:
         return None
-    if provider_view.get('state') != 'ok' or provider_view.get('available') is not True:
-        return None
-    signals = []
-    for w in provider_view.get('windows') or []:
-        runway = _window_runway(w, now)
-        if runway is not None:
-            signals.append(runway)
-    if not signals:
-        return None
-    return min(signals)
+    return forecast['runway']
 
 
 def dynamics(entries, provider_by_profile, quota_view=None, now=None, adaptive=None):

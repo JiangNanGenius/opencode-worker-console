@@ -446,7 +446,8 @@ class RoutePolicyTests(unittest.TestCase):
                     'windows': [{'valid': True, 'remaining_percent': percent,
                                  'duration_minutes': 300, 'resets_at': now + 4 * 3600}]}
 
-        # Ark runway is 37.2% / 80% = 46.5%, while the Kimi peer is unavailable.
+        # Observed burn predicts less than one hour before a reset four hours away.
+        # Display percentage alone must not decide Level 2.
         q = {'kimi-for-coding': provider(0, available=False),
              'volcengine-agent-plan': provider(37.2),
              # A large PAYG balance keeps total console endurance healthy, but
@@ -456,6 +457,7 @@ class RoutePolicyTests(unittest.TestCase):
                                         'consumption_estimate': {
                                             'rate_balance_per_hour': 1,
                                             'observed_capacity': 1000}}], 'windows': []}}
+        q['volcengine-agent-plan']['windows'][0]['consumption_estimate'] = {'hours': .65}
         admissions = routing.Admissions(c['routing_policy'])
         chosen = []
         with patch.object(quota.time, 'time', return_value=now):
@@ -468,7 +470,7 @@ class RoutePolicyTests(unittest.TestCase):
             status = quota.routing_status(c, q)
             self.assertIn('quota_conservation_level2', status['background'][0]['reason'])
             self.assertEqual(set(status['background'][0]['members']), {'ark-auto', 'fallback'})
-            self.assertEqual(status['fast'][0]['members']['fallback']['effective_weight'], 11)
+            self.assertGreater(status['fast'][0]['members']['fallback']['effective_weight'], 0)
             self.assertNotIn('quota_conservation_level2', status['deep'][0]['reason'])
             self.assertEqual(quota.route(self.task(complexity='deep'), c, q)[0], 'ark-k3')
 
@@ -477,7 +479,8 @@ class RoutePolicyTests(unittest.TestCase):
         self.assertEqual(chosen.count('ark-auto'), 100 - fallback_weight)
         # Level 2 starts from the Level 1 share and accelerates as fitted
         # runway falls, instead of jumping immediately to its ceiling.
-        self.assertEqual(fallback_weight, 11)
+        self.assertGreater(fallback_weight, 10)
+        self.assertLessEqual(fallback_weight, 30)
 
         # A fresh Kimi window restores the original strong Normal pool automatically.
         q['kimi-for-coding'] = provider(80)

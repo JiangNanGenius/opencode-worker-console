@@ -528,9 +528,22 @@ def consumption_estimate(value, samples, now=None):
                 'source': 'exhausted', 'idle': False,
                 'sample_span_hours': round(span_hours, 2)}
     idle = recent_rate is not None and recent_rate <= .001 and span_hours >= 1 / 6
-    hours = remaining / rate if rate and rate > .001 else None
+    # Estimate working pace separately from wall-clock pace. Idle gaps must not
+    # make the next batch appear cheaper. Tiny rounding deltas are not activity.
+    active_spend = active_hours = 0.0
+    for (before_at, before), (after_at, after) in zip(points, points[1:] + [(now, remaining)]):
+        dt = (after_at - before_at) / 3600
+        drop = before - after
+        if 0 < dt <= .5 and drop >= .01:
+            active_spend += drop
+            active_hours += dt
+    active_rate = active_spend / active_hours if active_hours >= 1 / 6 else None
+    forecast_rate = max(rate or 0, active_rate or 0)
+    hours = remaining / forecast_rate if forecast_rate > .001 else None
     return {'hours': round(min(hours, 24 * 365), 2) if hours is not None else None,
             'rate_percent_per_hour': round(rate, 4) if rate is not None else None,
+            'active_rate_percent_per_hour': round(active_rate, 4) if active_rate is not None else None,
+            'active_sample_hours': round(active_hours, 3),
             'source': source, 'idle': idle, 'sample_span_hours': round(span_hours, 2)}
 
 
@@ -738,7 +751,9 @@ def refresh(force=False):
         same = all(old.get(p, {}).get('_credential') == identities[p] for p in providers)
         recent = old and all(now - old.get(p, {}).get('checked_at', 0) < 60 for p in providers)
         if not force and same and recent:
-            return view(old)
+            snapshot = view(old)
+            observe_load(config(), snapshot, now)
+            return snapshot
         result = {}
         with ThreadPoolExecutor(max_workers=max(1, min(4, len(providers)))) as pool:
             for p, value in zip(providers, pool.map(fetch_one, providers)):
@@ -753,13 +768,20 @@ def refresh(force=False):
                     clear(p, sampled_since=now, identity=identities[p])
         write_json(STATE / 'quota.json', result)
         _record_history(result, now)
-        return view(result)
+        snapshot = view(result)
+        observe_load(config(), snapshot, now)
+        return snapshot
 
 
 def view(values):
     out = {}
     history = read_json(STATE / HISTORY, {})
     now = time.time()
+    import workload
+    try:
+        loads = workload.snapshot(config(), now)
+    except Exception:
+        loads = {}
     priced = None
     if 'deepseek' in values:
         try:
@@ -807,6 +829,12 @@ def view(values):
             # Read-only schedule exposure for the console: the same normalized setting plus
             # the next configured boundary in ISO8601 when the schedule is enabled.
             v['monthly_reset'] = monthly_reset_view()
+        v['workload'] = loads.get(p, {})
+        import capacity
+        v['capacity_forecast'] = capacity.provider(v, now)
+        fitted = iter(v['capacity_forecast']['windows'])
+        for item in v['windows']:
+            item['capacity_forecast'] = next(fitted, None) if capacity.window(item, now) is not None else None
         out[p] = v
     return out
 
@@ -1012,12 +1040,29 @@ def _task_billing_kind(t):
     return GENERIC_REASON
 
 
+def meets_capability_floor(name, t, c):
+    floor = t.get('capability_floor')
+    if floor not in ('normal', 'deep'):
+        return True
+    policy = routing.configured(c) or {}
+    eligible = set()
+    for tier in (('background', 'deep') if floor == 'normal' else ('deep',)):
+        stages = policy.get(tier) or []
+        if stages:
+            eligible.update(entry['profile'] for entry in stages[0])
+        elif (c.get('routing') or {}).get(tier):
+            eligible.add(c['routing'][tier])
+    return name in eligible
+
+
 def _allowed_profile(name, t, c, q):
     """(provider, ok, why) for one enabled profile, respecting quota and circuits."""
     p = c.get('profiles', {}).get(name)
     if not isinstance(p, dict) or p.get('enabled') is False or not p.get('model'):
         return None, False, 'profile_disabled_or_missing'
     provider = str(p['model']).split('/', 1)[0]
+    if not meets_capability_floor(name, t, c):
+        return provider, False, 'capability_floor_unavailable'
     if name in (t.get('excluded_profiles') or []):
         return provider, False, 'routing_guard_excluded_profile'
     if provider in (t.get('excluded_providers') or []):
@@ -1053,11 +1098,13 @@ def _level2_conservation_active(tier, spill_config, guidance):
             guidance.get('quota_posture') != 'fast_preferred' or \
             guidance.get('conservation_refill_safe'):
         return False
+    if guidance.get('conservation_level') == 2:
+        return True
     threshold = guidance.get('level2_runway_percent', spill_config.get('level2_runway_percent', 0))
     if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or threshold <= 0:
         return False
-    combined = guidance.get('combined_remaining_percent')
-    if guidance.get('combined_remaining_complete') and isinstance(combined, (int, float)) and \
+    combined = guidance.get('capacity_pressure_percent', guidance.get('combined_remaining_percent'))
+    if (guidance.get('capacity_pressure_percent') is not None or guidance.get('combined_remaining_complete')) and isinstance(combined, (int, float)) and \
             not isinstance(combined, bool) and math.isfinite(combined):
         return float(combined) <= float(threshold)
     runways = guidance.get('runway') or {}
@@ -1070,8 +1117,8 @@ def _level2_conservation_active(tier, spill_config, guidance):
 
 def _spillover_runway_view(guidance, providers):
     """Use the fitted combined plan pool when complete, else provider runway."""
-    combined = guidance.get('combined_remaining_percent')
-    if guidance.get('combined_remaining_complete') and isinstance(combined, (int, float)) and \
+    combined = guidance.get('capacity_pressure_percent', guidance.get('combined_remaining_percent'))
+    if (guidance.get('capacity_pressure_percent') is not None or guidance.get('combined_remaining_complete')) and isinstance(combined, (int, float)) and \
             not isinstance(combined, bool) and math.isfinite(combined):
         return {provider: max(0.0, float(combined) / 100.0) for provider in providers}
     return guidance.get('runway') or {}
@@ -1208,6 +1255,8 @@ def route(t, c, q, batch=None):
         profile = _profile_name(t, c)
         if not profile or c['profiles'][profile].get('enabled') is False:
             return None, 'profile_disabled_or_missing'
+        if not meets_capability_floor(profile, t, c):
+            return None, 'capability_floor_unavailable'
         provider = c['profiles'][profile]['model'].split('/', 1)[0]
         ok, why = allowed(provider, q, t.get('complexity', 'normal'),
                           c.get('kimi_reserve_percent', 0), retry_monthly=True)
@@ -1223,6 +1272,8 @@ def route(t, c, q, batch=None):
     profile = _profile_name(t, c)
     if not profile or c['profiles'][profile].get('enabled') is False:
         return None, 'profile_disabled_or_missing'
+    if not meets_capability_floor(profile, t, c):
+        return None, 'capability_floor_unavailable'
     if profile in (t.get('excluded_profiles') or []):
         return None, 'routing_guard_excluded_profile'
     provider = c['profiles'][profile]['model'].split('/', 1)[0]
@@ -1291,7 +1342,7 @@ def alternatives(t, c, q, exclude=None):
     threshold = c.get('kimi_reserve_percent', 0)
     for name in _profile_order(t, c, routing.configured(c)):
         p = c['profiles'][name]
-        if p.get('enabled') is False or not p.get('model'):
+        if p.get('enabled') is False or not p.get('model') or not meets_capability_floor(name, t, c):
             continue
         provider = str(p['model']).split('/', 1)[0]
         if provider == exclude:
@@ -1487,7 +1538,31 @@ def routing_status(c, q):
     return out or None
 
 
-def tier_guidance(c, q):
+def _control_policy(c):
+    import hashlib
+    import json
+    fields = ('profiles', 'routing_policy', 'routing', 'routing_dynamics', 'budget_signals', 'quota_spillover', 'fast_bias_runway_percent')
+    return hashlib.sha256(json.dumps({k: c.get(k) for k in fields}, sort_keys=True).encode()).hexdigest()
+
+
+def observe_load(c, q, now=None):
+    """One writer at telemetry refresh; previews never move controller state."""
+    import capacity
+    now = time.time() if now is None else now
+    raw = tier_guidance(c, q, _raw=True)
+    previous = read_json(STATE / 'load-control.json', {})
+    signature = _control_policy(c)
+    if previous.get('policy') != signature:
+        previous = {}
+    state = capacity.transition(raw['conservation_level'], raw['capacity_pressure_percent'],
+                                [raw['runway_threshold_percent'], raw['level2_runway_percent']],
+                                previous, now, raw['conservation_refill_safe'])
+    state['policy'] = signature
+    write_json(STATE / 'load-control.json', state)
+    return state
+
+
+def tier_guidance(c, q, _raw=False):
     """Quota-aware tie-breaker for work that is genuinely eligible for Fast or Normal.
 
     This never changes a submitted tier and must never downgrade work that needs Normal.
@@ -1508,12 +1583,9 @@ def tier_guidance(c, q):
         level2_base = 0
     level2_base = max(0.0, min(100.0, float(level2_base)))
 
-    # For the built-in provider family, use the same fitted work pool shown in
-    # the console. The percentage already reflects observed burn speed. A nearby
-    # refill with a material gain lowers both guard rails by up to 30%, so a plan
-    # that can safely coast for another hour or two is not downgraded merely for
-    # displaying a small raw percentage. Unsupported/custom providers continue
-    # to use their provider-neutral reset-aware runway below.
+    # Shared, provider-neutral burn forecasts supply effective refills. The UI
+    # pool percentage is descriptive; conservation uses bottleneck coverage of
+    # time to refill, including the bounded near-term workload adjustment.
     configured_provider_ids = set()
     for tier_name in ('fast', 'background'):
         for stage in (policy or {}).get(tier_name) or []:
@@ -1521,20 +1593,13 @@ def tier_guidance(c, q):
                 model = ((c.get('profiles') or {}).get(entry.get('profile')) or {}).get('model')
                 if isinstance(model, str) and '/' in model:
                     configured_provider_ids.add(model.split('/', 1)[0])
-    supported_pool_ids = {'deepseek', 'kimi-for-coding', 'volcengine-agent-plan'}
     pool_fit = None
-    plan_provider_ids = configured_provider_ids & {'kimi-for-coding', 'volcengine-agent-plan'}
-    if plan_provider_ids and configured_provider_ids.issubset(supported_pool_ids):
+    spill_provider = str(((c.get('profiles') or {}).get((spill_config or {}).get('profile')) or {}).get('model', '')).split('/')[0]
+    plan_provider_ids = {p for p in configured_provider_ids if (q.get(p) or {}).get('windows') and p != spill_provider}
+    if plan_provider_ids:
         import economics
-        # PAYG balance remains visible in the console's total endurance, but it
-        # is fallback capacity. It must not postpone subscription conservation.
         candidate = economics.work_pool(c, q, now=now, include_payg_balance=False)
-        component_for = {'kimi-for-coding': 'kimi', 'volcengine-agent-plan': 'plan'}
-        plan_complete = all(isinstance((candidate.get('components') or {}).get(component_for[p]), dict) and
-                            (candidate.get('components') or {})[component_for[p]].get('capacity') is not None
-                            for p in plan_provider_ids)
-        if candidate.get('complete') and plan_complete and \
-                isinstance(candidate.get('remaining_percent'), (int, float)):
+        if candidate.get('complete') and isinstance(candidate.get('remaining_percent'), (int, float)):
             pool_fit = candidate
     refill = (pool_fit.get('refills') or [None])[0] if pool_fit else None
     relief = 0.0
@@ -1626,24 +1691,35 @@ def tier_guidance(c, q):
     overlap = fast_providers & normal_providers
     alternate = normal_providers - fast_providers
     providers = sorted(fast_providers | normal_providers)
-    configured_providers = sorted(set(fast['configured']) | set(normal['configured']))
+    configured_providers = sorted(set(fast['configured']) | set(normal['configured']) | configured_provider_ids)
     readings = {provider: remaining(provider) for provider in configured_providers}
     signals = {provider: signal(provider) for provider in configured_providers}
     runways = {provider: item['value'] if item['mode'] in ('telemetry', 'manual_window') else None
                for provider, item in signals.items()}
     combined_remaining = pool_fit.get('remaining_percent') if pool_fit else None
     combined_complete = bool(pool_fit)
-    refill_safe = bool(pool_fit and refill and isinstance(refill.get('hours_until'), (int, float)) and
-                       0 <= float(refill['hours_until']) <= 2.0 and
-                       isinstance(pool_fit.get('total'), (int, float)) and
-                       float(pool_fit['total']) >= float(refill['hours_until']))
+    plan_signals = {p: routing._runway(q.get(p), now) for p in plan_provider_ids}
+    # Fresh authoritative zero is a valid capacity observation despite unavailability.
+    for p in plan_provider_ids:
+        record = q.get(p) or {}
+        if not record.get('stale', True) and record.get('state') == 'ok' and record.get('available') is False:
+            plan_signals[p] = 0.0
+    reliable = bool(plan_signals) and all(v is not None for v in plan_signals.values())
+    pressure_percent = max(plan_signals.values()) * 100 if reliable else None
+    # A refill is safe only if CURRENT usable providers individually reach it;
+    # summing simultaneous wall-clock runtimes would overstate coverage.
+    import capacity
+    ranges = [capacity.provider(q.get(p), now).get('hours') for p in plan_provider_ids
+              if (q.get(p) or {}).get('available') is True]
+    refill_safe = bool(reliable and refill and refill.get('restored_hours', 0) > 0 and
+                       0 <= float(refill.get('hours_until', 999)) <= 2 and ranges and
+                       all(h is not None and h >= float(refill['hours_until']) for h in ranges))
     lost_normal = set(normal['configured']) - normal_providers
     fast_low = bool(overlap) and any(signals.get(provider, {}).get('low') is True for provider in overlap)
-    alternates_healthy = any(signals.get(provider, {}).get('low') is not True for provider in alternate)
+    alternates_healthy = any(signals.get(provider, {}).get('low') is False for provider in alternate)
     alternates_low = bool(alternate) and all(signals.get(provider, {}).get('low') is True
                                              for provider in alternate)
-    combined_low = not refill_safe and combined_complete and isinstance(combined_remaining, (int, float)) and \
-        combined_remaining <= threshold_percent
+    combined_low = not refill_safe and pressure_percent is not None and pressure_percent <= threshold_percent
     fast_bias = threshold > 0 and bool(overlap) and not alternates_healthy and \
         (fast_low or alternates_low or combined_low)
     if fast_bias and lost_normal and fast_low:
@@ -1661,8 +1737,8 @@ def tier_guidance(c, q):
     level2_low = False
     if spill_config and spill_config.get('enabled') and 'background' in spill_config.get('tiers', ()) and \
             not refill_safe and posture == 'fast_preferred' and level2_threshold > 0:
-        if combined_complete and isinstance(combined_remaining, (int, float)):
-            level2_low = combined_remaining <= level2_threshold
+        if pressure_percent is not None:
+            level2_low = pressure_percent <= level2_threshold
         else:
             values = list(runways.values())
             level2_low = bool(values) and all(isinstance(value, (int, float)) and
@@ -1672,8 +1748,19 @@ def tier_guidance(c, q):
     conservation_level = (2 if level2_low else
                           1 if spill_config and spill_config.get('enabled') and
                           posture == 'fast_preferred' else 0)
+    raw_level = conservation_level
+    if not _raw:
+        control = read_json(STATE / 'load-control.json', {})
+        if control.get('policy') == _control_policy(c) and reliable and now - control.get('at', 0) <= 900:
+            held = int(control.get('level', raw_level))
+            if held > raw_level and not refill_safe:
+                conservation_level = held
+                posture, fast_bias = 'fast_preferred', True
     return {'prefer_fast_when_both_fit': fast_bias, 'quota_posture': posture, 'reason': reason,
             'conservation_level': conservation_level,
+            'raw_conservation_level': raw_level,
+            'capacity_pressure_percent': pressure_percent,
+            'capacity_confidence': ('observed' if reliable and all((q.get(p) or {}).get('capacity_forecast', {}).get('hours') is not None for p in plan_provider_ids if (q.get(p) or {}).get('available') is True) else 'prior' if reliable else 'unknown'),
             'runway_threshold_percent': threshold_percent,
             'runway_threshold_base_percent': threshold_base,
             'level2_runway_percent': level2_threshold,
@@ -1689,6 +1776,18 @@ def tier_guidance(c, q):
             'rule': ('Quota is only a tie-breaker. fast_preferred leans Fast when both tiers fit; '
                      'normal_flexible permits Fast or Normal based on error/rework risk while a '
                      'Normal-only subscription is healthy; neutral means classify by task needs.')}
+
+
+def compact_guidance(g):
+    """Coordinator contract: actionable labels, not a telemetry dump."""
+    keys = ('quota_posture', 'conservation_level', 'capacity_confidence', 'reason')
+    result = {k: g.get(k) for k in keys}
+    refill = g.get('next_refill')
+    result['next_refill'] = {k: refill.get(k) for k in ('provider', 'resets_at', 'hours_until')} if refill else None
+    result['instruction'] = ('Choose a tier by unresolved uncertainty. Use quota posture only for Fast/Normal ties; '
+                             'set capability_floor with capability_reason only when lower routes cannot meet acceptance. '
+                             'The bridge owns provider balancing and continuation.')
+    return result
 
 
 def guidance(t, c, q):

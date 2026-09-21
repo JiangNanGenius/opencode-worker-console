@@ -115,6 +115,22 @@ class ProactiveRerouteTests(unittest.TestCase):
         observed = worker.observe_live_models_and_switches(common.task('job-long'), messages)
         self.assertEqual(observed['route_history'][-1]['switch_state'], 'queued')
 
+    def test_near_completion_and_pending_switch_do_not_queue_another_handoff(self):
+        cached={'ark':{'workload':{'active_jobs':1,'prediction_samples':1,'expected_remaining_seconds':60}}}
+        with patch.object(quota,'view',return_value=cached), \
+             patch.object(quota,'tier_guidance',return_value={'conservation_level':2}), \
+             patch.object(quota,'route',return_value=('ark-auto','quota_conservation_level2')), \
+             patch.object(worker,'call') as call:
+            self.assertFalse(worker.proactive_reroute_if_needed(common.task('job-long'),{'type':'busy'}))
+            call.assert_not_called()
+        common.update('job-long',route_history=[{'switch_state':'queued'}])
+        with patch.object(quota,'view',return_value={}), \
+             patch.object(quota,'tier_guidance',return_value={'conservation_level':2}), \
+             patch.object(quota,'route',return_value=('ark-auto','quota_conservation_level2')), \
+             patch.object(worker,'call') as call:
+            self.assertFalse(worker.proactive_reroute_if_needed(common.task('job-long'),{'type':'busy'}))
+            call.assert_not_called()
+
     def test_deep_and_explicit_tasks_never_move(self):
         for fields in ({'tier': 'deep'}, {'requested_profile': 'senior-code'}):
             common.update('job-long', **fields)

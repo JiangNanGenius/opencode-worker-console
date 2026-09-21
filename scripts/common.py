@@ -194,6 +194,7 @@ def api(path, directory=None, method='GET', data=None, timeout=15, include_curso
 
 def public_task(t):
     keys = ['id', 'title', 'status', 'profile', 'requested_profile', 'profile_reason', 'tier', 'mode', 'urgency', 'complexity',
+            'capability_floor', 'capability_reason',
             'group_id', 'group_title', 'parent_task_id', 'owner_thread_id',
             'workspace', 'source_dir', 'directory', 'scopes', 'targets', 'resources',
             'notify_on_complete', 'completion_notification_sent_at',

@@ -186,6 +186,12 @@ test('quota range distinguishes paused sampling, collection and burn estimates',
   assert.equal((details.match(/quota\.bottleneckRunway/g)||[]).length,1);
 });
 
+test('quota display uses the shared backend forecast even after workload adjustment', async () => {
+  const h=appHarness();await tick();
+  assert.equal(h.run('windowRunway({remaining_percent:80,resets_at:new Date(Date.now()+3600000).toISOString(),consumption_estimate:{hours:10},capacity_forecast:{runway:.2,hours:.2,expired:false}})'),.2);
+  assert.equal(h.run('windowRunway({capacity_forecast:{runway:.2,expired:true}})'),null);
+});
+
 test('every provider header exposes a quota-level state', async () => {
   const h=appHarness();await tick();
   h.run(`data.profiles={ds:{model:"deepseek/flash"},kimi:{model:"kimi-for-coding/k3"},ark:{model:"volcengine-agent-plan/k3"}};

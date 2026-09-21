@@ -45,9 +45,22 @@ make the remaining implementation Normal. Fast may discover local details; use N
 execution still needs open investigation or significant interdependent judgments.
 
 Quota may break a genuine Fast/Normal tie, never redefine capability. Read
-`delegate-opencode quota --tier-guidance` once before a coherent batch. Its runway divides the
-remaining quota fraction by the fraction of time left until reset: 20% allowance with 20% of the
-window left is on pace (`1.0x`), while 20% with 40% of the window left is constrained (`0.5x`).
+`delegate-opencode quota --tier-guidance --compact` once before a coherent batch; it returns
+posture, conservation level, confidence and next-refill labels without the full provider dump
+(use verbose `quota --tier-guidance` for operator investigation). The primary runway signal is
+observed working pace: each window's remaining allowance percent is divided by its fitted active
+burn rate to give remaining working hours, then compared with wall-clock time to the window
+reset. The legacy `remaining fraction / time-fraction-left` ratio survives only as the cold-start
+prior before burn samples exist — with no telemetry, 20% allowance and 20% of the window left is
+on pace (`1.0x`), while 20% with 40% left is constrained (`0.5x`). Idle gaps are excluded from
+the working rate so an idle-heavy sample cannot look cheap. Within one provider the tightest
+window is its bottleneck; conservation pressure across subscription providers is the MAX of
+their bottleneck runways only when every configured subscription has a reliable signal. Missing
+readings make that combined pressure unknown, not zero. This differs from the console's descriptive combined-pool fit. A near effective
+refill can soften the guard-rail thresholds by up to 30%; a full refill-safe bypass is a
+separate, stricter condition: the refill arrives within two hours and every currently available
+provider reaches it on its own observed-burn forecast — simultaneous wall-clock runtimes are
+never summed.
 When the Fast and Normal routes use the same constrained plan and no healthier Normal-plan peer
 is available, direction-fixed work should lean Fast. When Ark is constrained but Kimi still has
 healthy runway, retain eligible Normal work so it can use Kimi instead of putting more load on
@@ -63,12 +76,18 @@ gradually increasing share. Level 2 uses its own faster continuous curve and tem
 automatic Normal's source stage with the first available Fast source stage. Deep and explicit
 profiles never change. The Agent Plan preset uses 38% and 25% baselines with a 33% Level 1/peak
 cap. During DeepSeek off-peak hours the Level 2 cap rises to 50% when fresh CNY balance remains
-at least 30. These are adaptive guard rails: observed burn fits the combined work pool, and
-a nearby refill that materially improves the projected pool lowers both effective thresholds by
-up to 30%. Beijing weekdays are peak only from 09:00-12:00 and 14:00-18:00; weekends remain
-off-peak even on official make-up workdays. A configurable, locally cached subscription identifies
-weekday public holidays. Unknown calendar, balance or quota telemetry uses the lower cap and never
-invents a refill.
+at least 30. These are adaptive guard rails, not fixed switch points: the combined work pool is
+fitted from observed working-pace burn, with a bounded demand adjustment for the admitted
+workload. A near effective refill can soften both thresholds by up to 30%; the separate
+refill-safe bypass requires the refill within two hours and every currently available provider
+reaching it independently. Protection engages immediately on a reliable low-pressure sample;
+recovery is progressive with a five-percentage-point exit margin and five-minute hysteresis so
+a brief improvement does not immediately end protection. Hysteresis acts only on reliable signals; unknown data
+suppresses new conservation action but does not guarantee the previous level is held. Unknown
+calendar, balance or quota telemetry uses the lower cap and never invents a refill. Beijing
+weekdays are peak only from 09:00-12:00 and 14:00-18:00; weekends remain off-peak even on
+official make-up workdays. A configurable, locally cached subscription identifies weekday public
+holidays.
 
 The console's total-work-pool meter treats a pay-as-you-go balance increase as a new observation
 epoch. It never nets post-top-up balance against pre-top-up samples. When both observed balance
@@ -84,6 +103,18 @@ tie-breaker runway threshold applies to live and manual windows; monetary provid
 low-balance threshold. Unknown signals preserve ordinary routing instead of pretending the budget
 is full or empty.
 Do not restart productive work merely to change tiers and replay its context.
+
+## Capability floor (optional)
+
+A task spec may set `capability_floor` (`fast`/`normal`/`deep`) with a required, nonempty
+`capability_reason` (1-500 characters). The floor must not exceed the requested tier; for a
+`normal` floor only profiles in the Normal/Deep first stages are eligible, and for a `deep`
+floor only the Deep first stage. Fallback, spillover and in-session rerouting never select a
+profile below the floor — if none is available the task queues with
+`capability_floor_unavailable` rather than downgrading. Parent-task continuations inherit the
+floor. This is a deliberate no-downgrade requirement (for example a task whose correctness
+cannot be served by a lighter route regardless of quota pressure), not a routine tier upgrade;
+ordinary tasks omit both fields.
 
 The stored shape is deliberately provider-neutral:
 
@@ -195,16 +226,21 @@ economic trade. Each pool has its own continuous, reset-aware curve:
 | native Kimi K3 : Ark K3 | 2:1 | continuously from 3:1 through 2:1 to 1:1; Ark K3 never leads |
 | native Kimi K2.8 : Ark Evolving | 1:1 | continuously from 2:1 through 1:1 to 1:2 |
 
-For each valid window, runway is `remaining fraction / time fraction until reset`. The most
-constrained window represents the provider. Stale, missing or unauthenticated telemetry keeps the
-baseline. A 2x runway difference produces an intermediate ratio; a 4x difference reaches the
-configured outer bound. The Fast tier's fallback share, level 1 conservation and level 2
-conservation use separate curves. When level 2 reuses a multi-provider Fast pool, it also inherits
-that pool's own curve. Ark Auto, Evolving and K3 share one runway, so heavy Auto use naturally reduces later
-Ark share. Endpoint-confirmed zero removes the provider. A confirmed quota/window stop or
-model-origin HTTP 429 can continue within the same OpenCode session on the next route. The
-transition keeps the transcript and workspace, adds the failed provider to the exclusion set,
-and instructs the new model not to repeat completed or external side effects.
+Runway is estimated from observed working-pace burn: remaining allowance hours at the fitted
+active burn rate divided by wall-clock time to the reset. The tightest of a provider's windows
+is its bottleneck; conservation pressure across subscription providers is the MAX of their
+bottleneck runways when all configured subscription signals are reliable; otherwise combined
+pressure is unknown. The console shows a separate descriptive combined-pool fit. The old `remaining fraction / time fraction
+left` ratio is only the cold-start prior before burn samples exist. Stale, missing or
+unauthenticated telemetry is excluded from the combined signal and keeps the baseline ratio. A 2x runway difference produces an intermediate ratio; a 4x
+difference reaches the configured outer bound. The Fast tier's fallback share, level 1
+conservation and level 2 conservation use separate curves. When level 2 reuses a
+multi-provider Fast pool, it also inherits that pool's own curve. Ark Auto, Evolving and K3
+share one runway, so heavy Auto use naturally reduces later Ark share. Endpoint-confirmed zero
+removes the provider. A confirmed quota/window stop or model-origin HTTP 429 can continue
+within the same OpenCode session on the next route. The transition keeps the transcript and
+workspace, adds the failed provider to the exclusion set, and instructs the new model not to
+repeat completed or external side effects.
 
 When conservation is active, an optional long-task rule can also queue one same-session model
 change after the configured age for automatically routed Fast or Normal tasks. This waits for the

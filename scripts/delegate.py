@@ -201,6 +201,15 @@ def submit(spec):
         tier = legacy_tier
     elif (legacy_urgency is not None or legacy_complexity is not None) and tier != legacy_tier:
         raise ValueError('Tier conflicts with legacy urgency/complexity fields')
+    floor = spec.get('capability_floor')
+    floor_reason = spec.get('capability_reason')
+    if floor is not None:
+        if floor not in ('fast', 'normal', 'deep') or ('fast', 'normal', 'deep').index(floor) > ('fast', 'normal', 'deep').index(tier):
+            raise ValueError('Capability floor must be a tier no higher than the requested tier')
+        if not isinstance(floor_reason, str) or not 1 <= len(floor_reason.strip()) <= 500:
+            raise ValueError('Capability floor requires a capability_reason of 1-500 characters')
+    elif floor_reason is not None:
+        raise ValueError('Capability reason requires capability_floor')
     urgency = 'fast' if tier == 'fast' else 'background'
     complexity = 'deep' if tier == 'deep' else 'normal'
     mode = spec.get('mode', 'read')
@@ -235,6 +244,7 @@ def submit(spec):
         'objective': spec['objective'], 'acceptance': spec.get('acceptance', []),
         'requested_profile': requested_profile, 'mode': mode,
         'tier': tier, 'urgency': urgency, 'complexity': complexity,
+        'capability_floor': floor, 'capability_reason': floor_reason.strip() if floor_reason else None,
         'workspace': workspace, 'source_dir': str(root), 'scopes': scopes, 'targets': targets,
         'commands': spec.get('commands', []), 'resources': spec.get('resources', []),
         'web': bool(spec.get('web', False)),
@@ -251,6 +261,11 @@ def submit(spec):
         parent = task(t['parent_task_id'])
         if parent.get('group_id') != t['group_id']:
             raise ValueError('Parent task must belong to the same group')
+        if not t.get('capability_floor') and parent.get('capability_floor'):
+            inherited = parent['capability_floor']
+            if ('fast', 'normal', 'deep').index(inherited) > ('fast', 'normal', 'deep').index(tier):
+                raise ValueError('Continuation tier cannot fall below the parent capability floor')
+            t.update(capability_floor=inherited, capability_reason=parent.get('capability_reason'))
         parent_recovery = parent.get('recovery') if isinstance(parent.get('recovery'), dict) else {}
         blocked_provider = parent_recovery.get('blocked_provider')
         if requested_profile == 'auto' and isinstance(blocked_provider, str) and blocked_provider:
@@ -520,6 +535,8 @@ def main():
     s.add_argument('--profile-reason', help='Why this task must bypass automatic routing')
     s.add_argument('--tier', choices=['fast', 'normal', 'deep'],
                    help='Worker capability tier; the bridge selects the model')
+    s.add_argument('--capability-floor', choices=['fast', 'normal', 'deep'])
+    s.add_argument('--capability-reason', help='Why this task cannot use lower capability routes')
     s.add_argument('--mode', choices=['read', 'write'], default='read')
     s.add_argument('--urgency', choices=['fast', 'background'], help=argparse.SUPPRESS)
     s.add_argument('--complexity', choices=['normal', 'deep'], help=argparse.SUPPRESS)
@@ -560,6 +577,7 @@ def main():
     s.add_argument('--seconds', type=int,
                    help='Observation window; defaults by tier to fast=300, normal=1800, deep=3600; minimum 60')
     s = sub.add_parser('quota'); s.add_argument('--refresh', action='store_true')
+    s.add_argument('--compact', action='store_true', help='Return concise coordination guidance without provider telemetry')
     s.add_argument('--tier-guidance', action='store_true',
                    help='Include a quota-aware Fast/Normal tie-breaker without changing routing')
     s.add_argument('--retry-provider', metavar='PROVIDER',
@@ -650,8 +668,9 @@ def main():
             result = quota.retry_provider(args.retry_provider)
         else:
             snapshot = quota.refresh(force=args.refresh)
-            result = ({'providers': snapshot, 'tier_guidance': quota.tier_guidance(config(), snapshot)}
-                      if args.tier_guidance else snapshot)
+            guidance = quota.tier_guidance(config(), snapshot) if args.tier_guidance or args.compact else None
+            result = quota.compact_guidance(guidance) if args.compact else (
+                {'providers': snapshot, 'tier_guidance': guidance} if args.tier_guidance else snapshot)
     elif args.cmd == 'integrate':
         with locked():
             t = task(args.id)

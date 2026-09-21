@@ -101,22 +101,13 @@ def _usage_number(value):
         and math.isfinite(value) and value >= 0 else 0.0
 
 
-def deepseek_usage_cost(usage, model, timestamp, settings=None):
-    """Estimate one DeepSeek usage snapshot from the official token classes.
-
-    Worker Desk keeps input, cache-read, cache-write, output and reasoning
-    counters disjoint. Cache reads use the hit price; ordinary input and cache
-    writes use the cache-miss price; output and reasoning use the output price.
-    """
-    if not isinstance(usage, dict) or not isinstance(model, str):
-        return None
-    values = normalize(settings)
+def _deepseek_cost(usage, model, values, multiplier):
+    """Cost one DeepSeek usage snapshot at one price-band multiplier."""
     model_name = model.split('/', 1)[-1].lower()
     family = 'pro' if 'pro' in model_name else 'flash'
     hit = values['deepseek_' + family + '_cache_hit_cny_per_m']
     input_rate = values['deepseek_' + family + '_input_cny_per_m']
     output_rate = values['deepseek_' + family + '_output_cny_per_m']
-    multiplier = 1.0 if deepseek_peak(timestamp) else values['deepseek_offpeak_multiplier']
     cache_hit = _usage_number(usage.get('cache_read'))
     uncached = _usage_number(usage.get('input')) + _usage_number(usage.get('cache_write'))
     generated = _usage_number(usage.get('output')) + _usage_number(usage.get('reasoning'))
@@ -128,8 +119,126 @@ def deepseek_usage_cost(usage, model, timestamp, settings=None):
             'cache_hit_tokens': cache_hit, 'input_tokens': uncached, 'output_tokens': generated}
 
 
+def deepseek_usage_cost(usage, model, timestamp, settings=None):
+    """Estimate one DeepSeek usage snapshot from the official token classes.
+
+    Worker Desk keeps input, cache-read, cache-write, output and reasoning
+    counters disjoint. Cache reads use the hit price; ordinary input and cache
+    writes use the cache-miss price; output and reasoning use the output price.
+    """
+    if not isinstance(usage, dict) or not isinstance(model, str):
+        return None
+    values = normalize(settings)
+    multiplier = 1.0 if deepseek_peak(timestamp) else values['deepseek_offpeak_multiplier']
+    return _deepseek_cost(usage, model, values, multiplier)
+
+
+def _is_deepseek_model(model):
+    """True for Worker Desk '<provider>/<model>' identifiers on DeepSeek."""
+    return isinstance(model, str) and model.split('/', 1)[0].strip().lower() == 'deepseek'
+
+
+def _usage_tokens(value):
+    """Reported total tokens, else the summed counters; None when nothing is known."""
+    if not isinstance(value, dict):
+        return None
+    supplied = value.get('total')
+    if isinstance(supplied, (int, float)) and not isinstance(supplied, bool) \
+            and math.isfinite(supplied) and supplied >= 0:
+        return float(supplied)
+    components = sum(_usage_number(value.get(key)) for key in
+                     ('input', 'output', 'reasoning', 'cache_read', 'cache_write'))
+    return components if components > 0 else None
+
+
+def _actual_models(record):
+    """Distinct actual model identifiers in order, ignoring malformed entries."""
+    models = []
+    for item in record.get('actual_models') or []:
+        if isinstance(item, str) and item and item not in models:
+            models.append(item)
+    return models
+
+
+def _deepseek_usage_segments(record, usage, profiles):
+    """Split one task's usage into DeepSeek-only segments or mark it unknown.
+
+    A usage snapshot can cover more than one provider. Only a retained per-model
+    breakdown can be charged segment by segment; a legacy record that shows
+    several actual models but no breakdown is ambiguous and stays unpriced
+    instead of assigning every token to the last model seen.
+    """
+    split = {'segments': [], 'unattributed_tokens': 0.0,
+             'attribution': 'unknown', 'unknown_reason': None}
+    usage = usage if isinstance(usage, dict) else {}
+    by_model = usage.get('by_model')
+    if isinstance(by_model, list) and by_model:
+        rows = [item for item in by_model if isinstance(item, dict)]
+        if not rows:
+            split['unknown_reason'] = 'per-model breakdown is malformed'
+            return split
+        covered = 0.0
+        covered_known = False
+        for item in rows:
+            tokens = _usage_tokens(item)
+            if tokens is not None:
+                covered += tokens
+                covered_known = True
+            model = item.get('model')
+            if _is_deepseek_model(model):
+                split['segments'].append({'model': model, 'usage': item})
+        total = _usage_tokens(usage)
+        names = [r.get('model') for r in rows if isinstance(r.get('model'), str)]
+        if len(set(names)) != len(names) or (total is not None and covered > total + 1):
+            split['segments'] = []
+            split['unknown_reason'] = 'inconsistent per-model totals'
+            return split
+        if split['segments']:
+            split['attribution'] = 'by_model'
+            total = _usage_tokens(usage)
+            if covered_known and total is not None:
+                leftover = total - covered
+                # Rounding slack is not evidence of missing attribution.
+                if leftover > max(1.0, total * 0.01):
+                    split['unattributed_tokens'] = leftover
+                    split['attribution'] = 'by_model_partial'
+            return split
+        if covered_known:
+            return split  # every accounted token belongs to a non-DeepSeek model
+        split['unknown_reason'] = 'per-model breakdown has no usable token counts'
+        return split
+    actual = _actual_models(record)
+    if actual:
+        if len(actual) > 1:
+            split['unknown_reason'] = 'mixed models without a per-model breakdown'
+            return split
+        if not _is_deepseek_model(actual[0]) or not _usage_tokens(usage):
+            return split
+        split['segments'] = [{'model': actual[0], 'usage': usage}]
+        split['attribution'] = 'task_model'
+        return split
+    profile = profiles.get(record.get('profile')) if isinstance(record.get('profile'), str) else None
+    model = profile.get('model') if isinstance(profile, dict) else None
+    if not _is_deepseek_model(model) or not _usage_tokens(usage):
+        return split
+    if record.get('fallback_used') is True or record.get('route_history'):
+        split['unknown_reason'] = 'fallback provider unknown without actual model evidence'
+        return split
+    split['segments'] = [{'model': model, 'usage': usage}]
+    split['attribution'] = 'profile'
+    return split
+
+
 def recent_deepseek_spend(config, now=None, lookback_hours=24):
-    """Price recent Worker Desk DeepSeek usage without reading prompts/messages."""
+    """Price recent Worker Desk DeepSeek usage without reading prompts/messages.
+
+    Only DeepSeek segments are charged. Tasks that used several providers are
+    priced from their retained per-model breakdown; a legacy mixed record
+    without that breakdown stays unknown instead of charging every token to the
+    last model seen. Per-segment timestamps are not retained, so the exact
+    peak/off-peak band is unknown: the estimate is reported with a price-band
+    range instead of false precision.
+    """
     import common
     import task_activity
     import usage_ledger
@@ -139,6 +248,7 @@ def recent_deepseek_spend(config, now=None, lookback_hours=24):
     profiles = (config or {}).get('profiles') if isinstance(config, dict) else {}
     profiles = profiles if isinstance(profiles, dict) else {}
     settings = (config or {}).get('economics') if isinstance(config, dict) else None
+    values = normalize(settings)
     records = []
     current_ids = set()
     for task in common.tasks():
@@ -148,38 +258,68 @@ def recent_deepseek_spend(config, now=None, lookback_hours=24):
         if entry.get('task_id') not in current_ids:
             records.append((entry, entry.get('usage')))
     total_cost = total_tokens = 0.0
-    task_count = 0
+    low_cost = high_cost = unattributed_tokens = unknown_tokens = 0.0
+    task_count = segment_count = inferred_segments = peak_segments = 0
     earliest = now
-    peak_tasks = 0
+    unknown = []
     for record, usage in records:
         stamp = record.get('finished_at') or record.get('updated_at') or record.get('created_at')
         if not isinstance(stamp, (int, float)) or isinstance(stamp, bool) or stamp < cutoff or stamp > now:
             continue
-        actual = [item for item in (record.get('actual_models') or [])
-                  if isinstance(item, str) and item.startswith('deepseek/')]
-        profile = profiles.get(record.get('profile')) if isinstance(profiles.get(record.get('profile')), dict) else {}
-        model = actual[-1] if actual else profile.get('model')
-        if not isinstance(model, str) or not model.startswith('deepseek/'):
+        split = _deepseek_usage_segments(record, usage, profiles)
+        if split['unknown_reason']:
+            unknown.append({'task_id': record.get('id') or record.get('task_id'),
+                            'reason': split['unknown_reason'],
+                            'tokens': _usage_tokens(usage)})
+            unknown_tokens += _usage_tokens(usage) or 0.0
             continue
-        priced = deepseek_usage_cost(usage, model, stamp, settings)
-        if priced is None:
+        if not split['segments']:
             continue
-        total_cost += priced['cost_cny']
-        total_tokens += priced['tokens']
-        peak_tasks += int(priced['peak'])
-        task_count += 1
+        priced_segments = 0
+        for segment in split['segments']:
+            priced = deepseek_usage_cost(segment['usage'], segment['model'], stamp, settings)
+            if priced is None:
+                continue
+            offpeak = _deepseek_cost(segment['usage'], segment['model'], values,
+                                     values['deepseek_offpeak_multiplier'])
+            peak = _deepseek_cost(segment['usage'], segment['model'], values, 1.0)
+            total_cost += priced['cost_cny']
+            total_tokens += priced['tokens']
+            low_cost += offpeak['cost_cny'] if offpeak is not None else priced['cost_cny']
+            high_cost += peak['cost_cny'] if peak is not None else priced['cost_cny']
+            peak_segments += int(priced['peak'])
+            segment_count += 1
+            priced_segments += 1
+        if priced_segments:
+            task_count += 1
+            if split['attribution'] == 'profile':
+                inferred_segments += priced_segments
+        unattributed_tokens += split['unattributed_tokens']
         created = record.get('created_at')
-        earliest = min(earliest, created if isinstance(created, (int, float)) and not isinstance(created, bool) else stamp)
+        earliest = min(earliest, created if isinstance(created, (int, float))
+                       and not isinstance(created, bool) else stamp)
+    base = {'peak_confident': False, 'scope': 'deepseek_segments_only',
+            'unknown_task_count': len(unknown), 'unknown_tasks': unknown[:20],
+            'unknown_tokens': unknown_tokens, 'unattributed_tokens': unattributed_tokens,
+            'source': 'official_token_pricing',
+            'pricing_effective': DEEPSEEK_PRICE_EFFECTIVE, 'pricing_url': DEEPSEEK_PRICE_SOURCE}
     if task_count == 0 or total_cost <= 0:
-        return None
+        if not unknown:
+            return None
+        return dict(base, rate_balance_per_hour=None, estimated_spend_cny=None, tokens=0,
+                    task_count=0, segment_count=0, sample_span_hours=0.0, peak_tasks=0,
+                    inferred_segment_count=0)
     # One short task should not be extrapolated as if it ran continuously every
     # minute. Amortize over at least one hour, while retaining at most one day
     # so the estimate follows the current workload rather than lifetime usage.
     span_hours = max(1.0, min(float(lookback_hours), (now - max(cutoff, earliest)) / 3600))
-    return {'rate_balance_per_hour': total_cost / span_hours, 'estimated_spend_cny': total_cost,
-            'tokens': total_tokens, 'task_count': task_count, 'sample_span_hours': span_hours,
-            'peak_tasks': peak_tasks, 'source': 'official_token_pricing',
-            'pricing_effective': DEEPSEEK_PRICE_EFFECTIVE, 'pricing_url': DEEPSEEK_PRICE_SOURCE}
+    return dict(base, rate_balance_per_hour=total_cost / span_hours,
+                estimated_spend_cny=total_cost, estimated_spend_cny_low=round(low_cost, 6),
+                estimated_spend_cny_high=round(high_cost, 6), tokens=total_tokens,
+                task_count=task_count, segment_count=segment_count, sample_span_hours=span_hours,
+                peak_tasks=peak_segments, inferred_segment_count=inferred_segments,
+                price_band_uncertainty=('per-segment peak timestamps are not retained; '
+                                        'cost is bounded by the peak and off-peak prices'))
 
 
 def _monthly_ark(quota_view):
@@ -220,15 +360,20 @@ def _selected_window(provider, record):
         max(windows, key=lambda item: _non_negative(item.get('duration_minutes')) or 0.0)
 
 
-def _window_fit(provider, record):
+def _window_fit(provider, record, now=None):
     window = _selected_window(provider, record)
     if window is None:
         return {'amount': None, 'capacity': None, 'remaining_percent': None,
                 'source_amount': None, 'unit': 'fitted-hours',
                 'status': 'missing' if not record else 'unknown', 'stale': bool(record.get('stale'))}
+    import capacity as capacity_model
+    now = time.time() if now is None else now
+    forecasts = capacity_model.provider(record, now)
     remaining = _non_negative(window.get('remaining_percent'))
     estimate = window.get('consumption_estimate') if isinstance(window.get('consumption_estimate'), dict) else {}
-    rate = _non_negative(estimate.get('rate_percent_per_hour'))
+    rates = [_non_negative(estimate.get(k)) for k in ('rate_percent_per_hour', 'active_rate_percent_per_hour')]
+    fitted_window = capacity_model.window(window, now)
+    rate = fitted_window['rate_percent_per_hour'] if fitted_window else max((r for r in rates if r is not None), default=None)
     duration = _non_negative(window.get('duration_minutes'))
     # The live burn rate is authoritative. A full-window duration is only the
     # cold-start prior, so a newly reset plan immediately re-enters the pool
@@ -241,18 +386,28 @@ def _window_fit(provider, record):
     capacity = min(fitted_capacity, window_capacity) if fitted_capacity is not None and window_capacity is not None \
         else fitted_capacity if fitted_capacity is not None else window_capacity
     amount = capacity * remaining / 100.0 if capacity is not None else None
+    # Any shared window can stop work. Unknown short-window rates do not invent a
+    # five-hour lifetime, but a measured short-window bottleneck must constrain it.
+    observed = [w['hours'] for w in forecasts['windows']
+                if w['source'] == 'observed_burn' and w['hours'] is not None]
+    if amount is not None and observed:
+        amount = min(amount, min(observed))
+    if any(w['remaining_percent'] <= 0 for w in forecasts['windows']):
+        amount = 0.0
     if amount is not None and record.get('available') is False:
         amount = 0.0
-    if remaining <= 0 or record.get('available') is False:
+    stale = bool(record.get('stale')) or record.get('state', 'ok') != 'ok' or any(w['expired'] for w in forecasts['windows'])
+    if amount == 0 or record.get('available') is False:
         state = 'unavailable'
     else:
-        state = 'stale' if record.get('stale') else 'ok'
+        state = 'stale' if stale else 'ok'
     return {'amount': round(amount, 3) if amount is not None else None,
             'capacity': round(capacity, 3) if capacity is not None else None,
             'remaining_percent': _percent(amount, capacity),
             'source_amount': round(remaining, 3), 'unit': 'fitted-hours',
-            'status': state, 'stale': state == 'stale', 'resets_at': window.get('resets_at'),
-            'window': window.get('name'),
+            'status': state, 'stale': stale, 'resets_at': window.get('resets_at'),
+            'window': forecasts['bottleneck'] or window.get('name'),
+            'runway': forecasts['runway'],
             'fit_source': 'observed_burn' if rate and rate > .000001 else 'window_prior'}
 
 
@@ -305,27 +460,67 @@ def _reset_seconds(value):
         return None
 
 
-def _refill_forecast(components, capacity, now):
+def _refill_forecast(components, capacity, now, records=None):
+    """Forecast actual window resets, never refill an entire still-blocked plan."""
+    import copy
+    import capacity as model
     if capacity <= 0:
         return []
-    current = {key: (item.get('amount') or 0.0) for key, item in components.items()
-               if item.get('capacity') is not None}
-    events = []
-    for key in ('kimi', 'plan'):
-        item = components[key]
-        stamp = _reset_seconds(item.get('resets_at'))
-        if stamp is not None and stamp > now and item.get('capacity') is not None:
-            events.append((stamp, key))
+    records = records or {}
+    projected = copy.deepcopy(records)
+    events = {}
+    for key, record in projected.items():
+        if record.get('stale') or record.get('state', 'ok') != 'ok' or record.get('billing'):
+            continue
+        for w in record.get('windows') or []:
+            stamp = model.epoch(w.get('resets_at'))
+            estimate = model.window(w, now)
+            if estimate and (estimate['source'] == 'observed_burn' or estimate['remaining_percent'] == 0) and stamp and stamp > now:
+                events.setdefault(stamp, set()).add(key)
     forecast = []
     previous = now
-    for stamp, key in sorted(events):
-        elapsed = max(0.0, (stamp - previous) / 3600.0)
-        current = {name: max(0.0, amount - elapsed) for name, amount in current.items()}
-        current[key] = components[key]['capacity']
-        total = sum(current.values())
-        forecast.append({'provider': key, 'resets_at': components[key].get('resets_at'),
-                         'hours_until': round(max(0.0, (stamp - now) / 3600.0), 2),
-                         'projected_remaining_percent': _percent(total, capacity)})
+    for stamp, keys in sorted(events.items()):
+        elapsed = (stamp - previous) / 3600
+        before = {}
+        for key, record in projected.items():
+            for w in record.get('windows') or []:
+                f = model.window(w, previous)
+                if f is not None:
+                    rate = f['rate_percent_per_hour']
+                    if rate is not None:
+                        w['remaining_percent'] = max(0, f['remaining_percent'] - rate * elapsed)
+                    # Derive hours again from the retained rate, not the old snapshot.
+                    est = w.get('consumption_estimate') or {}
+                    est.pop('hours', None)
+            before[key] = _window_fit(key, dict(record, available=True), now=stamp)['amount'] or 0
+        for key in keys:
+            for w in projected[key].get('windows') or []:
+                if model.epoch(w.get('resets_at')) == stamp:
+                    w['remaining_percent'] = 100
+                    duration = model.number(w.get('duration_minutes'))
+                    if duration:
+                        w['resets_at'] = stamp + duration * 60
+                        w['subscribed_at'] = stamp
+        total = 0.0
+        gain = 0.0
+        for key, record in projected.items():
+            fitted = _window_fit(key, dict(record, available=True), now=stamp)
+            amount = (fitted['amount'] or 0) * components[key].get('workload_share', 1)
+            before[key] *= components[key].get('workload_share', 1)
+            # Use the current denominator throughout the projection.
+            amount = min(amount, components[key].get('capacity') or 0)
+            total += amount
+            if key in keys:
+                gain += max(0, amount - before[key])
+        balance = components.get('balance') or {}
+        total += max(0, (balance.get('amount') or 0) - (stamp - now) / 3600 * balance.get('workload_share', 1))
+        if gain > .001:
+            names = sorted(keys)
+            forecast.append({'provider': names[0], 'providers': names,
+                             'resets_at': datetime.fromtimestamp(stamp, timezone.utc).isoformat(),
+                             'hours_until': round((stamp - now) / 3600, 2),
+                             'restored_hours': round(gain, 3),
+                             'projected_remaining_percent': _percent(total, capacity)})
         previous = stamp
     return forecast
 
@@ -344,20 +539,46 @@ def work_pool(config, quota_view, now=None, include_payg_balance=True):
     deepseek = view.get('deepseek') if isinstance(view.get('deepseek'), dict) else {}
     kimi = view.get('kimi-for-coding') if isinstance(view.get('kimi-for-coding'), dict) else {}
     ark = view.get('volcengine-agent-plan') if isinstance(view.get('volcengine-agent-plan'), dict) else {}
+    now = time.time() if now is None else now
     components = {'balance': _balance_fit(deepseek),
-                  'kimi': _window_fit('kimi-for-coding', kimi),
-                  'plan': _window_fit('volcengine-agent-plan', ark)}
-    included = components if include_payg_balance else {
-        key: components[key] for key in ('kimi', 'plan')}
+                  'kimi': _window_fit('kimi-for-coding', kimi, now),
+                  'plan': _window_fit('volcengine-agent-plan', ark, now)}
+    records = {'kimi': kimi, 'plan': ark}
+    configured = {str(p.get('model', '')).split('/')[0] for p in (config.get('profiles') or {}).values()
+                  if isinstance(p, dict) and p.get('enabled') is not False}
+    mapping = {'deepseek': 'balance', 'kimi-for-coding': 'kimi', 'volcengine-agent-plan': 'plan'}
+    # Custom subscription providers use the same forecast, not a provider-name gate.
+    for provider in (configured or set(view)) - set(mapping):
+        record = view.get(provider) or {}
+        if record.get('windows'):
+            mapping[provider] = provider
+            records[provider] = record
+            components[provider] = _window_fit(provider, record, now)
+    selected = {mapping[p] for p in configured if p in mapping} if configured else set(components)
+
+    included = {key: item for key, item in components.items()
+                if key in selected and (include_payg_balance or key != 'balance')}
+    # Convert per-provider wall-clock hours to a common observed workload share.
+    # Otherwise adding two simultaneous ten-hour runways misleadingly gives twenty.
+    loads = {mapping[p]: record.get('workload', {}) for p, record in view.items() if p in mapping}
+    calibrated = [key for key in included if loads.get(key, {}).get('confidence') == 'calibrated']
+    if calibrated and all(loads.get(key, {}).get('observed_share') is not None for key in included
+                          if included[key].get('capacity') is not None):
+        for key, item in included.items():
+            share = _non_negative(loads.get(key, {}).get('observed_share'))
+            if share is not None and item.get('capacity') is not None:
+                item['capacity'] *= share
+                item['amount'] = (item.get('amount') or 0) * share
+                item['workload_share'] = share
     known = [item for item in included.values() if item.get('capacity') is not None]
     total = sum(item.get('amount') or 0.0 for item in known)
     capacity = sum(item['capacity'] for item in known)
-    refills = _refill_forecast(included, capacity, time.time() if now is None else now)
+    refills = _refill_forecast(included, capacity, now, {k: v for k, v in records.items() if k in included})
     return {'unit': 'fitted-hours', 'total': round(total, 3),
             'capacity': round(capacity, 3), 'remaining_percent': _percent(total, capacity),
             'components': components, 'refills': refills,
-            'complete': bool(known) and all(item.get('status') in ('ok', 'stale', 'unavailable')
-                                            for item in known),
+            'complete': bool(known) and all(item.get('status') in ('ok', 'unavailable') and not item.get('stale')
+                                            for item in (included.values() if configured else known)),
             'normalization': {'rule': 'remaining_runtime / fitted_full_runtime',
                               'payg_balance_included': bool(include_payg_balance),
                               'kimi_included': components['kimi'].get('capacity') is not None,

@@ -97,7 +97,7 @@ class EconomicsTests(unittest.TestCase):
                               'windows': []}}
         pool = economics.work_pool({}, stale)
         self.assertEqual(pool['components']['balance']['status'], 'stale')
-        self.assertTrue(pool['complete'])
+        self.assertFalse(pool['complete'])
 
     def test_work_pool_ignores_price_settings_and_uses_window_prior_at_reset(self):
         quota = {'volcengine-agent-plan': {'state': 'ok', 'stale': False, 'windows': [
@@ -138,7 +138,7 @@ class EconomicsTests(unittest.TestCase):
         self.assertEqual(pool['refills'][0]['hours_until'], 20)
         self.assertAlmostEqual(pool['refills'][0]['projected_remaining_percent'], 66.107, places=3)
         self.assertEqual(pool['refills'][1]['hours_until'], 40)
-        self.assertAlmostEqual(pool['refills'][1]['projected_remaining_percent'], 83.221, places=3)
+        self.assertAlmostEqual(pool['refills'][1]['projected_remaining_percent'], 84.295, places=3)
 
     def test_validation_rejects_unknown_negative_or_missing_values(self):
         valid = dict(economics.DEFAULTS)
