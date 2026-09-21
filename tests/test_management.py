@@ -92,7 +92,7 @@ class ManagementTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 management._validate_settings(body)
 
-    def test_task_management_deletes_terminal_records_and_retains_work_products(self):
+    def test_task_management_deletes_sessions_artifacts_and_retains_accounting(self):
         self.add_task('job-complete', 'completed', 'ses_complete')
         common.update('job-complete', objective='private prompt body', tier='normal', profile='senior-code',
                       actual_models=['kimi-for-coding/k3'],
@@ -106,14 +106,25 @@ class ManagementTests(unittest.TestCase):
         worktree.mkdir(parents=True)
         (worktree / 'marker').write_text('retained')
 
-        result = management.delete_tasks({'action': 'delete', 'ids': ['job-complete', 'job-failed']})
+        def api(path, directory=None, method='GET', data=None, **kwargs):
+            if path == '/session/status': return {}
+            if path.startswith('/experimental/session'): return []
+            if path.endswith('/children'): return []
+            if method == 'DELETE': return True
+            sid = path.rsplit('/', 1)[-1]
+            return {'id': sid, 'title': sid, 'directory': str(self.root)}
+        with patch.object(common, 'api', side_effect=api):
+            result = management.delete_tasks({'action': 'delete', 'ids': ['job-complete', 'job-failed']})
 
-        self.assertEqual(result, {'deleted': 2,
-                                  'retained': ['usage_ledger', 'sessions', 'artifacts', 'worktrees'],
-                                  'usage_retention_days': 365})
+        self.assertEqual(result['deleted'], 2)
+        self.assertEqual(result['sessions_deleted'], 2)
+        self.assertEqual(result['retained'], ['usage_ledger'])
+        self.assertEqual(result['errors'], [])
         self.assertFalse(common.task_path('job-complete').exists())
         self.assertFalse(common.task_path('job-failed').exists())
-        self.assertTrue(artifact.exists())
+        self.assertFalse(artifact.exists())
+        # An unexpected directory that was never declared as this task's isolated
+        # worktree is not guessed into ownership.
         self.assertTrue((worktree / 'marker').exists())
         ledger = usage_ledger.summary(include_entries=True)
         self.assertEqual(ledger['count'], 2)
@@ -135,6 +146,42 @@ class ManagementTests(unittest.TestCase):
 
         self.assertTrue(common.task_path('job-done').exists())
         self.assertTrue(common.task_path('job-running').exists())
+
+    def test_task_management_retains_unintegrated_isolated_work(self):
+        task = self.add_task('job-review', 'completed', 'ses_review')
+        worktree = self.state / 'worktrees' / task['id']
+        worktree.mkdir(parents=True)
+        (worktree / 'changed.txt').write_text('unintegrated')
+        common.update(task['id'], workspace='isolated', source_dir=str(self.root),
+                      directory=str(worktree), mode='write', scopes=['changed.txt'])
+        art = common.artifact_dir(task['id'])
+        for name in ('before', 'after'):
+            (art / name).mkdir()
+            (art / name / 'changed.txt').write_text(name)
+        (art / 'messages.json').write_text('[]')
+        (art / 'result.json').write_text('{}')
+        (art / 'baseline.json').write_text('{}')
+        (art / 'after.json').write_text('{}')
+        (art / 'changes.patch').write_text('patch')
+
+        def api(path, directory=None, method='GET', data=None, **kwargs):
+            if path == '/session/status': return {}
+            if path.startswith('/experimental/session'): return []
+            if path.endswith('/children'): return []
+            if method == 'DELETE': return True
+            return {'id': 'ses_review', 'title': 'Review', 'directory': str(self.root)}
+        with patch.object(common, 'api', side_effect=api):
+            result = management.delete_tasks({'action': 'delete', 'ids': [task['id']]})
+
+        self.assertEqual(result['deleted'], 0)
+        self.assertEqual(result['sessions_deleted'], 1)
+        self.assertEqual(result['retained_for_review'][0]['reason'], 'unintegrated_changes')
+        self.assertTrue(common.task(task['id'])['session_deleted'])
+        self.assertTrue(worktree.exists())
+        self.assertFalse((art / 'before').exists())
+        self.assertFalse((art / 'messages.json').exists())
+        self.assertTrue((art / 'changes.patch').exists())
+        self.assertTrue((art / 'result.json').exists())
 
     def test_task_management_clear_completed_only(self):
         self.add_task('job-done-a', 'completed')

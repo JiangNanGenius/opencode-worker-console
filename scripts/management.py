@@ -433,11 +433,12 @@ def save_settings(body):
 
 
 def delete_tasks(body):
-    """Remove terminal task rows while retaining an expiring accounting record.
+    """Reclaim one or more terminal tasks and their linked OpenCode data.
 
-    OpenCode sessions, artifacts and worktrees are deliberately retained. This keeps
-    task-list cleanup independent from evidence/session cleanup. A compact usage ledger
-    keeps routing, timing, model and token/cost fields for the configured retention period.
+    The compact usage ledger is written first. Linked OpenCode sessions are then
+    deleted through the native API, disposable evidence is removed, and isolated
+    worktrees are released only when already integrated or proven unchanged. A task
+    with unintegrated code remains visible for review instead of losing work.
     """
     if not isinstance(body, dict):
         raise ValueError('JSON object required')
@@ -471,11 +472,74 @@ def delete_tasks(body):
         # snapshot fails, no task record is deleted, preserving accounting continuity.
         for item in selected:
             usage_ledger.record(item, retention_days)
-        for item in selected:
-            common.task_path(item['id']).unlink()
-    return {'deleted': len(selected),
-            'retained': ['usage_ledger', 'sessions', 'artifacts', 'worktrees'],
-            'usage_retention_days': retention_days}
+
+    import task_cleanup
+    import workspace
+    result = {'deleted': 0, 'sessions_deleted': 0, 'sessions_missing': 0,
+              'artifacts_removed': 0, 'worktrees_released': 0,
+              'freed_bytes': 0, 'retained_for_review': [], 'errors': [],
+              'retained': ['usage_ledger'], 'usage_retention_days': retention_days}
+    for original in selected:
+        task_id = original['id']
+        try:
+            item = common.task(task_id)
+        except ValueError:
+            continue
+        sid = item.get('session_id')
+        if isinstance(sid, str) and sid and not item.get('session_deleted'):
+            try:
+                try:
+                    session = _fetch_session(sid)
+                except common.HttpFailure as error:
+                    if error.status != 404:
+                        raise
+                    session = None
+                if session is None:
+                    common.update(task_id, session_deleted=True)
+                    result['sessions_missing'] += 1
+                else:
+                    update_session(sid, {'action': 'delete', 'confirm_session_id': sid,
+                                         'confirm_title': session.get('title')})
+                    result['sessions_deleted'] += 1
+            except (common.HttpFailure, OSError, RuntimeError, ValueError) as error:
+                result['errors'].append({'task_id': task_id, 'stage': 'session',
+                                         'error': common.redact(str(error))[:240]})
+                continue
+
+        try:
+            release = workspace.release_isolated(item)
+        except (OSError, RuntimeError, ValueError) as error:
+            release = {'released': False, 'reason': 'worktree_release_failed', 'bytes': 0}
+            result['errors'].append({'task_id': task_id, 'stage': 'worktree',
+                                     'error': common.redact(str(error))[:240]})
+        retain_worktree = (item.get('workspace') == 'isolated' and
+                           not release.get('released') and
+                           release.get('reason') != 'worktree_missing')
+        if release.get('released'):
+            result['worktrees_released'] += 1
+            result['freed_bytes'] += release.get('bytes', 0)
+        try:
+            evidence = task_cleanup.clear_artifacts(task_id, preserve_integration=retain_worktree)
+            if evidence.get('removed'):
+                result['artifacts_removed'] += 1
+                result['freed_bytes'] += evidence.get('bytes', 0)
+        except (OSError, RuntimeError, ValueError) as error:
+            result['errors'].append({'task_id': task_id, 'stage': 'artifacts',
+                                     'error': common.redact(str(error))[:240]})
+            continue
+        if retain_worktree:
+            common.update(task_id, cleanup_retained_reason=release.get('reason'), session_deleted=True)
+            result['retained_for_review'].append({'task_id': task_id,
+                                                  'reason': release.get('reason'),
+                                                  'evidence': evidence.get('preserved', [])})
+            continue
+        try:
+            common.task_path(task_id).unlink()
+            result['deleted'] += 1
+        except OSError as error:
+            result['errors'].append({'task_id': task_id, 'stage': 'task',
+                                     'error': common.redact(str(error))[:240]})
+    return result
 
 
 def _archived_filter(value):

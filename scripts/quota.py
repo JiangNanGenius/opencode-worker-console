@@ -484,7 +484,10 @@ def normalize(provider, body):
         minutes = duration * units[w.get('timeUnit')] if duration is not None and w.get('timeUnit') in units else None
         windows.append(window('window_' + str(i), row.get('detail') or {}, minutes))
     if isinstance(body.get('usage'), dict):
-        windows.append(window('overall', body['usage']))
+        # Kimi's aggregate is the shared seven-day plan pool. Carry that known
+        # duration into the normalized record so reset-aware routing can judge
+        # whether a small remainder is actually enough to reach the next reset.
+        windows.append(window('overall', body['usage'], KNOWN_RATIO_WINDOWS['limit_7d']))
     # usages.<known key>.used_ratio is an explicit per-window fraction (0..1) and is a
     # fallback only when that window is otherwise absent or unusable. Unknown keys, a
     # ratio outside 0..1 (overage is not evidence of a specific exhausted window), a
@@ -675,7 +678,22 @@ def kimi_low_weekly(q, c):
     if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or threshold < 0:
         threshold = 5
     remaining = kimi_weekly_remaining_percent(q)
-    return remaining is not None and remaining <= threshold, remaining
+    if remaining is None or remaining > threshold:
+        return False, remaining
+    provider = q.get('kimi-for-coding', {})
+    weekly = None
+    for item in provider.get('windows', []) if isinstance(provider, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        if item.get('name') == 'overall' or item.get('duration_minutes') == 10080:
+            weekly = dict(item)
+            if not isinstance(weekly.get('duration_minutes'), (int, float)):
+                weekly['duration_minutes'] = 10080
+            break
+    runway = routing._window_runway(weekly, time.time()) if weekly else None
+    # A low absolute balance is only guarded when it is also burning too fast
+    # to reach reset. Close to reset, a small remainder can still be on pace.
+    return runway is None or runway < 1.0, remaining
 
 
 def apply_kimi_low_weekly_guard(t, c, q, active=()):

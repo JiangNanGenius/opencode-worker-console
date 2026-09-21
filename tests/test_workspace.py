@@ -1,7 +1,9 @@
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -87,6 +89,46 @@ class WorkspaceTests(unittest.TestCase):
         baseline = common.read_json(common.artifact_dir(t['id']) / 'baseline.json', {})
         self.assertIn('a.txt', baseline['files'])
         self.assertIsNotNone(baseline['source_status'])
+
+    def isolated_task(self, task_id='job-isolated'):
+        subprocess.run(['git', 'init', '-q'], cwd=str(self.work), check=True)
+        (self.work / 'a.txt').write_text('original\n')
+        subprocess.run(['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.com',
+                        'add', 'a.txt'], cwd=str(self.work), check=True)
+        subprocess.run(['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.com',
+                        'commit', '-qm', 'initial'], cwd=str(self.work), check=True)
+        return {'id': task_id, 'title': 'isolated', 'source_dir': str(self.work),
+                'directory': str(self.state / 'worktrees' / task_id), 'workspace': 'isolated',
+                'status': 'completed', 'mode': 'write', 'scopes': ['a.txt']}
+
+    def test_release_unchanged_isolated_worktree(self):
+        task = self.isolated_task()
+        path = Path(workspace.prepare(task))
+        status = workspace.isolated_release_status(task)
+        self.assertTrue(status['eligible'])
+        self.assertEqual(status['reason'], 'no_changes')
+        released = workspace.release_isolated(task)
+        self.assertTrue(released['released'])
+        self.assertFalse(path.exists())
+
+    def test_release_retains_unintegrated_changes(self):
+        task = self.isolated_task('job-isolated-changed')
+        path = Path(workspace.prepare(task))
+        (path / 'a.txt').write_text('worker change\n')
+        status = workspace.release_isolated(task)
+        self.assertFalse(status['released'])
+        self.assertEqual(status['reason'], 'unintegrated_changes')
+        self.assertTrue(path.exists())
+
+    def test_release_integrated_worktree(self):
+        task = self.isolated_task('job-isolated-integrated')
+        path = Path(workspace.prepare(task))
+        (path / 'a.txt').write_text('integrated result\n')
+        task['integrated_at'] = time.time()
+        released = workspace.release_isolated(task)
+        self.assertTrue(released['released'])
+        self.assertEqual(released['reason'], 'integrated')
+        self.assertFalse(path.exists())
 
 
 if __name__ == '__main__':

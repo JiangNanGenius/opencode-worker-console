@@ -833,6 +833,19 @@ class KimiWindowNormalizationTests(unittest.TestCase):
         names = [w['name'] for w in result['windows']]
         self.assertEqual(names, ['overall'])
         self.assertTrue(result['available'])
+        self.assertEqual(result['windows'][0]['duration_minutes'], 10080)
+
+    def test_low_weekly_guard_uses_time_until_reset(self):
+        now = time.time()
+        base = {'state': 'ok', 'stale': False, 'available': True,
+                'windows': [{'name': 'overall', 'valid': True, 'remaining_percent': 3,
+                             'duration_minutes': 10080}]}
+        c = {'kimi_low_weekly_threshold_percent': 5}
+        far = dict(base, windows=[dict(base['windows'][0], resets_at=now + 86400)])
+        near = dict(base, windows=[dict(base['windows'][0], resets_at=now + 3600)])
+        with patch.object(quota.time, 'time', return_value=now):
+            self.assertEqual(quota.kimi_low_weekly({'kimi-for-coding': far}, c), (True, 3.0))
+            self.assertEqual(quota.kimi_low_weekly({'kimi-for-coding': near}, c), (False, 3.0))
 
     def test_limit_7d_fallback_used_when_overall_is_unusable(self):
         result = quota.normalize('kimi-for-coding', {

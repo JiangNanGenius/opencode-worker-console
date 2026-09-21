@@ -338,15 +338,20 @@ Workspace binding uses `/experimental/control-plane/move-session`, with `moveCha
 It changes the native session directory and preserves the task's original workspace/evidence.
 New sessions and tasks accept an explicit workspace; named workspace shortcuts are local.
 
-Permanent deletion in the browser requires typing the title. The CLI `--yes` path is for a
-coordinator acting on an explicit user request. Neither path deletes active session trees.
-Worker task records, summaries, reports and patches remain after native conversation deletion.
+Permanent deletion in the session library requires typing the title. The CLI `--yes` path is
+for a coordinator acting on an explicit user request. Neither path deletes active session
+trees. Task-list batch cleanup has its own confirmation: it writes the compact accounting
+ledger, deletes linked native conversations and disposable evidence, and releases an isolated
+worktree only after integration or when its Git status proves that the worker made no changes.
+Unintegrated work remains as a visible task for review.
 
 Cleanup is opt-in in a fresh public installation. It defaults to a 5 GiB trigger, 10 GiB target,
 30-day age floor and retention of the latest 20 tasks. Only owned runtime data and pool-linked,
-old archived sessions are eligible. Worktrees, final reports, patches and task records remain.
-A parent archive with any ineligible descendant is retained. Removed file byte totals are
-estimates, not exact disk-space attribution. Cleanup produces a private `cleanup-last.json`.
+old archived sessions are eligible. Expired bulky evidence plus integrated or provably unchanged
+isolated worktrees may be reclaimed; unintegrated changes, compact usage records, patches needed
+for review and recent tasks remain. A parent archive with any ineligible descendant is retained.
+Removed file byte totals are estimates, not exact disk-space attribution. Cleanup produces a
+private `cleanup-last.json`.
 
 Existing sessions can switch between worktrees of the same Git project. OpenCode 1.18.30 rejects cross-project migration; create a new session bound to the target project instead.
 

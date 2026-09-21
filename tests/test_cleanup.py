@@ -207,7 +207,7 @@ class CleanupTests(unittest.TestCase):
         self.assertTrue((releases / names[2]).exists())
 
     # -- evidence --------------------------------------------------------
-    def test_preserves_evidence_report_and_worktrees(self):
+    def test_preserves_integration_evidence_and_unintegrated_worktrees(self):
         self.enabled()
         self.disk['free'] = 1 * cleanup.GiB
         self.add_task('job-keep', 'completed', age_days=90)
@@ -218,9 +218,9 @@ class CleanupTests(unittest.TestCase):
         task_path = common.task_path('job-keep')
         result = cleanup.run(apply=True)
         self.assertTrue(result['applied'])
-        for name in ('result.json', 'summary.md', 'changes.patch', 'baseline.json'):
+        for name in ('summary.md', 'changes.patch', 'baseline.json'):
             self.assertTrue((art / name).exists(), name)
-        for name in ('before', 'after', 'messages.json'):
+        for name in ('before', 'after', 'messages.json', 'result.json'):
             self.assertFalse((art / name).exists(), name)
         self.assertTrue(task_path.exists())
         self.assertTrue((worktree / 'unintegrated.txt').exists())

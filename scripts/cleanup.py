@@ -8,7 +8,8 @@ deliberately conservative:
 * The default policy is disabled. Removal only runs when the configured
   ``cleanup.enabled`` is true or the operator passes an explicit ``--force``.
 * Only data under ``common.STATE`` (our own runtime) and OpenCode sessions
-  linked to our own terminal tasks are ever touched. Worktrees are retained.
+  linked to our own terminal tasks are ever touched. An isolated worktree is
+  released only after integration or when it is proven unchanged.
 * Every local path is refused when it is a symlink, resolves outside STATE, or
   names a shared container directory.
 * Sessions are deleted through ``management.update_session`` so its
@@ -27,6 +28,7 @@ import time
 
 import common
 import management
+import workspace
 
 GiB = 1024 ** 3
 
@@ -209,7 +211,19 @@ def _artifact_items(task_id):
     if messages.is_file() and not messages.is_symlink():
         items.append({'kind': 'artifact_messages', 'task_id': task_id, 'path': str(messages),
                       'bytes': _file_size(messages)})
+    result = art / 'result.json'
+    if result.is_file() and not result.is_symlink():
+        items.append({'kind': 'artifact_result', 'task_id': task_id, 'path': str(result),
+                      'bytes': _file_size(result)})
     return items
+
+
+def _worktree_item(task):
+    status = workspace.isolated_release_status(task)
+    if not status.get('eligible'):
+        return None
+    return {'kind': 'worktree', 'task_id': task['id'], 'path': status['path'],
+            'bytes': status.get('bytes', 0)}
 
 
 def _status_type(value):
@@ -278,6 +292,9 @@ def _plan(pol, now):
     eligible = eligible_tasks(pol, now)
     for task_id in sorted(eligible):
         items.extend(_artifact_items(task_id))
+        worktree = _worktree_item(eligible[task_id])
+        if worktree:
+            items.append(worktree)
     errors = []
     try:
         items.extend(_session_items(eligible, pol, now))
@@ -432,6 +449,12 @@ def _apply(items, pol, force):
             if item['kind'] == 'session':
                 if _delete_session(item) == 'missing':
                     skipped.append({'kind': item['kind'], 'target': _target(item), 'reason': 'missing'})
+                    continue
+            elif item['kind'] == 'worktree':
+                released = workspace.release_isolated(common.task(item['task_id']))
+                if not released.get('released'):
+                    skipped.append({'kind': item['kind'], 'target': _target(item),
+                                    'reason': released.get('reason', 'not_releasable')})
                     continue
             else:
                 _remove_local(item)

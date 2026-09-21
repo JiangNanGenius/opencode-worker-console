@@ -5,7 +5,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import time
-from common import ACTIVE, STATE, artifact_dir, read_json, write_json
+from common import TERMINAL, STATE, artifact_dir, read_json, write_json
 
 MAX_SNAPSHOT = 256 * 1024 * 1024
 
@@ -212,3 +212,75 @@ def integrate(t, apply=False):
         run(['git', 'apply', '--binary', '-p2', '-'], root, data=patch)
     return {'applied': apply, 'changed_files': changed, 'check': 'passed',
             'note': 'Astra must inspect the diff before --apply and validate the integrated result afterwards'}
+
+
+def isolated_release_status(t):
+    """Describe whether a terminal isolated worktree is safe to release.
+
+    An integrated task is safe to release. An unintegrated task is only safe when
+    the worktree still has exactly the Git status copied from the source baseline,
+    which proves that the worker left no repository changes behind. Anything else
+    is retained for review. Paths are fixed to STATE/worktrees/<task id>; caller
+    supplied paths are never removed.
+    """
+    if not isinstance(t, dict) or t.get('workspace') != 'isolated':
+        return {'eligible': False, 'reason': 'not_isolated', 'bytes': 0}
+    if t.get('status') not in TERMINAL:
+        return {'eligible': False, 'reason': 'task_active', 'bytes': 0}
+    task_id = t.get('id')
+    expected = STATE / 'worktrees' / str(task_id)
+    if expected.is_symlink():
+        return {'eligible': False, 'reason': 'unsafe_worktree_path', 'bytes': 0}
+    if not expected.exists():
+        return {'eligible': False, 'reason': 'worktree_missing', 'bytes': 0}
+    try:
+        if expected.resolve().parent != (STATE / 'worktrees').resolve():
+            return {'eligible': False, 'reason': 'unsafe_worktree_path', 'bytes': 0}
+    except OSError:
+        return {'eligible': False, 'reason': 'unsafe_worktree_path', 'bytes': 0}
+
+    baseline = read_json(artifact_dir(task_id) / 'baseline.json', {})
+    no_worker_changes = False
+    try:
+        current_status = git_status(expected)
+        source_status = baseline.get('source_status')
+        no_worker_changes = current_status is not None and current_status == source_status
+    except (OSError, RuntimeError, ValueError):
+        current_status = None
+    if not t.get('integrated_at') and not no_worker_changes:
+        return {'eligible': False, 'reason': 'unintegrated_changes', 'bytes': 0}
+
+    source = Path(t.get('source_dir') or '')
+    root = git_root(source) if source.is_dir() else None
+    if root is None:
+        return {'eligible': False, 'reason': 'source_repository_missing', 'bytes': 0}
+    listed = run(['git', 'worktree', 'list', '--porcelain'], root).stdout.decode(errors='replace')
+    registered = {Path(line[9:]).resolve() for line in listed.splitlines() if line.startswith('worktree ')}
+    if expected.resolve() not in registered:
+        return {'eligible': False, 'reason': 'worktree_not_registered', 'bytes': 0}
+
+    total = 0
+    for base, _, files in os.walk(str(expected), followlinks=False):
+        for name in files:
+            path = Path(base) / name
+            try:
+                if not path.is_symlink():
+                    total += path.stat().st_size
+            except OSError:
+                pass
+    return {'eligible': True, 'reason': 'integrated' if t.get('integrated_at') else 'no_changes',
+            'bytes': total, 'path': str(expected), 'source_root': str(root)}
+
+
+def release_isolated(t):
+    """Release one isolated worktree after the read-only eligibility check."""
+    status = isolated_release_status(t)
+    if not status.get('eligible'):
+        return {'released': False, 'reason': status.get('reason'), 'bytes': 0}
+    expected = Path(status['path'])
+    root = Path(status['source_root'])
+    run(['git', 'worktree', 'remove', '--force', str(expected)], root)
+    run(['git', 'worktree', 'prune'], root)
+    if expected.exists():
+        raise RuntimeError('Git did not release the isolated worktree')
+    return {'released': True, 'reason': status['reason'], 'bytes': status['bytes']}

@@ -313,5 +313,7 @@ zero allowance. Keep the selected model's maximum reasoning when continuing.
   needed by this CLI. Active sessions/descendants are refused and retained task evidence
   is separate. Do not delete unrelated sessions.
 - `cleanup` previews; `cleanup --apply` follows the enabled low-space retention policy.
-  Use `--force` only for explicit cleanup authorization beyond that trigger. Preserve
-  worktrees, final patches/reports and recent tasks. Details are in operations.md.
+  Use `--force` only for explicit cleanup authorization beyond that trigger. It may
+  release integrated or provably unchanged isolated worktrees and expired bulky evidence;
+  preserve unintegrated changes, compact usage records and recent tasks. Details are in
+  operations.md.
