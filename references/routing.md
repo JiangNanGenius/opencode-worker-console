@@ -191,6 +191,16 @@ model-origin HTTP 429 can continue within the same OpenCode session on the next 
 transition keeps the transcript and workspace, adds the failed provider to the exclusion set,
 and instructs the new model not to repeat completed or external side effects.
 
+When conservation is active, an optional long-task rule can also queue one same-session model
+change after the configured age for automatically routed Fast or Normal tasks. This waits for the
+current model turn to finish and never aborts it. Deep tasks and explicit profile pins remain
+stable. The task keeps its ID, workspace and transcript; route history records
+`queued_boundary_switch`, and the continuation must inspect existing work before acting. The
+console can send Bark notifications for conservation changes, provider exhaustion/recovery and
+these model transitions. Ordinary bridge-owned changes are silent to the coordinator and remain
+in route history for diagnostics; only final fallback or an inability to continue is surfaced.
+Notifications observe routing decisions; they never make them.
+
 ## AFP-equivalent
 
 Worker Desk stores cost assumptions separately from real quota. Defaults are configurable in the

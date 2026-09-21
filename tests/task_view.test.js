@@ -87,6 +87,16 @@ test('completed details stop polling but can be explicitly refreshed', async () 
  c.close();c.open('a');await tick();assert.equal(calls,3);
 });
 
+test('detail shows seeded task immediately and a timeout releases loading state', async () => {
+ const c=View.createController({changed:()=>{},timeoutMs:5,translate:key=>key==='detail.slow'?'Live progress took too long':key,request:(_path,{signal})=>new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>{const e=Error('aborted');e.name='AbortError';reject(e);} ))});
+ c.open('a',{task:{id:'a',status:'running'},activity:{events:[]},usage:{total:7}});
+ assert.equal(c.state().detail.task.id,'a');
+ await new Promise(resolve=>setTimeout(resolve,15));
+ assert.equal(c.state().pending,false);
+ assert.equal(c.state().detail.usage.total,7);
+ assert.match(c.state().error,/too long/);
+});
+
 // Minimal DOM adapter tests the real app's row reconciliation without a browser,
 // services, credentials or model calls. It does not assert visual rendering.
 class Element {
@@ -161,6 +171,8 @@ test('quota range distinguishes paused sampling, collection and burn estimates',
  assert.equal(h.run("quotaPace({remaining_percent:70,duration_minutes:10080,resets_at:new Date(Date.now()+100*3600000).toISOString(),consumption_estimate:{hours:40}})[0]"),'on-track');
  assert.doesNotMatch(h.run("quotaTrack(70,'remaining')"),/line|pace-marker/);
   assert.match(h.run("quotaWindows([{name:'AFPFiveHour',remaining_percent:70,duration_minutes:300,resets_at:new Date(Date.now()+3600000).toISOString()}],true)"),/quota-window-reset/);
+  const details=h.run("quotaWindows([{name:'AFPFiveHour',remaining_percent:70,duration_minutes:300,resets_at:new Date(Date.now()+3600000).toISOString(),consumption_estimate:{hours:1}},{name:'AFPWeekly',remaining_percent:60,duration_minutes:10080,resets_at:new Date(Date.now()+100*3600000).toISOString(),consumption_estimate:{hours:20}}],true)");
+  assert.equal((details.match(/quota\.bottleneckRunway/g)||[]).length,1);
 });
 
 test('work pool uses fitted runtime, with DeepSeek as a small observed share', async () => {

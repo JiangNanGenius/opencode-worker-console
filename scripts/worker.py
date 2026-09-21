@@ -15,6 +15,7 @@ from common import (STATE, HttpFailure, api, artifact_dir, config, read_json, re
 from workspace import collect_changes, prepare
 import diagnostics
 import quota
+import routing
 import task_activity
 
 RESULT_SCHEMA = {
@@ -112,12 +113,12 @@ def prompt(t, continuation=None):
     transition = ''
     if continuation:
         transition = """
-This is a quota/capacity continuation in the existing OpenCode session. Read the
+This is a routing continuation in the existing OpenCode session. Read the
 prior conversation and inspect the current workspace before acting. Continue only
 the unfinished outcome. Do not repeat completed edits, deployments, messages,
 payments, destructive operations or other external side effects. The bridge changed
-the model because the previous provider slot could not continue; this is not a new
-task and does not expand authorization.
+the model because of the transition evidence below; this is not a new task and does
+not expand authorization.
 Transition evidence:
 """ + json.dumps(continuation, ensure_ascii=False, indent=2) + '\n'
     return instructions(t.get('auto_approve', config().get('auto_approve', True))) + transition + \
@@ -353,6 +354,11 @@ def reroute_after_capacity_stop(t, provider, trigger):
                 'reason': trigger, 'previous_provider': provider,
                 'selected_profile': profile, 'selected_provider': next_provider})}]})
         update(t['id'], dispatch_acknowledged=True)
+        try:
+            import notifications
+            notifications.model_switch(t, previous['profile'], profile, trigger)
+        except Exception:
+            pass
         return True
     except HttpFailure as e:
         error = diagnostics.exception(e, 'quota_reroute_dispatch',
@@ -366,6 +372,103 @@ def reroute_after_capacity_stop(t, provider, trigger):
             return False
         update(t['id'], status='uncertain', reason='quota_reroute_acknowledgement_unknown',
                errors=(t.get('errors') or []) + [error])
+        return True
+
+
+def proactive_reroute_if_needed(t, native_status):
+    """Queue a model change at the next OpenCode message boundary for a long task.
+
+    The current turn is never aborted.  OpenCode accepts the continuation in the
+    same session and runs it after the current turn, so partial work and context are
+    retained.  Only automatic Fast/Normal tasks participate; Deep and operator pins
+    remain stable. Level 1 can use only the configured bounded spillover target,
+    while Level 2 can move Normal work into the configured Fast source pool.
+    """
+    c = config()
+    if c.get('proactive_long_task_reroute', True) is not True or \
+            (t.get('requested_profile') or 'auto') != 'auto' or \
+            t.get('tier') == 'deep' or native_status.get('type') != 'busy':
+        return False
+    after = c.get('proactive_reroute_after_seconds', 900)
+    if isinstance(after, bool) or not isinstance(after, (int, float)):
+        after = 900
+    if time.time() - float(t.get('started_at') or time.time()) < max(300, float(after)):
+        return False
+    q = quota.view(read_json(STATE / 'quota.json', {}))
+    guidance = quota.tier_guidance(c, q)
+    level = int(guidance.get('conservation_level') or 0)
+    if level <= 0 or level in (t.get('proactive_reroute_levels') or []):
+        return False
+    try:
+        profile, reason = quota.route(dict(t, requested_profile='auto'), c, q)
+    except Exception:
+        return False
+    if not profile or profile == t.get('profile'):
+        return False
+    policy = routing.configured(c)
+    spill = routing.configured_spillover(c, policy)
+    if level == 1 and (not spill or profile != spill.get('profile')):
+        return False
+    if level == 2:
+        fast_profiles = {entry.get('profile') for stage in (policy or {}).get('fast', []) for entry in stage}
+        if profile not in fast_profiles and (not spill or profile != spill.get('profile')):
+            return False
+    cfg = c['profiles'][profile]
+    next_provider, model = cfg['model'].split('/', 1)
+    previous_profile = t.get('profile')
+    previous_provider = str((c.get('profiles', {}).get(previous_profile) or {}).get('model', '')).split('/', 1)[0]
+    message_id = next_message_id()
+    now = time.time()
+    history = list(t.get('route_history') or [])
+    history.append({'from_profile': previous_profile, 'from_provider': previous_provider,
+                    'to_profile': profile, 'to_provider': next_provider,
+                    'trigger': 'quota_conservation_level_' + str(level),
+                    'route_reason': reason, 'at': now, 'queued_boundary_switch': True})
+    levels = sorted(set((t.get('proactive_reroute_levels') or []) + [level]))
+    previous = {'profile': previous_profile, 'message_id': t.get('message_id'),
+                'dispatch_attempted_at': t.get('dispatch_attempted_at'),
+                '_billing_dispatch': t.get('_billing_dispatch')}
+    t = update(t['id'], profile=profile, route_reason=reason, route_history=history,
+               proactive_reroute_levels=levels, message_id=message_id,
+               dispatch_attempted_at=now, dispatch_acknowledged=False,
+               _billing_dispatch={'provider': next_provider,
+                                  'identity': credential_identity(next_provider), 'at': now},
+               status='running', reason=None)
+    trigger = 'quota_conservation_level_' + str(level)
+    try:
+        call(t, '/prompt_async', 'POST', {
+            'messageID': message_id, 'agent': profile,
+            'model': {'providerID': next_provider, 'modelID': model},
+            **({'variant': cfg['variant']} if cfg.get('variant') else {}),
+            'parts': [{'type': 'text', 'text': prompt(t, {
+                'reason': trigger, 'previous_provider': previous_provider,
+                'selected_profile': profile, 'selected_provider': next_provider,
+                'safe_boundary': 'queued_after_current_turn'})}]})
+        # Ordinary bridge-owned model changes stay transparent to the coordinator.
+        # Route history remains available for diagnostics; only final fallback and
+        # real attention states create a user-facing routing notice.
+        update(t['id'], dispatch_acknowledged=True)
+        try:
+            import notifications
+            notifications.model_switch(t, previous_profile, profile, trigger)
+        except Exception:
+            pass
+        return True
+    except HttpFailure as error:
+        history[-1]['accepted'] = False
+        history[-1]['error'] = 'http_' + str(error.status) if error.status else 'transport'
+        # A rejected queued continuation did not take ownership; restore the live turn.
+        if error.status and 400 <= error.status < 500:
+            update(t['id'], profile=previous['profile'], message_id=previous['message_id'],
+                   dispatch_attempted_at=previous['dispatch_attempted_at'],
+                   _billing_dispatch=previous['_billing_dispatch'], route_history=history,
+                   proactive_reroute_levels=[x for x in levels if x != level],
+                   errors=(t.get('errors') or []) + [diagnostics.exception(
+                       error, 'proactive_quota_reroute', dispatched=False)])
+            return False
+        update(t['id'], status='uncertain', reason='proactive_reroute_acknowledgement_unknown',
+               errors=(t.get('errors') or []) + [diagnostics.exception(
+                   error, 'proactive_quota_reroute', dispatched=True)])
         return True
 
 
@@ -457,10 +560,20 @@ def _finish(t, messages, forced_status=None, reason=None):
                                        quota.view(read_json(STATE / 'quota.json', {})))
         except Exception as e:
             errors.append(diagnostics.exception(e, 'billing_recovery'))
-    return update(t['id'], status=status, reason=reason, finished_at=time.time(),
-                  elapsed_seconds=round(time.time() - t['started_at'], 2),
-                  artifact_dir=str(art), summary=summary[:1600], actual_models=evidence['actual_models'],
-                  review_required=flags, errors=errors, **extra)
+    finished = update(t['id'], status=status, reason=reason, finished_at=time.time(),
+                      elapsed_seconds=round(time.time() - t['started_at'], 2),
+                      artifact_dir=str(art), summary=summary[:1600], actual_models=evidence['actual_models'],
+                      review_required=flags, errors=errors, **extra)
+    if status == 'completed' and finished.get('notify_on_complete') is True and \
+            not finished.get('completion_notification_sent_at'):
+        try:
+            import notifications
+            delivered = notifications.task_completed(finished)
+            if delivered.get('sent'):
+                finished = update(t['id'], completion_notification_sent_at=delivered.get('at'))
+        except Exception:
+            pass
+    return finished
 
 
 def run_task(task_id, shutdown):
@@ -521,6 +634,8 @@ def run_task(task_id, shutdown):
                 seen = any(m.get('info', {}).get('id') == t['message_id'] for m in messages)
                 native_status = api('/session/status', t['directory']).get(t['session_id'], {'type': 'idle'})
                 is_idle = native_status.get('type') == 'idle'
+                if proactive_reroute_if_needed(t, native_status):
+                    continue
                 observed_errors = diagnostics.from_messages(messages)
                 record_billing_errors(t, observed_errors)
                 record_billing_success(t, messages)

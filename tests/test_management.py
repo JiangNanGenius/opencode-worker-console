@@ -355,7 +355,10 @@ class ManagementTests(unittest.TestCase):
                                               'kimi_low_weekly_k3_limit',
                                               'fast_bias_runway_percent',
                                               'budget_signals',
-                                              'auto_reroute_on_quota_exhaustion'})
+                                              'auto_reroute_on_quota_exhaustion',
+                                              'proactive_long_task_reroute',
+                                              'proactive_reroute_after_seconds',
+                                              'notifications'})
         self.assertEqual(result['economics']['afp_cny_per_unit'], 0.002)
         self.assertEqual(result['economics']['kimi_plan_cny'], 699.0)
         self.assertEqual(result['max_parallel_per_owner'], 4)

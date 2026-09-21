@@ -150,6 +150,8 @@ def settings():
            'kimi_low_weekly_k3_limit': c.get('kimi_low_weekly_k3_limit', 1),
            'fast_bias_runway_percent': c.get('fast_bias_runway_percent', 38),
            'auto_reroute_on_quota_exhaustion': c.get('auto_reroute_on_quota_exhaustion', True),
+           'proactive_long_task_reroute': c.get('proactive_long_task_reroute', True),
+           'proactive_reroute_after_seconds': c.get('proactive_reroute_after_seconds', 900),
            'budget_signals': {}, 'revision': c.get('revision', 0),
            'auto_approve': c.get('auto_approve', True)}
     import cleanup
@@ -177,6 +179,8 @@ def settings():
         if spillover:
             out['quota_spillover'] = spillover
     out['cleanup'] = cleanup.policy()
+    import notifications
+    out['notifications'] = notifications.normalize(c.get('notifications'))
     return out
 
 
@@ -244,6 +248,16 @@ def _validate_settings(body):
         if not isinstance(body['auto_reroute_on_quota_exhaustion'], bool):
             raise ValueError('auto_reroute_on_quota_exhaustion must be boolean')
         result['auto_reroute_on_quota_exhaustion'] = body['auto_reroute_on_quota_exhaustion']
+    if 'proactive_long_task_reroute' in body:
+        if not isinstance(body['proactive_long_task_reroute'], bool):
+            raise ValueError('proactive_long_task_reroute must be boolean')
+        result['proactive_long_task_reroute'] = body['proactive_long_task_reroute']
+    if 'proactive_reroute_after_seconds' in body:
+        result['proactive_reroute_after_seconds'] = _int_setting(
+            body, 'proactive_reroute_after_seconds', 300, 86400)
+    if 'notifications' in body:
+        import notifications
+        result['notifications'] = notifications.validate(body['notifications'])
     if 'auto_approve' in body:
         if not isinstance(body['auto_approve'], bool):
             raise ValueError('auto_approve must be boolean')

@@ -196,8 +196,10 @@ def public_task(t):
     keys = ['id', 'title', 'status', 'profile', 'requested_profile', 'profile_reason', 'tier', 'mode', 'urgency', 'complexity',
             'group_id', 'group_title', 'parent_task_id', 'owner_thread_id',
             'workspace', 'source_dir', 'directory', 'scopes', 'targets', 'resources',
+            'notify_on_complete', 'completion_notification_sent_at',
             'excluded_providers', 'session_id', 'session_deleted', 'session_directory', 'guidance',
             'route_history',
+            'proactive_reroute_levels',
             'created_at', 'started_at', 'finished_at', 'reason', 'queue_reason', 'route_reason',
             'actual_models', 'fallback_used', 'routing_notice', 'review_required', 'cancellation', 'artifact_dir',
             'summary', 'elapsed_seconds', 'errors', 'recovery', 'auto_approve']

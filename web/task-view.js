@@ -38,7 +38,8 @@
     const source = activity.source === 'live' ? 'activity.live' : 'activity.saved';
     return `<section class="task-activity" aria-label="${esc(tr('activity.heading'))}"><div class="activity-heading"><h3>${esc(tr('activity.heading'))}</h3><span class="muted">${esc(tr(source))}${activity.sampled_at ? ' · ' + esc(clock(activity.sampled_at)) : ''}</span></div>${activity.stale ? `<p class="activity-warning" role="status">${esc(tr('activity.stale'))}${activity.error ? ' ' + esc(activity.error) : ''}</p>` : ''}<div class="activity-scroll" tabindex="0" role="region" aria-label="${esc(tr('activity.heading'))}">${rows ? `<ol class="activity-events">${rows}</ol>` : `<p class="muted activity-empty">${esc(tr('activity.empty'))}</p>`}</div>${activity.has_more ? `<p class="muted">${esc(tr('activity.recentOnly'))}</p>` : ''}</section>`;
   }
-  function createController({ request, changed, visible = () => true }) {
+  function createController({ request, changed, visible = () => true, timeoutMs = 8000,
+    translate = key => key }) {
     let selected = null, generation = 0, activeRequest = null;
     const cache = new Map();
     let error = null, pending = false;
@@ -53,24 +54,29 @@
       const terminal = ['completed', 'failed', 'cancelled', 'needs_attention', 'timed_out'];
       if (!force && !error && terminal.includes(cache.get(selected)?.task?.status)) return;
       const id = selected, version = generation, abort = new AbortController();
+      const timeout = setTimeout(() => abort.abort(), timeoutMs);
       activeRequest = abort; pending = true; notify();
       try {
         const detail = await request('/console-api/task/' + encodeURIComponent(id), { signal: abort.signal });
         if (version !== generation || selected !== id) return;
         cache.set(id, detail); error = null;
       } catch (failure) {
-        if (version !== generation || selected !== id || failure.name === 'AbortError') return;
-        error = failure.message || String(failure);
+        if (version !== generation || selected !== id) return;
+        error = failure.name === 'AbortError' ? translate('detail.slow') :
+          (failure.message || String(failure));
       } finally {
+        clearTimeout(timeout);
         if (version === generation && selected === id) {
           pending = false; activeRequest = null; notify();
         }
       }
     }
-    function open(id) {
+    function open(id, initial = null) {
       if (selected === id) { close(); return; }
       generation++; activeRequest?.abort(); activeRequest = null;
-      selected = id; pending = false; error = null; notify(); refresh(true);
+      selected = id; pending = false; error = null;
+      if (initial && initial.task?.id === id) cache.set(id, initial);
+      notify(); refresh(true);
     }
     return { open, close, refresh, state, cache };
   }

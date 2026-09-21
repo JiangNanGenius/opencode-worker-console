@@ -67,6 +67,19 @@ delegate-opencode quota --refresh
 
 The same two references can be registered from **Models & routing → Quota query credentials** in the authenticated console. The form accepts only an environment-variable name or an absolute owner-only file path; it never accepts, stores in configuration, or echoes the secret value itself.
 
+Optional Bark notifications use the same boundary. Put the complete private Bark endpoint in one
+owner-only file outside every repository and register the fixed reference `bark-endpoint`:
+
+```sh
+delegate-opencode credential register bark-endpoint --file /private/path/bark-endpoint
+```
+
+The notification adapter resolves it only inside the service process and sends a bounded HTTPS
+POST. Configuration stores the reference name and notification preferences, never the endpoint.
+The adapter never persists or returns the endpoint, response body, headers or raw network error.
+The payload follows Bark's documented JSON POST fields; see the
+[official Bark tutorial](https://github.com/Finb/Bark/blob/master/docs/en-us/tutorial.md).
+
 The console returns only the safe source label and normalized plan windows. It never returns
 the values, their hashes or source paths. Without these references, inference still works and
 Ark quota stays unknown.

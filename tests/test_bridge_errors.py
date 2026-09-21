@@ -73,6 +73,19 @@ class ErrorBridgeTests(unittest.TestCase):
         self.assertEqual(result['result']['errors'][0]['exit_code'], 7)
         self.assertEqual(result['result']['errors'][0]['command'], 'example-test')
 
+    def test_opted_in_completed_task_sends_one_notification(self):
+        common.update('job-error', notify_on_complete=True)
+        report = {'outcome': 'done', 'summary': 'Milestone complete',
+                  'evidence': [], 'tests': [], 'unresolved': []}
+        messages = [{'info': {'id': 'msg_reply', 'role': 'assistant',
+                              'providerID': 'test', 'modelID': 'model'},
+                     'parts': [{'type': 'text', 'text': json.dumps(report)}]}]
+        with patch('notifications.task_completed', return_value={'sent': True, 'at': 123.0}) as notify:
+            result = worker.finish(common.task('job-error'), messages)
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual(result['completion_notification_sent_at'], 123.0)
+        notify.assert_called_once()
+
     def test_idle_model_error_finishes_without_completion_timestamp(self):
         messages = [{'info': {'id': 'msg_test', 'role': 'user'}, 'parts': []},
                     {'info': {'id': 'msg_reply', 'role': 'assistant',

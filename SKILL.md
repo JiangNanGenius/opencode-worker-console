@@ -58,6 +58,10 @@ project conventions, runbooks and suitable methods. Do not require a command-by-
   merely because execution is delegated. Ask only for an actual missing decision/access or
   authority that the user has not already supplied. Login, QR and new persistent consent
   remain user steps where required.
+- Add `--notify-on-complete` only for a user-relevant milestone where the coordinator wants one
+  Bark alert after verified worker completion, such as a processed TestFlight build or a finished
+  deployment. Routine tasks omit it. The bridge sends the alert only for `completed`, never for
+  every task, intermediate progress or ordinary model changes.
 
 A read-only example (adapt the objective and acceptance to the actual task):
 
@@ -230,6 +234,16 @@ and keeps `profile=auto`; it must not imitate these provider decisions in its ow
 `conservation_level` from `quota --tier-guidance` when explaining current capacity: `0` is normal,
 `1` is bounded fallback sharing, and `2` is the temporary Normal-to-Fast source shift.
 
+During either conservation level, the bridge may queue one proactive route continuation for an
+eligible long-running automatic Fast or Normal task after the configured age. It does not abort
+the active model turn: the continuation is delivered at the next native session boundary, uses
+the same OpenCode session and workspace, and tells the new model to inspect prior work before
+acting. Deep tasks and explicit profile pins never use this mechanism. A recorded
+`queued_boundary_switch` is progress, not a reason to cancel, restart or replay the task; keep
+waiting on the same job. Ordinary model changes stay silent to the coordinator and remain in
+route history for diagnostics. Operator notifications report the transition but do not change
+routing. Only final fallback or an inability to continue needs an explicit coordinator notice.
+
 Ark Auto (`ark-code-latest`) follows the model setting in the Ark console. Only a console
 setting of Auto enables provider-side automatic routing and its applicable discounts. It
 cannot guarantee K3, but the Worker Desk client ceiling is 1,024,000 so Auto can use a
@@ -348,5 +362,7 @@ zero allowance. Keep the selected model's maximum reasoning when continuing.
 - `cleanup` previews; `cleanup --apply` follows the enabled low-space retention policy.
   Use `--force` only for explicit cleanup authorization beyond that trigger. It may
   release integrated or provably unchanged isolated worktrees and expired bulky evidence;
-  preserve unintegrated changes, compact usage records and recent tasks. Details are in
+  preserve unintegrated changes, compact usage records and recent tasks. A `needs_attention`
+  task becomes reclaimable after 24 idle hours or once a newer task exists under the same
+  coordinator conversation; the history ledger retains its original terminal state. Details are in
   operations.md.

@@ -161,6 +161,26 @@ class CleanupTests(unittest.TestCase):
         self.assertIn('artifact_messages', kinds)
         self.assertTrue(all('path' in c or 'session_id' in c for c in result['candidates']))
 
+    def test_needs_attention_becomes_reclaimable_after_one_day_or_newer_owner_task(self):
+        self.enabled(min_age_days=30, keep_recent=20)
+        old = self.add_task('job-attention-old', 'needs_attention', age_days=2)
+        old.update(owner_thread_id='thread-old', finished_at=time.time() - 2 * 86400)
+        common.write_json(common.task_path(old['id']), old)
+        superseded = self.add_task('job-attention-superseded', 'needs_attention', age_days=0)
+        superseded.update(owner_thread_id='thread-new', finished_at=time.time() - 60,
+                          created_at=time.time() - 120)
+        common.write_json(common.task_path(superseded['id']), superseded)
+        newer = self.add_task('job-newer', 'completed', age_days=0)
+        newer.update(owner_thread_id='thread-new', created_at=time.time() - 30)
+        common.write_json(common.task_path(newer['id']), newer)
+        fresh = self.add_task('job-attention-fresh', 'needs_attention', age_days=0)
+        fresh.update(owner_thread_id='thread-fresh', finished_at=time.time() - 60)
+        common.write_json(common.task_path(fresh['id']), fresh)
+        eligible = cleanup.eligible_tasks(now=time.time())
+        self.assertIn('job-attention-old', eligible)
+        self.assertIn('job-attention-superseded', eligible)
+        self.assertNotIn('job-attention-fresh', eligible)
+
     def test_expired_usage_ledger_is_pruned_even_when_low_disk_cleanup_is_disabled(self):
         self.write_config({'enabled': False, 'usage_retention_days': 1})
         task = self.add_task('job-ledger', 'completed', age_days=2)

@@ -35,7 +35,9 @@ specifications. Fields: `directory`, `objective`, `title`, `acceptance` (string 
 (required for the exceptional explicit profile), `mode` (`read`/`write`), `scopes` (literal relative
 path array, repository-local), `targets` (operational target array such as `ssh:example.com:nginx`),
 `commands` (suggested checks; exact allowlist when Auto Approve is off), `resources` (shared lock-name array),
-`workspace` (`auto`/`shared`/`isolated`), `large`, and `web`. Legacy `urgency` and
+`workspace` (`auto`/`shared`/`isolated`), `large`, `web`, and `notify_on_complete` (boolean).
+The CLI form is `--notify-on-complete`; use it only for a key user-facing milestone that merits
+one Bark alert after successful completion. Legacy `urgency` and
 `complexity` remain accepted and are normalized into a tier.
 Do not put API keys or other secrets in tasks. With Auto Approve enabled (the default),
 all native tools, including web fetching, run without prompts. In restricted mode,

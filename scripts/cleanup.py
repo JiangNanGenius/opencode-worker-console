@@ -104,23 +104,42 @@ def _task_age_days(t, now):
 
 
 def eligible_tasks(pol=None, now=None):
-    """Return old terminal tasks, excluding the most recent keep_recent tasks."""
+    """Return reclaimable terminal tasks.
+
+    Needs-attention evidence becomes reclaimable after 24 idle hours, or as soon
+    as the same Codex owner has produced a newer task. Its original status stays
+    intact for the usage ledger. Other terminal work keeps the configured age and
+    recent-task retention policy.
+    """
     pol = policy() if pol is None else pol
     now = time.time() if now is None else now
     ordered = sorted((t for t in common.tasks() if isinstance(t, dict)),
                      key=lambda t: t.get('created_at') or 0, reverse=True)
     retained = {t.get('id') for t in ordered[:max(0, pol['keep_recent'])]}
+    newest_by_owner = {}
+    for item in ordered:
+        owner = item.get('owner_thread_id') or item.get('group_id')
+        created = item.get('created_at') or 0
+        if owner and owner not in newest_by_owner:
+            newest_by_owner[owner] = created
     eligible = {}
     for t in ordered:
         tid = t.get('id')
-        if not tid or tid in retained:
+        if not tid:
             continue
         status = t.get('status')
         if status in common.ACTIVE or status == 'queued':
             continue
         if status not in common.TERMINAL:
             continue
-        if _task_age_days(t, now) < pol['min_age_days']:
+        owner = t.get('owner_thread_id') or t.get('group_id')
+        superseded_attention = status == 'needs_attention' and owner and \
+            newest_by_owner.get(owner, 0) > (t.get('created_at') or 0)
+        stale_attention = status == 'needs_attention' and _task_age_days(t, now) >= 1
+        attention_ready = superseded_attention or stale_attention
+        if tid in retained and not attention_ready:
+            continue
+        if not attention_ready and _task_age_days(t, now) < pol['min_age_days']:
             continue
         eligible[tid] = t
     return eligible

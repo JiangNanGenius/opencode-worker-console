@@ -72,8 +72,8 @@ def service_health():
 
 
 def quota_credential_refs():
-    """Return only quota-control reference metadata, never unrelated references."""
-    allowed = {'volcengine-control-ak', 'volcengine-control-sk'}
+    """Return only console-managed reference metadata, never secret values."""
+    allowed = {'volcengine-control-ak', 'volcengine-control-sk', 'bark-endpoint'}
     return {'credentials': [{key: item.get(key) for key in
                              ('name', 'source', 'available', 'registered_at')}
                             for item in credentials.listing().get('credentials', [])
@@ -484,11 +484,11 @@ class Handler(BaseHTTPRequestHandler):
             elif path == '/console-api/credentials':
                 action = body.get('action')
                 name = body.get('name')
-                # The console exposes only the two fixed Ark quota references.
+                # The console exposes only fixed references used by built-in adapters.
                 # Values are never accepted or returned; source metadata points
                 # to an owner-only local file or a service environment variable.
-                if name not in ('volcengine-control-ak', 'volcengine-control-sk'):
-                    raise ValueError('Unsupported quota credential reference')
+                if name not in ('volcengine-control-ak', 'volcengine-control-sk', 'bark-endpoint'):
+                    raise ValueError('Unsupported credential reference')
                 if action == 'register':
                     registered = credentials.register(name, file=body.get('file'), env=body.get('env'))
                     result = {key: registered.get(key) for key in

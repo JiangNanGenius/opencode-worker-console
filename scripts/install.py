@@ -108,6 +108,8 @@ TOP_LEVEL_DEFAULTS = {
     'kimi_low_weekly_threshold_percent': 5,
     'kimi_low_weekly_k3_limit': 1,
     'auto_reroute_on_quota_exhaustion': True,
+    'proactive_long_task_reroute': True,
+    'proactive_reroute_after_seconds': 900,
     'auto_approve': True,
 }
 ACTIVE_STATUSES = {'queued', 'starting', 'running', 'stopping', 'uncertain'}

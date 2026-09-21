@@ -284,6 +284,26 @@ def _resolve_uses(uses):
     return resolved
 
 
+def _resolve_reference(name):
+    """Resolve one reference for a trusted in-process adapter.
+
+    Callers must never serialize, log, or return the value. Public CLI and console
+    surfaces continue to expose metadata only.
+    """
+    _validate_name(name)
+    entry = _load_registry().get(name)
+    if not isinstance(entry, dict):
+        raise CredentialError('Unknown credential reference')
+    if entry.get('source') == 'file':
+        return _read_file_value(entry.get('path'))
+    if entry.get('source') == 'env':
+        value = os.environ.get(entry.get('env'), '')
+        if not value:
+            raise CredentialError('Credential environment variable is unavailable')
+        return value
+    raise CredentialError('Credential reference is unavailable')
+
+
 def _representations(values):
     reps = set()
     for value in values:

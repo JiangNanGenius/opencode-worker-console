@@ -100,6 +100,14 @@ class PoolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'conflicts'):
             self.new(profile='auto', tier='normal', urgency='fast')
 
+    def test_completion_notification_requires_explicit_boolean_opt_in(self):
+        ordinary = self.new()
+        important = self.new(notify_on_complete=True)
+        self.assertFalse(ordinary['notify_on_complete'])
+        self.assertTrue(important['notify_on_complete'])
+        with self.assertRaisesRegex(ValueError, 'must be boolean'):
+            self.new(notify_on_complete='yes')
+
     def test_ordered_routing_requires_a_reason_for_an_explicit_profile(self):
         self.c['routing_policy'] = {
             'background': [[{'profile': 'senior-code', 'weight': 1}],

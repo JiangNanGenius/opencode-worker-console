@@ -166,6 +166,9 @@ def submit(spec):
         raise ValueError('Task directory does not exist')
     if not spec.get('objective', '').strip():
         raise ValueError('A non-empty objective is required')
+    notify_on_complete = spec.get('notify_on_complete', False)
+    if not isinstance(notify_on_complete, bool):
+        raise ValueError('notify_on_complete must be boolean')
     requested_profile = spec.get('profile', 'auto')
     if requested_profile not in {'auto', *c['profiles']}:
         raise ValueError('Unknown profile')
@@ -235,6 +238,7 @@ def submit(spec):
         'workspace': workspace, 'source_dir': str(root), 'scopes': scopes, 'targets': targets,
         'commands': spec.get('commands', []), 'resources': spec.get('resources', []),
         'web': bool(spec.get('web', False)),
+        'notify_on_complete': notify_on_complete,
         'status': 'queued', 'created_at': time.time(), 'updated_at': time.time(),
         'owner_thread_id': os.environ.get('CODEX_THREAD_ID'),
         'group_id': spec.get('group_id') or os.environ.get('CODEX_THREAD_ID') or str(root),
@@ -354,6 +358,11 @@ def daemon():
             has_queue = any(t['status'] == 'queued' for t in all_tasks)
             if just_finished or (needs_poll and time.time() - last_refresh >= (60 if has_queue else 300)):
                 q, last_refresh = quota.refresh(), time.time()
+                try:
+                    import notifications
+                    notifications.observe_quota(c, q)
+                except Exception:
+                    pass  # Notifications are best-effort and never stop scheduling.
             threads = {k: th for k, th in threads.items() if th.is_alive()}
             with locked():
                 policy = routing.configured(c)
@@ -514,6 +523,8 @@ def main():
     # Accept old callers without reintroducing an execution deadline.
     s.add_argument('--timeout-seconds', type=int, help=argparse.SUPPRESS)
     s.add_argument('--web', action='store_true')
+    s.add_argument('--notify-on-complete', action='store_true',
+                   help='Send one Bark notification only if this task completes successfully')
     s.add_argument('--title')
     s.add_argument('--group-id')
     s.add_argument('--group-title')
