@@ -1,5 +1,6 @@
 import sys
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
@@ -84,6 +85,29 @@ class EconomicsTests(unittest.TestCase):
                     dict(valid, kimi_plan_cny=True)):
             with self.assertRaises(ValueError):
                 economics.validate(bad)
+
+    def test_legacy_economics_payload_receives_current_deepseek_defaults(self):
+        legacy = {key: economics.DEFAULTS[key] for key in (
+            'afp_cny_per_unit', 'kimi_plan_cny', 'ark_auto_afp_per_m',
+            'ark_evolving_afp_per_m', 'ark_k3_afp_per_m')}
+        saved = economics.validate(legacy)
+        self.assertEqual(saved['deepseek_flash_input_cny_per_m'], 2.0)
+        self.assertEqual(saved['deepseek_offpeak_multiplier'], 0.5)
+        with self.assertRaises(ValueError):
+            economics.validate(dict(legacy, deepseek_offpeak_multiplier=1.1))
+
+    def test_deepseek_cost_uses_token_classes_and_beijing_price_band(self):
+        # Monday 10:00 Beijing is peak; 20:00 is off-peak.
+        peak = datetime(2026, 9, 21, 2, 0, tzinfo=timezone.utc).timestamp()
+        offpeak = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc).timestamp()
+        usage = {'input': 1_000_000, 'cache_read': 1_000_000,
+                 'cache_write': 0, 'output': 750_000, 'reasoning': 250_000}
+        peak_cost = economics.deepseek_usage_cost(usage, 'deepseek/deepseek-flash', peak)
+        offpeak_cost = economics.deepseek_usage_cost(usage, 'deepseek/deepseek-flash', offpeak)
+        self.assertTrue(peak_cost['peak'])
+        self.assertAlmostEqual(peak_cost['cost_cny'], 10.04)
+        self.assertFalse(offpeak_cost['peak'])
+        self.assertAlmostEqual(offpeak_cost['cost_cny'], 5.02)
 
 
 if __name__ == '__main__':

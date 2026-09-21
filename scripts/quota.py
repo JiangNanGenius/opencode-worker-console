@@ -532,8 +532,8 @@ def consumption_estimate(value, samples, now=None):
             'source': source, 'idle': idle, 'sample_span_hours': round(span_hours, 2)}
 
 
-def balance_consumption_estimate(value, samples, now=None):
-    """Estimate PAYG range from wall-clock burn, smoothing bursty model charges."""
+def balance_consumption_estimate(value, samples, now=None, priced=None):
+    """Estimate PAYG range from official token prices and observed balance burn."""
     now = time.time() if now is None else now
     remaining = number(value.get('remaining')) if isinstance(value, dict) else None
     currency = value.get('currency') if isinstance(value, dict) else None
@@ -553,17 +553,31 @@ def balance_consumption_estimate(value, samples, now=None):
     # Require one hour of wall-clock evidence, then use the longest available span
     # so idle periods and uneven task dispatch are naturally included.
     oldest = next(((stamp, prior) for stamp, prior in points if now - stamp >= 3600), None)
-    if not oldest:
+    priced_rate = number(priced.get('rate_balance_per_hour')) if isinstance(priced, dict) else None
+    if not oldest and priced_rate is None:
         return {'hours': None, 'rate_balance_per_hour': None, 'source': 'collecting',
                 'idle': False, 'sample_span_hours': 0.0}
-    span_hours = (now - oldest[0]) / 3600
-    rate = max(0.0, oldest[1] - remaining) / span_hours
+    span_hours = (now - oldest[0]) / 3600 if oldest else number(priced.get('sample_span_hours')) or 0.0
+    wall_rate = max(0.0, oldest[1] - remaining) / span_hours if oldest and span_hours > 0 else None
+    if wall_rate is not None and priced_rate is not None:
+        wall_weight = .75 if span_hours >= 6 else .5
+        rate = wall_rate * wall_weight + priced_rate * (1 - wall_weight)
+        source = 'balance_and_official_pricing'
+    elif wall_rate is not None:
+        rate, source = wall_rate, 'wall_clock'
+    else:
+        rate, source = priced_rate, 'official_token_pricing'
     idle = rate <= .000001
     hours = remaining / rate if not idle else None
     confidence = 'high' if span_hours >= 24 else 'medium' if span_hours >= 6 else 'low'
-    return {'hours': round(min(hours, 24 * 365), 2) if hours is not None else None,
-            'rate_balance_per_hour': round(rate, 6), 'source': 'wall_clock', 'idle': idle,
-            'confidence': confidence, 'sample_span_hours': round(span_hours, 2)}
+    result = {'hours': round(min(hours, 24 * 365), 2) if hours is not None else None,
+              'rate_balance_per_hour': round(rate, 6), 'source': source, 'idle': idle,
+              'confidence': confidence, 'sample_span_hours': round(span_hours, 2)}
+    if isinstance(priced, dict):
+        for key in ('estimated_spend_cny', 'tokens', 'task_count', 'pricing_effective'):
+            if key in priced:
+                result[key] = priced[key]
+    return result
 
 
 def window(name, detail, duration=None):
@@ -707,6 +721,13 @@ def view(values):
     out = {}
     history = read_json(STATE / HISTORY, {})
     now = time.time()
+    priced = None
+    if 'deepseek' in values:
+        try:
+            import economics
+            priced = economics.recent_deepseek_spend(config(), now)
+        except Exception:
+            priced = None
     for p, v in values.items():
         v = {k: x for k, x in v.items() if not k.startswith('_')}
         v['windows'] = [dict(item) for item in v.get('windows', [])]
@@ -717,7 +738,7 @@ def view(values):
                 item['consumption_estimate'] = estimate
         v['balances'] = [dict(item) for item in v.get('balances', [])]
         for item in v['balances']:
-            estimate = balance_consumption_estimate(item, samples, now)
+            estimate = balance_consumption_estimate(item, samples, now, priced if p == 'deepseek' else None)
             if estimate is not None:
                 item['consumption_estimate'] = estimate
         v['stale'] = v.get('state') != 'ok' or time.time() - v.get('sampled_at', 0) > 900

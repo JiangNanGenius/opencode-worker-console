@@ -100,29 +100,31 @@
 @media(max-width:900px){.credential-editor,.credential-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.credential-row>button{justify-self:start}.stats-grid{grid-template-columns:minmax(0,1fr)}.stats-quota-row{grid-template-columns:minmax(0,1fr)}.stats-quota-row small{text-align:left}}
 @media(max-width:760px){.stats-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.stats-summary>div:nth-child(3){border-left:0;border-top:1px solid var(--line)}.stats-summary>div:nth-child(4){border-top:1px solid var(--line)}.credential-editor,.credential-row{grid-template-columns:minmax(0,1fr)}.stats-panel{padding:18px}.daily-bars{height:120px}}
 
-/* Segmented total work pool: one normalized bar, balance vs. plan allowance. */
+/* Segmented total work pool: provider availability without mixing unlike quota units. */
 .pool-block{grid-template-columns:minmax(150px,180px) minmax(0,1fr);column-gap:34px}
 .pool-visual{display:flex;flex-direction:column;justify-content:center;gap:12px;min-width:0}
 .work-pool-bar{display:flex;align-items:stretch;width:100%;height:12px;border-radius:5px;background:#e6ece9;overflow:hidden}
 .work-pool-segment{display:block;height:100%;min-width:0;border-radius:0;transition:background-color .3s ease}
-.work-pool-segment.balance{background:#67a4d1}
-.work-pool-segment.plan{background:#b593cd}
+.work-pool-segment.deepseek,.component-dot.deepseek{background:#67a4d1}
+.work-pool-segment.kimi,.component-dot.kimi{background:#599e85}
+.work-pool-segment.ark,.component-dot.ark{background:#b593cd}
+.work-pool-segment.unknown{background:#cfd7d4}
+.work-pool-segment.tight{background:#c58a31}
+.work-pool-segment.critical{background:#c76551}
 .work-pool-segment:first-child{border-radius:5px 0 0 5px}
 .work-pool-segment:last-child{border-radius:0 5px 5px 0}
 .work-pool-segment:only-child{border-radius:5px}
-.pool-components{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 24px;min-width:0}
+.pool-components{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px 24px;min-width:0}
 .pool-component{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:9px;align-items:baseline;min-width:0}
 .component-dot{width:8px;height:8px;border-radius:50%;margin-top:2px}
-.component-dot.balance{background:#67a4d1}
-.component-dot.plan{background:#b593cd}
 .component-copy{display:flex;flex-direction:column;gap:2px;min-width:0}
 .component-copy strong{font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .component-copy small{font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.component-normalized{font-size:9px;color:var(--muted);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+.component-state{font-size:9px;color:var(--accent);font-weight:600;text-align:right;white-space:nowrap}.pool-component.tight .component-state{color:#96651f}.pool-component.critical .component-state{color:#a34c3b}.pool-component.unknown .component-state{color:var(--muted)}
 .pool-block #pool-next{grid-column:1/-1}
-.pool-block .pool-total strong{font-size:26px}
+.pool-health{display:flex;align-items:baseline;gap:8px}.pool-health strong{font-size:24px;line-height:1;font-weight:650;font-variant-numeric:tabular-nums}.pool-health span{font-size:10px;color:var(--muted)}
 @media(max-width:1200px){.pool-block{grid-template-columns:minmax(140px,.45fr) minmax(0,1fr)}}
-@media(max-width:760px){.pool-block{row-gap:12px}.pool-visual,.pool-summary{grid-column:1}.pool-components{grid-template-columns:minmax(0,1fr);gap:8px}.component-normalized{text-align:left}.work-pool-bar{height:10px}}
+@media(max-width:760px){.pool-block{row-gap:12px}.pool-visual,.pool-summary{grid-column:1}.pool-components{grid-template-columns:minmax(0,1fr);gap:8px}.component-state{text-align:left}.work-pool-bar{height:10px}}
 
 /* Restrained motion: tab indicator, view transition, card entry and state pulse. */
 .primary-nav button{position:relative;transition:background .28s ease,color .28s ease}
@@ -167,6 +169,7 @@ dialog[open]:not([data-closing]){animation:dialog-enter var(--motion-layout) var
 .host-strip{display:grid;grid-template-columns:minmax(125px,.55fr) minmax(0,3fr);gap:22px;align-items:center;margin:0 0 24px;padding:17px 22px;background:#fff;border:1px solid var(--line);border-radius:var(--radius)}.host-strip-heading{display:grid;gap:6px}.host-strip-heading>span{display:flex;align-items:center;gap:8px;font-size:12px}.host-strip-heading i{width:7px;height:7px;border-radius:50%;background:#599e85;box-shadow:0 0 0 4px #599e8514}.host-strip.pressure .host-strip-heading i{background:#c27b2e;box-shadow:0 0 0 4px #c27b2e16}.host-strip-heading small{font-size:9px;color:var(--muted);font-variant-numeric:tabular-nums}.host-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0}.host-metrics article{min-width:0;padding:0 18px;border-left:1px solid #edf0f2}.host-metrics article>div{display:flex;align-items:baseline;justify-content:space-between;gap:10px}.host-metrics article span,.host-metrics article small{font-size:9px;color:var(--muted)}.host-metrics article strong{font-size:16px;font-weight:650;font-variant-numeric:tabular-nums;white-space:nowrap}.host-metrics article small{display:block;margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.host-meter{display:block;height:4px;margin-top:7px;background:#e7ecea;border-radius:3px;overflow:hidden}.host-meter i{display:block;width:100%;height:100%;background:#599e85;transform:scaleX(0);transform-origin:left;transition:transform .65s var(--ease-out),background-color var(--motion-ui) ease}.host-meter i.warning{background:#c58a31}.host-meter i.critical{background:#c76551}
 .stats-recent-grid{margin-top:4px}.stats-timeline{margin-top:16px}.timeline-summary{display:flex;align-items:baseline;gap:9px;margin-bottom:5px}.timeline-summary strong{font-size:22px;font-variant-numeric:tabular-nums}.timeline-summary span{font-size:9px;color:var(--muted)}.timeline-chart{display:block;width:100%;height:auto;max-height:180px;overflow:visible}.timeline-chart rect{fill:#dcebe6;stroke:none;transform-box:fill-box;transform-origin:center bottom;animation:chart-bar .48s var(--ease-out) both}.timeline-grid{fill:none;stroke:#e6ebe9;stroke-width:1}.timeline-line{fill:none;stroke:var(--accent);stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:900;animation:chart-line .7s var(--ease-out) both}.timeline-chart circle{fill:#fff;stroke:var(--accent);stroke-width:2}.daily-bars i,.stats-bar-track i{transform-origin:center bottom;animation:chart-bar .5s var(--ease-out) both}@keyframes chart-bar{from{transform:scaleY(.02);opacity:.35}to{transform:scaleY(1);opacity:1}}@keyframes chart-line{from{stroke-dashoffset:900;opacity:.3}to{stroke-dashoffset:0;opacity:1}}
 .ledger-disclosure{padding:0;overflow:hidden}.ledger-disclosure>summary{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:20px 24px;cursor:pointer;list-style:none}.ledger-disclosure>summary::-webkit-details-marker{display:none}.ledger-disclosure>summary>span:first-child{display:grid;gap:5px}.ledger-disclosure>summary strong{font-size:14px}.ledger-disclosure>summary small{font-size:10px;color:var(--muted);font-weight:400}.ledger-disclosure>summary::after{content:'›';font-size:22px;color:var(--muted);transition:transform var(--motion-ui) var(--ease-out)}.ledger-disclosure[open]>summary::after{transform:rotate(90deg)}.ledger-body{padding:0 24px 24px;border-top:1px solid var(--line)}.ledger-body>.section-header{margin:15px 0 0}.ledger-body .records-summary{margin-top:0}
+.pricing-disclosure{margin-top:18px;border-top:1px solid var(--line);padding-top:14px}.pricing-disclosure>summary{cursor:pointer;font-size:12px;font-weight:600;color:var(--ink);width:max-content}.pricing-disclosure>.form-grid{margin-top:16px}.pricing-disclosure>p{line-height:1.7}.pricing-disclosure a{color:var(--accent)}
 .view-panel:not([hidden]){animation:none}html[data-motion-fallback="page"] .view-panel:not([hidden]){animation:view-fallback var(--motion-layout) var(--ease-out) both}@keyframes view-fallback{from{opacity:0;clip-path:inset(0 0 0 4%);transform:translateX(10px)}to{opacity:1;clip-path:inset(0);transform:none}}
 html[data-motion="page"] .view-panel:not([hidden]){view-transition-name:work-view}html[data-motion="page"] .page-header>div:first-child{view-transition-name:page-heading}html[data-motion="task-detail"] .task-detail-row .detail{view-transition-name:task-detail}html[data-motion="task-list"] .table-wrap{view-transition-name:task-list}
 html[data-motion="task-detail"] .task-detail-row>td:first-child{animation:none}

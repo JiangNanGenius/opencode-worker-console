@@ -149,48 +149,28 @@ test('quota range distinguishes paused sampling, collection and burn estimates',
   assert.match(h.run("quotaWindows([{name:'AFPFiveHour',remaining_percent:70,duration_minutes:300,resets_at:new Date(Date.now()+3600000).toISOString()}],true)"),/quota-window-reset/);
 });
 
-test('work-pool model combines normalized balance and live plan allowance only', async () => {
+test('work pool shows schedulable providers without cost-equivalent arithmetic', async () => {
   const h=appHarness();await tick();
-  const source={unit:'AFP-equivalent',total:1400,complete:true,components:{
-    balance:{amount:1000,source_amount:2,unit:'AFP-equivalent',currency:'CNY',status:'ok',excluded_currencies:['USD']},
-    plan:{amount:400,source_amount:400,unit:'AFP',status:'ok'}}};
-  const model=h.run('PoolModel.view('+JSON.stringify(source)+')');
-  assert.equal(model.total,1400);
-  assert.equal(model.state,'ready');
-  assert.equal(model.balance.amount,1000);
-  assert.equal(model.plan.amount,400);
-  assert.equal(JSON.stringify(model.balance.excluded),JSON.stringify(['USD']));
-});
-
-test('work-pool model keeps zero, missing and single-source states distinct', async () => {
-  const h=appHarness();await tick();
-  const missing=h.run('PoolModel.view({})');
-  assert.equal(missing.total,0);assert.equal(missing.state,'unknown');
-  assert.equal(missing.balance.known,false);assert.equal(missing.plan.known,false);
-  const single=h.run('PoolModel.view({components:{balance:{amount:0,source_amount:0,status:"unavailable"},plan:{amount:300,source_amount:300,status:"ok"}}})');
-  assert.equal(single.total,300);assert.equal(single.state,'partial');
-  assert.equal(single.balance.known,true);assert.equal(single.plan.known,true);
-  const bothZero=h.run('PoolModel.view({components:{balance:{amount:0,source_amount:0,status:"ok"},plan:{amount:0,source_amount:0,status:"ok"}}})');
-  assert.equal(bothZero.state,'unavailable');
-});
-
-test('segmented pool bar renders one segment per positive source with full-width shares', async () => {
-  const h=appHarness();await tick();
-  h.run('data.economics={work_pool:{components:{balance:{amount:1000,source_amount:2,unit:"AFP-equivalent",currency:"CNY",status:"ok"},plan:{amount:400,source_amount:400,unit:"AFP",status:"ok"}}}};data.profiles={ds:{model:"deepseek/flash"},ark:{model:"volcengine-agent-plan/k3"}};renderQuota()');
+  h.run('data.quota={deepseek:{available:true,balances:[{remaining:60.21,currency:"CNY"}]},"kimi-for-coding":{available:true,windows:[{name:"overall",remaining_percent:0}]},"volcengine-agent-plan":{available:true,windows:[{name:"AFPWeekly",remaining_percent:44}]}};data.profiles={ds:{model:"deepseek/flash"},kimi:{model:"kimi-for-coding/k3"},ark:{model:"volcengine-agent-plan/k3"}};renderQuota()');
   const bar=h.get('pool-bar');
-  assert.match(bar.innerHTML,/data-segment="balance"[^>]*width:71\.429%/);
-  assert.match(bar.innerHTML,/data-segment="plan"[^>]*width:28\.571%/);
-  // tr() returns the key in the headless harness; real i18n interpolation is covered in web_setup.
-  assert.equal(bar.getAttribute('aria-label'),'quota.poolBarAria');
+  assert.match(bar.innerHTML,/data-segment="deepseek"[^>]*width:33\.333%/);
+  assert.match(bar.innerHTML,/data-segment="kimi"/);
+  assert.match(bar.innerHTML,/data-segment="ark"/);
+  assert.equal(bar.getAttribute('aria-label'),'quota.poolSourcesAria');
+  assert.match(h.get('pool-summary').innerHTML,/2\/3/);
   const components=h.get('pool-components').innerHTML;
-  assert.match(components,/quota\.poolBalance/);
-  assert.match(components,/quota\.poolPlan/);
-  assert.match(components,/¥2\.00/);
-  assert.match(components,/400 AFP/);
-  // Missing/zero plan keeps the card but renders only the balance segment.
-  h.run('data.economics={work_pool:{components:{balance:{amount:500,source_amount:1,unit:"AFP-equivalent",currency:"CNY",status:"ok"},plan:{status:"missing"}}}};renderQuota()');
-  assert.match(h.get('pool-bar').innerHTML,/data-segment="balance"/);
-  assert.doesNotMatch(h.get('pool-bar').innerHTML,/data-segment="plan"/);
+  assert.match(components,/¥60\.21/);
+  assert.match(components,/quota\.weekly · 0%/);
+  assert.match(components,/quota\.weekly · 44%/);
+  assert.doesNotMatch(h.get('pool-summary').innerHTML+components,/AFP-equivalent|≈/);
+  assert.equal(h.get('pool-state').textContent,'quota.poolReduced');
+});
+
+test('work pool remains visible for a Kimi-only installation', async () => {
+  const h=appHarness();await tick();
+  h.run('data.quota={"kimi-for-coding":{available:true,windows:[{name:"overall",remaining_percent:75}]}};data.profiles={kimi:{model:"kimi-for-coding/k3"}};renderQuota()');
+  assert.equal(h.get('pool-summary').innerHTML.includes('1/1'),true);
+  assert.match(h.get('pool-components').innerHTML,/quota\.kimiPlan/);
 });
 
 

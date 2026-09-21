@@ -12,7 +12,13 @@ Model coefficients are configuration inputs because promotions and provider
 terms change.  They are estimates only; the live Ark control-plane delta is the
 billing authority.
 """
+from datetime import datetime, timedelta, timezone
 import math
+import time
+
+
+DEEPSEEK_PRICE_SOURCE = 'https://api-docs.deepseek.com/zh-cn/quick_start/pricing/'
+DEEPSEEK_PRICE_EFFECTIVE = '2026-09-10'
 
 
 DEFAULTS = {
@@ -21,6 +27,16 @@ DEFAULTS = {
     'ark_auto_afp_per_m': 50.0,
     'ark_evolving_afp_per_m': 250.0,
     'ark_k3_afp_per_m': 1000.0,
+    # Official DeepSeek peak prices in CNY per million tokens. Off-peak is
+    # derived with the documented multiplier so one setting cannot drift away
+    # from the other two price bands.
+    'deepseek_flash_cache_hit_cny_per_m': 0.04,
+    'deepseek_flash_input_cny_per_m': 2.0,
+    'deepseek_flash_output_cny_per_m': 8.0,
+    'deepseek_pro_cache_hit_cny_per_m': 0.30,
+    'deepseek_pro_input_cny_per_m': 9.0,
+    'deepseek_pro_output_cny_per_m': 27.0,
+    'deepseek_offpeak_multiplier': 0.5,
 }
 
 
@@ -39,23 +55,123 @@ def normalize(value):
     out = {}
     for key, default in DEFAULTS.items():
         try:
-            out[key] = _number(source.get(key, default), key)
+            out[key] = _number(source.get(key, default), key, high=1.0) \
+                if key == 'deepseek_offpeak_multiplier' else _number(source.get(key, default), key)
         except ValueError:
             out[key] = default
     return out
 
 
 def validate(value):
-    """Strict settings-API validation; every supported field is required."""
+    """Strict settings-API validation with compatible pricing defaults."""
     if not isinstance(value, dict):
         raise ValueError('economics must be an object')
-    missing = [key for key in DEFAULTS if key not in value]
+    legacy_required = ('afp_cny_per_unit', 'kimi_plan_cny', 'ark_auto_afp_per_m',
+                       'ark_evolving_afp_per_m', 'ark_k3_afp_per_m')
+    missing = [key for key in legacy_required if key not in value]
     if missing:
         raise ValueError('economics is missing: ' + ', '.join(missing))
     unknown = [key for key in value if key not in DEFAULTS]
     if unknown:
         raise ValueError('economics contains unsupported fields: ' + ', '.join(unknown))
-    return {key: _number(value[key], key) for key in DEFAULTS}
+    result = {}
+    for key, default in DEFAULTS.items():
+        raw = value.get(key, default)
+        result[key] = _number(raw, key, high=1.0) if key == 'deepseek_offpeak_multiplier' \
+            else _number(raw, key)
+    return result
+
+
+def deepseek_peak(timestamp):
+    """Return whether one timestamp falls in DeepSeek's Beijing peak band."""
+    local = datetime.fromtimestamp(timestamp, timezone.utc) + timedelta(hours=8)
+    return local.weekday() < 5 and (9 <= local.hour < 12 or 14 <= local.hour < 18)
+
+
+def _usage_number(value):
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) \
+        and math.isfinite(value) and value >= 0 else 0.0
+
+
+def deepseek_usage_cost(usage, model, timestamp, settings=None):
+    """Estimate one DeepSeek usage snapshot from the official token classes.
+
+    Worker Desk keeps input, cache-read, cache-write, output and reasoning
+    counters disjoint. Cache reads use the hit price; ordinary input and cache
+    writes use the cache-miss price; output and reasoning use the output price.
+    """
+    if not isinstance(usage, dict) or not isinstance(model, str):
+        return None
+    values = normalize(settings)
+    model_name = model.split('/', 1)[-1].lower()
+    family = 'pro' if 'pro' in model_name else 'flash'
+    hit = values['deepseek_' + family + '_cache_hit_cny_per_m']
+    input_rate = values['deepseek_' + family + '_input_cny_per_m']
+    output_rate = values['deepseek_' + family + '_output_cny_per_m']
+    multiplier = 1.0 if deepseek_peak(timestamp) else values['deepseek_offpeak_multiplier']
+    cache_hit = _usage_number(usage.get('cache_read'))
+    uncached = _usage_number(usage.get('input')) + _usage_number(usage.get('cache_write'))
+    generated = _usage_number(usage.get('output')) + _usage_number(usage.get('reasoning'))
+    tokens = cache_hit + uncached + generated
+    if tokens <= 0:
+        return None
+    cost = (cache_hit * hit + uncached * input_rate + generated * output_rate) * multiplier / 1_000_000
+    return {'cost_cny': cost, 'tokens': tokens, 'peak': multiplier == 1.0, 'family': family,
+            'cache_hit_tokens': cache_hit, 'input_tokens': uncached, 'output_tokens': generated}
+
+
+def recent_deepseek_spend(config, now=None, lookback_hours=24):
+    """Price recent Worker Desk DeepSeek usage without reading prompts/messages."""
+    import common
+    import task_activity
+    import usage_ledger
+
+    now = time.time() if now is None else now
+    cutoff = now - lookback_hours * 3600
+    profiles = (config or {}).get('profiles') if isinstance(config, dict) else {}
+    profiles = profiles if isinstance(profiles, dict) else {}
+    settings = (config or {}).get('economics') if isinstance(config, dict) else None
+    records = []
+    current_ids = set()
+    for task in common.tasks():
+        current_ids.add(task.get('id'))
+        records.append((task, task_activity.usage_for_task(task)))
+    for entry in usage_ledger.entries(now=now):
+        if entry.get('task_id') not in current_ids:
+            records.append((entry, entry.get('usage')))
+    total_cost = total_tokens = 0.0
+    task_count = 0
+    earliest = now
+    peak_tasks = 0
+    for record, usage in records:
+        stamp = record.get('finished_at') or record.get('updated_at') or record.get('created_at')
+        if not isinstance(stamp, (int, float)) or isinstance(stamp, bool) or stamp < cutoff or stamp > now:
+            continue
+        actual = [item for item in (record.get('actual_models') or [])
+                  if isinstance(item, str) and item.startswith('deepseek/')]
+        profile = profiles.get(record.get('profile')) if isinstance(profiles.get(record.get('profile')), dict) else {}
+        model = actual[-1] if actual else profile.get('model')
+        if not isinstance(model, str) or not model.startswith('deepseek/'):
+            continue
+        priced = deepseek_usage_cost(usage, model, stamp, settings)
+        if priced is None:
+            continue
+        total_cost += priced['cost_cny']
+        total_tokens += priced['tokens']
+        peak_tasks += int(priced['peak'])
+        task_count += 1
+        created = record.get('created_at')
+        earliest = min(earliest, created if isinstance(created, (int, float)) and not isinstance(created, bool) else stamp)
+    if task_count == 0 or total_cost <= 0:
+        return None
+    # One short task should not be extrapolated as if it ran continuously every
+    # minute. Amortize over at least one hour, while retaining at most one day
+    # so the estimate follows the current workload rather than lifetime usage.
+    span_hours = max(1.0, min(float(lookback_hours), (now - max(cutoff, earliest)) / 3600))
+    return {'rate_balance_per_hour': total_cost / span_hours, 'estimated_spend_cny': total_cost,
+            'tokens': total_tokens, 'task_count': task_count, 'sample_span_hours': span_hours,
+            'peak_tasks': peak_tasks, 'source': 'official_token_pricing',
+            'pricing_effective': DEEPSEEK_PRICE_EFFECTIVE, 'pricing_url': DEEPSEEK_PRICE_SOURCE}
 
 
 def _monthly_ark(quota_view):

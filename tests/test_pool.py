@@ -192,6 +192,27 @@ class PoolTests(unittest.TestCase):
         self.assertIsNone(estimate['hours'])
         self.assertEqual(estimate['source'], 'collecting')
 
+    def test_payg_range_can_use_official_token_pricing_before_balance_history_matures(self):
+        now = time.time()
+        value = {'currency': 'CNY', 'remaining': 60.0}
+        priced = {'rate_balance_per_hour': 0.1, 'sample_span_hours': 2,
+                  'estimated_spend_cny': 0.2, 'tokens': 20_000_000,
+                  'task_count': 3, 'pricing_effective': '2026-09-10'}
+        estimate = quota.balance_consumption_estimate(value, [], now, priced)
+        self.assertEqual(estimate['source'], 'official_token_pricing')
+        self.assertEqual(estimate['hours'], 600.0)
+        self.assertEqual(estimate['task_count'], 3)
+
+    def test_payg_range_blends_long_balance_history_with_token_price(self):
+        now = time.time()
+        value = {'currency': 'CNY', 'remaining': 60.0}
+        samples = [{'time': now - 12 * 3600, 'balances': {'CNY': 72.0}}]
+        priced = {'rate_balance_per_hour': 0.4, 'sample_span_hours': 12}
+        estimate = quota.balance_consumption_estimate(value, samples, now, priced)
+        self.assertEqual(estimate['source'], 'balance_and_official_pricing')
+        self.assertAlmostEqual(estimate['rate_balance_per_hour'], 0.85)
+        self.assertAlmostEqual(estimate['hours'], 70.59, places=2)
+
     def test_quota_history_records_balance_numbers_without_provider_payload(self):
         now = time.time()
         quota._record_history({'deepseek': {'state': 'ok', 'sampled_at': now,
