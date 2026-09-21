@@ -488,9 +488,6 @@ def consumption_estimate(value, samples, now=None):
     reset = routing._iso_seconds(value.get('resets_at'))
     if remaining is None or remaining < 0:
         return None
-    if remaining == 0:
-        return {'hours': 0.0, 'rate_percent_per_hour': None, 'source': 'exhausted',
-                'idle': False, 'sample_span_hours': 0.0}
     cycle_rate = None
     if duration and duration > 0 and reset:
         elapsed_hours = max(0.0, (duration * 60 - max(0.0, reset - now)) / 3600)
@@ -525,6 +522,11 @@ def consumption_estimate(value, samples, now=None):
         recent_weight = min(.85, .35 + span_hours / 12)
         rate = recent_rate * recent_weight + cycle_rate * (1 - recent_weight)
         source = 'idle_adjusted' if recent_rate <= .001 else 'blended'
+    if remaining == 0:
+        return {'hours': 0.0,
+                'rate_percent_per_hour': round(rate, 4) if rate is not None else None,
+                'source': 'exhausted', 'idle': False,
+                'sample_span_hours': round(span_hours, 2)}
     idle = recent_rate is not None and recent_rate <= .001 and span_hours >= 1 / 6
     hours = remaining / rate if rate and rate > .001 else None
     return {'hours': round(min(hours, 24 * 365), 2) if hours is not None else None,
@@ -539,9 +541,6 @@ def balance_consumption_estimate(value, samples, now=None, priced=None):
     currency = value.get('currency') if isinstance(value, dict) else None
     if remaining is None or remaining < 0 or not isinstance(currency, str):
         return None
-    if remaining == 0:
-        return {'hours': 0.0, 'rate_balance_per_hour': None, 'source': 'exhausted',
-                'idle': False, 'sample_span_hours': 0.0}
     points = []
     for sample in samples if isinstance(samples, list) else []:
         stamp = number(sample.get('time')) if isinstance(sample, dict) else None
@@ -549,14 +548,18 @@ def balance_consumption_estimate(value, samples, now=None, priced=None):
         if stamp is not None and prior is not None and 0 < now - stamp <= 7 * 86400:
             points.append((stamp, prior))
     points.sort()
+    observed_capacity = max([remaining] + [prior for _, prior in points])
     # A five-minute burst extrapolates a wildly pessimistic range for model APIs.
     # Require one hour of wall-clock evidence, then use the longest available span
     # so idle periods and uneven task dispatch are naturally included.
     oldest = next(((stamp, prior) for stamp, prior in points if now - stamp >= 3600), None)
     priced_rate = number(priced.get('rate_balance_per_hour')) if isinstance(priced, dict) else None
     if not oldest and priced_rate is None:
-        return {'hours': None, 'rate_balance_per_hour': None, 'source': 'collecting',
-                'idle': False, 'sample_span_hours': 0.0}
+        return {'hours': 0.0 if remaining == 0 else None,
+                'rate_balance_per_hour': None,
+                'source': 'exhausted' if remaining == 0 else 'collecting',
+                'idle': False, 'sample_span_hours': 0.0,
+                'observed_capacity': round(observed_capacity, 6)}
     span_hours = (now - oldest[0]) / 3600 if oldest else number(priced.get('sample_span_hours')) or 0.0
     wall_rate = max(0.0, oldest[1] - remaining) / span_hours if oldest and span_hours > 0 else None
     if wall_rate is not None and priced_rate is not None:
@@ -567,12 +570,24 @@ def balance_consumption_estimate(value, samples, now=None, priced=None):
         rate, source = wall_rate, 'wall_clock'
     else:
         rate, source = priced_rate, 'official_token_pricing'
+    if remaining == 0:
+        result = {'hours': 0.0, 'rate_balance_per_hour': round(rate, 6),
+                  'source': 'exhausted', 'idle': False,
+                  'confidence': 'high' if span_hours >= 24 else 'medium' if span_hours >= 6 else 'low',
+                  'sample_span_hours': round(span_hours, 2),
+                  'observed_capacity': round(observed_capacity, 6)}
+        if isinstance(priced, dict):
+            for key in ('estimated_spend_cny', 'tokens', 'task_count', 'pricing_effective'):
+                if key in priced:
+                    result[key] = priced[key]
+        return result
     idle = rate <= .000001
     hours = remaining / rate if not idle else None
     confidence = 'high' if span_hours >= 24 else 'medium' if span_hours >= 6 else 'low'
     result = {'hours': round(min(hours, 24 * 365), 2) if hours is not None else None,
               'rate_balance_per_hour': round(rate, 6), 'source': source, 'idle': idle,
-              'confidence': confidence, 'sample_span_hours': round(span_hours, 2)}
+              'confidence': confidence, 'sample_span_hours': round(span_hours, 2),
+              'observed_capacity': round(observed_capacity, 6)}
     if isinstance(priced, dict):
         for key in ('estimated_spend_cny', 'tokens', 'task_count', 'pricing_effective'):
             if key in priced:

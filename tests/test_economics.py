@@ -25,29 +25,48 @@ class EconomicsTests(unittest.TestCase):
         self.assertEqual(monthly['used_cny'], 0.5)
         self.assertEqual(monthly['remaining_cny'], 999.5)
 
-    def test_work_pool_adds_only_normalized_components(self):
+    def test_work_pool_fits_providers_by_observed_runtime(self):
         quota = {
             'deepseek': {'state': 'ok', 'stale': False, 'available': True, 'balances': [
-                {'currency': 'CNY', 'remaining': 2.0},
+                {'currency': 'CNY', 'remaining': 50.0,
+                 'consumption_estimate': {'rate_balance_per_hour': 2.0, 'observed_capacity': 60.0}},
                 {'currency': 'USD', 'remaining': 5.0}], 'windows': []},
+            'kimi-for-coding': {'state': 'ok', 'stale': False, 'available': False, 'windows': [
+                {'name': 'overall', 'valid': True, 'remaining_percent': 0,
+                 'duration_minutes': 10080,
+                 'consumption_estimate': {'rate_percent_per_hour': 0.6}}]},
             'volcengine-agent-plan': {'state': 'ok', 'stale': False, 'windows': [
-                {'name': 'AFPMonthly', 'valid': True, 'limit': 1000, 'remaining': 400,
-                 'resets_at': '2026-10-20T00:00:00+00:00'}]}}
+                {'name': 'AFPWeekly', 'valid': True, 'remaining_percent': 44,
+                 'duration_minutes': 10080,
+                 'consumption_estimate': {'rate_percent_per_hour': 0.8}}]}}
         pool = economics.work_pool({}, quota)
-        # 2 CNY * 500 AFP-eq/CNY = 1000; plus 400 authoritative live AFP.
-        self.assertEqual(pool['components']['balance']['amount'], 1000.0)
-        self.assertEqual(pool['components']['balance']['source_amount'], 2.0)
-        self.assertEqual(pool['components']['plan']['amount'], 400.0)
-        self.assertEqual(pool['total'], 1400.0)
-        self.assertTrue(pool['complete'])
-        # Raw USD is never silently converted/summed; it is flagged as excluded.
+        self.assertEqual(pool['unit'], 'fitted-hours')
+        self.assertEqual(pool['components']['balance']['amount'], 25.0)
+        self.assertEqual(pool['components']['balance']['capacity'], 30.0)
+        self.assertEqual(pool['components']['kimi']['amount'], 0.0)
+        self.assertAlmostEqual(pool['components']['kimi']['capacity'], 166.667)
+        self.assertEqual(pool['components']['plan']['amount'], 55.0)
+        self.assertEqual(pool['components']['plan']['capacity'], 125.0)
+        self.assertEqual(pool['total'], 80.0)
+        self.assertAlmostEqual(pool['remaining_percent'], 24.87, places=2)
         self.assertEqual(pool['components']['balance']['excluded_currencies'], ['USD'])
-        self.assertFalse(pool['normalization']['kimi_included'])
+        self.assertTrue(pool['normalization']['kimi_included'])
+        self.assertTrue(pool['normalization']['notes']['weights_use_observed_burn'])
+        self.assertLess(pool['components']['balance']['capacity'] / pool['capacity'], .1)
+
+        # A Kimi reset immediately restores its fitted full runtime to the pool.
+        quota['kimi-for-coding']['available'] = True
+        quota['kimi-for-coding']['windows'][0]['remaining_percent'] = 100
+        reset = economics.work_pool({}, quota)
+        self.assertEqual(reset['components']['kimi']['remaining_percent'], 100.0)
+        self.assertGreater(reset['remaining_percent'], 75)
 
     def test_work_pool_handles_missing_zero_and_stale_sources(self):
         # No sources at all: both components missing, total zero but incomplete.
         empty = economics.work_pool({}, {})
         self.assertEqual(empty['total'], 0.0)
+        self.assertEqual(empty['capacity'], 0)
+        self.assertIsNone(empty['remaining_percent'])
         self.assertFalse(empty['complete'])
         self.assertEqual(empty['components']['balance']['status'], 'missing')
         self.assertEqual(empty['components']['plan']['status'], 'missing')
@@ -57,26 +76,61 @@ class EconomicsTests(unittest.TestCase):
             'deepseek': {'state': 'ok', 'stale': False, 'available': False,
                          'balances': [{'currency': 'CNY', 'remaining': 0}], 'windows': []}}
         pool = economics.work_pool({}, zero_balance)
-        self.assertEqual(pool['components']['balance']['amount'], 0.0)
+        self.assertIsNone(pool['components']['balance']['amount'])
         self.assertEqual(pool['components']['balance']['status'], 'unavailable')
         self.assertEqual(pool['components']['plan']['status'], 'missing')
         self.assertEqual(pool['total'], 0.0)
         self.assertFalse(pool['complete'])
 
         stale = {'deepseek': {'state': 'ok', 'stale': True, 'available': True,
-                              'balances': [{'currency': 'CNY', 'remaining': 1.0}], 'windows': []}}
+                              'balances': [{'currency': 'CNY', 'remaining': 1.0,
+                                            'consumption_estimate': {'rate_balance_per_hour': .1,
+                                                                     'observed_capacity': 2.0}}],
+                              'windows': []}}
         pool = economics.work_pool({}, stale)
         self.assertEqual(pool['components']['balance']['status'], 'stale')
-        self.assertFalse(pool['complete'])
+        self.assertTrue(pool['complete'])
 
-    def test_work_pool_never_uses_nominal_plan_price_as_allowance(self):
+    def test_work_pool_ignores_price_settings_and_uses_window_prior_at_reset(self):
         quota = {'volcengine-agent-plan': {'state': 'ok', 'stale': False, 'windows': [
-            {'name': 'AFPFiveHour', 'valid': True, 'limit': 100, 'remaining': 50}]}}
-        pool = economics.work_pool({}, quota)
-        # No valid monthly AFP window means no plan allowance (kimi_plan_afp_eq nominal
-        # purchase price is never substituted for a live allowance).
-        self.assertIsNone(pool['components']['plan']['amount'])
-        self.assertEqual(pool['components']['plan']['status'], 'missing')
+            {'name': 'AFPFiveHour', 'valid': True, 'remaining_percent': 100,
+             'duration_minutes': 300}]}}
+        cheap = economics.work_pool({'economics': {'afp_cny_per_unit': .001}}, quota)
+        expensive = economics.work_pool({'economics': {'afp_cny_per_unit': .02,
+                                                        'kimi_plan_cny': 9999}}, quota)
+        self.assertEqual(cheap, expensive)
+        self.assertEqual(cheap['components']['plan']['amount'], 5.0)
+        self.assertEqual(cheap['components']['plan']['capacity'], 5.0)
+        self.assertEqual(cheap['components']['plan']['fit_source'], 'window_prior')
+
+        # Idle-inclusive burn may predict longer than the quota cycle, but a
+        # weekly refill cannot contribute more than one week to this meter.
+        quota['volcengine-agent-plan']['windows'][0].update(
+            name='AFPWeekly', duration_minutes=10080,
+            consumption_estimate={'rate_percent_per_hour': .1})
+        capped = economics.work_pool({}, quota)
+        self.assertEqual(capped['components']['plan']['capacity'], 168.0)
+
+    def test_work_pool_forecasts_independent_provider_refills(self):
+        now = datetime(2026, 9, 21, tzinfo=timezone.utc).timestamp()
+        def reset(hours):
+            return datetime.fromtimestamp(now + hours * 3600, timezone.utc).isoformat()
+        quota = {
+            'deepseek': {'available': True, 'balances': [{'currency': 'CNY', 'remaining': 25,
+                'consumption_estimate': {'rate_balance_per_hour': 1, 'observed_capacity': 30}}]},
+            'kimi-for-coding': {'available': False, 'windows': [{'name': 'overall', 'valid': True,
+                'remaining_percent': 0, 'duration_minutes': 10080, 'resets_at': reset(20),
+                'consumption_estimate': {'rate_percent_per_hour': .5}}]},
+            'volcengine-agent-plan': {'available': True, 'windows': [{'name': 'AFPWeekly', 'valid': True,
+                'remaining_percent': 44, 'duration_minutes': 10080, 'resets_at': reset(40),
+                'consumption_estimate': {'rate_percent_per_hour': 1}}]},
+        }
+        pool = economics.work_pool({}, quota, now=now)
+        self.assertEqual([item['provider'] for item in pool['refills']], ['kimi', 'plan'])
+        self.assertEqual(pool['refills'][0]['hours_until'], 20)
+        self.assertAlmostEqual(pool['refills'][0]['projected_remaining_percent'], 66.107, places=3)
+        self.assertEqual(pool['refills'][1]['hours_until'], 40)
+        self.assertAlmostEqual(pool['refills'][1]['projected_remaining_percent'], 83.221, places=3)
 
     def test_validation_rejects_unknown_negative_or_missing_values(self):
         valid = dict(economics.DEFAULTS)

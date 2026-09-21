@@ -12,6 +12,7 @@ const externalIcon = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3H
 const folderIcon = '<svg viewBox="0 0 18 18" aria-hidden="true"><path d="M2 5h5l2 2h7v8H2zM2 5V3h5l2 2h7v2"/></svg>';
 let data = {tasks:[],quota:{}}, selectedGroup = '', selectedFilter = 'all', selectedTask = null, loading = false;
 let selectedTaskIds = new Set(), visibleSelectableIds = [];
+const fullActivityMessages=new Map(),expandedActivityMessages=new Set();
 function setHTML(el, value) { const changed=el.innerHTML !== value; if (changed) el.innerHTML = value; return changed; }
 function reducedMotion(){return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches===true;}
 let motionSequence=0;
@@ -68,39 +69,55 @@ function poolBalanceSource(q){
   const detail=balances.length?balances.map(b=>(b.currency==='CNY'?'¥':b.currency==='USD'?'$':(b.currency||'')+' ')+fixed2(b.remaining)).join(' / '):tr('quota.noSample');
   return {key:'deepseek',label:'DeepSeek',tone,state,detail,available:!exhausted&&(q.available===true||positive)};
 }
-function renderPoolBar(sources){
+function attachPoolFit(source,component){
+  component=component&&typeof component==='object'?component:{};
+  const capacity=Number(component.capacity),remaining=Number(component.amount),percent=Number(component.remaining_percent);
+  source.capacity=Number.isFinite(capacity)&&capacity>0?capacity:null;
+  source.remaining=Number.isFinite(remaining)&&remaining>=0?remaining:null;
+  source.fill=Number.isFinite(percent)?Math.max(0,Math.min(100,percent)):null;
+  if(source.key==='deepseek'&&source.fill!==null)source.detail+=' · '+Math.round(source.fill)+'%';
+  return source;
+}
+function renderPoolBar(sources,pool){
   const el=$('pool-bar');if(!el)return;
-  const available=sources.filter(x=>x.available).length,share=sources.length?100/sources.length:0;
-  const desired=sources.map(x=>({key:x.key,tone:x.tone,share}));
-  el.setAttribute('role','img');el.setAttribute('aria-label',tr('quota.poolSourcesAria',{available,total:sources.length}));
+  const fitted=sources.filter(x=>x.capacity!==null),capacity=fitted.reduce((sum,x)=>sum+x.capacity,0);
+  // Only remaining fitted runtime is colored. The unfilled tail is capacity
+  // already consumed, so the whole pool visibly drains toward zero.
+  const desired=fitted.map(x=>({key:x.key,share:capacity&&x.remaining!==null?x.remaining/capacity*100:0}));
+  const percent=Number(pool?.remaining_percent);
+  el.setAttribute('role','img');el.setAttribute('aria-label',tr('quota.poolCapacityAria',{value:Number.isFinite(percent)?Math.round(percent):'—'}));
   const current=[...el.children].filter(node=>node.dataset.segment);
-  if(current.length===desired.length&&current.every((node,i)=>node.dataset.segment===desired[i].key&&node.classList.contains(desired[i].tone))){
-    desired.forEach((x,i)=>current[i].style.width=x.share.toFixed(3)+'%');
+  if(current.length===desired.length&&current.every((node,i)=>node.dataset.segment===desired[i].key)){
+    desired.forEach((x,i)=>{current[i].style.width=x.share.toFixed(3)+'%';});
     return;
   }
-  el.innerHTML=desired.map((x,i)=>`<span class="work-pool-segment ${x.key} ${x.tone}" data-segment="${x.key}" style="width:${x.share.toFixed(3)}%;animation-delay:${i*70}ms"></span>`).join('');
+  el.innerHTML=desired.map((x,i)=>`<span class="work-pool-segment ${x.key}" data-segment="${x.key}" style="width:${x.share.toFixed(3)}%;animation-delay:${i*70}ms"></span>`).join('');
 }
 function renderPool(providers){
   const block=document.querySelector('.pool-block');
   const relevant=providers.has('deepseek')||providers.has('kimi-for-coding')||providers.has('volcengine-agent-plan');
   block.hidden=!relevant;
   if(!relevant)return;
+  const pool=data.economics?.work_pool||{},components=pool.components||{};
   const sources=[];
-  if(providers.has('deepseek'))sources.push(poolBalanceSource(data.quota?.deepseek));
-  if(providers.has('kimi-for-coding'))sources.push(poolPlanSource('kimi',tr('quota.kimiPlan'),data.quota?.['kimi-for-coding']));
-  if(providers.has('volcengine-agent-plan'))sources.push(poolPlanSource('ark',tr('quota.arkPlan'),data.quota?.['volcengine-agent-plan']));
+  if(providers.has('kimi-for-coding'))sources.push(attachPoolFit(poolPlanSource('kimi',tr('quota.kimiPlan'),data.quota?.['kimi-for-coding']),components.kimi));
+  if(providers.has('volcengine-agent-plan'))sources.push(attachPoolFit(poolPlanSource('ark',tr('quota.arkPlan'),data.quota?.['volcengine-agent-plan']),components.plan));
+  if(providers.has('deepseek'))sources.push(attachPoolFit(poolBalanceSource(data.quota?.deepseek),components.balance));
   const available=sources.filter(x=>x.available).length;
-  const stateValue=!sources.length?'unknown':available===sources.length?'ready':available?'partial':'unavailable';
+  const remainingPercent=Number(pool.remaining_percent);
+  const stateValue=!Number.isFinite(remainingPercent)?'unknown':remainingPercent<=0?'unavailable':remainingPercent<50||available<sources.length?'partial':'ready';
   const previousState=block.dataset.poolState;
   block.dataset.poolState=stateValue;
   const state=$('pool-state');
   state.textContent=poolStateText(stateValue);
   state.className='quota-state '+(stateValue==='ready'?'healthy':stateValue==='unavailable'?'critical':stateValue==='unknown'?'':'tight');
   if(previousState&&previousState!==stateValue&&!reducedMotion()){block.classList.remove('pool-state-changed');void block.offsetWidth;block.classList.add('pool-state-changed');setTimeout(()=>block.classList.remove('pool-state-changed'),650);}
-  setHTML($('pool-summary'),`<div class="pool-health"><strong>${available}/${sources.length}</strong><span>${esc(tr('quota.poolSourcesAvailable'))}</span></div>`);
-  renderPoolBar(sources);
+  setHTML($('pool-summary'),`<div class="pool-health"><strong>${Number.isFinite(remainingPercent)?Math.round(remainingPercent)+'%':'—'}</strong><span>${esc(tr('quota.poolRemaining'))}</span></div>`);
+  renderPoolBar(sources,pool);
   setHTML($('pool-components'),sources.map(x=>`<div class="pool-component ${x.key} ${x.tone}"><i class="component-dot ${x.key}" aria-hidden="true"></i><span class="component-copy"><strong>${esc(x.label)}</strong><small>${esc(x.detail)}</small></span><span class="component-state">${esc(x.state)}</span></div>`).join(''));
-  $('pool-next').textContent=tr('quota.poolRoutingNote');
+  const refill=Array.isArray(pool.refills)?pool.refills[0]:null;
+  const refillName=refill?.provider==='kimi'?tr('quota.kimiPlan'):refill?.provider==='plan'?tr('quota.arkPlan'):'';
+  $('pool-next').textContent=refill?tr('quota.poolNextRefill',{provider:refillName,time:resetCountdown(resetDate(refill.resets_at)),value:Math.round(refill.projected_remaining_percent)}):tr('quota.poolFitNote');
 }
 function duration(item) { if (!item.started_at) return tr('duration.waiting'); const s = Math.max(0, Math.round((item.finished_at || Date.now()/1000)-item.started_at)); if(s<60)return tr('duration.seconds',{n:s}); if(s<3600)return tr('duration.minutes',{m:Math.floor(s/60),s:s%60}); return tr('duration.hours',{h:Math.floor(s/3600),m:Math.floor(s%3600/60)}); }
 function formatBytes(value){const n=Number(value);if(!Number.isFinite(n))return '—';const gb=n/2**30;return (I18n?I18n.number(gb,{maximumFractionDigits:gb>=100?0:1}):gb.toFixed(gb>=100?0:1))+' GB';}
@@ -213,7 +230,7 @@ function renderInlineDetail(state){
  feedback.textContent=state.error?tr('activity.refreshError',{message:state.error}):tr('activity.refreshing');
  if(!d){delete $('detail-body').dataset.rendered;setHTML($('detail-body'),`<p class="muted">${esc(state.error?tr('activity.retryHint'):tr('detail.loading'))}</p>`);return;}
  const t=d.task,r=d.report||{};
- const options={tr,esc,number,clock};
+ const options={tr,esc,number,clock,taskId:t.id,fullMessages:fullActivityMessages,expandedMessages:expandedActivityMessages};
  const actions=`<div class="task-detail-actions">${['running','uncertain'].includes(t.status)?`<button class="primary-button" data-steer-task="${esc(t.id)}">${tr('detail.steer')}</button>`:''}${['queued',...activeStates].includes(t.status)?`<button class="secondary-button" data-cancel-task="${esc(t.id)}">${tr('detail.stop')}</button>`:''}${d.session_url?`<a class="detail-link" href="${esc(d.session_url)}" target="_blank" rel="noopener">${tr('detail.openTask')}</a>`:''}</div>`;
  const body=$('detail-body');
  const selection=window.getSelection?.();
@@ -235,6 +252,7 @@ function renderInlineDetail(state){
  if(focusedSection)body.querySelector('details[data-section="'+focusedSection+'"] summary')?.focus({preventScroll:true});
  else if(activityFocused)activity?.focus({preventScroll:true});
 }
+$('detail-body').addEventListener('click',async event=>{const button=event.target.closest('[data-expand-activity]');if(!button)return;const taskId=detailController.state().selected,eventId=button.dataset.expandActivity,key=taskId+':'+eventId;if(expandedActivityMessages.has(key)){expandedActivityMessages.delete(key);renderInlineDetail(detailController.state());return;}button.disabled=true;try{if(!fullActivityMessages.has(key)){const result=await request('/console-api/task/'+encodeURIComponent(taskId)+'/event/'+encodeURIComponent(eventId));fullActivityMessages.set(key,result.text||'');}expandedActivityMessages.add(key);renderInlineDetail(detailController.state());}catch(error){showError(error.message);}finally{button.disabled=false;}});
 function details(id){const direction=selectedTask===id?'collapse':'expand';motionTransition('task-detail',()=>{detailController.open(id);},direction);}
 $('groups').addEventListener('click',e=>{const b=e.target.closest('[data-group]');if(!b||b.dataset.group===selectedGroup)return;motionTransition('task-list',()=>{selectedGroup=b.dataset.group;renderGroups();renderTasks();});});
 $('filters').addEventListener('click',e=>{const b=e.target.closest('[data-filter]');if(!b||b.dataset.filter===selectedFilter)return;motionTransition('task-list',()=>{selectedFilter=b.dataset.filter;for(const x of $('filters').querySelectorAll('button')){x.classList.toggle('selected',x===b);x.setAttribute('aria-pressed',String(x===b));}renderTasks();});});

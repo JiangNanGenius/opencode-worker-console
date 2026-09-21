@@ -158,6 +158,9 @@ class PoolTests(unittest.TestCase):
         paused = quota.consumption_estimate(window, idle, now)
         self.assertTrue(paused['idle'])
         self.assertGreater(paused['hours'], active['hours'])
+        exhausted = quota.consumption_estimate(dict(window, remaining_percent=0), burning, now)
+        self.assertEqual(exhausted['hours'], 0.0)
+        self.assertGreater(exhausted['rate_percent_per_hour'], 0)
 
     def test_quota_view_exposes_estimate_without_exposing_history(self):
         now = time.time()
@@ -182,6 +185,7 @@ class PoolTests(unittest.TestCase):
         estimate = rendered['balances'][0]['consumption_estimate']
         self.assertAlmostEqual(estimate['rate_balance_per_hour'], 20.0, places=1)
         self.assertAlmostEqual(estimate['hours'], 3.0, places=1)
+        self.assertEqual(estimate['observed_capacity'], 80.0)
         self.assertNotIn('samples', rendered)
 
     def test_payg_range_does_not_extrapolate_a_short_burst(self):
@@ -191,6 +195,16 @@ class PoolTests(unittest.TestCase):
         estimate = quota.balance_consumption_estimate(value, samples, now)
         self.assertIsNone(estimate['hours'])
         self.assertEqual(estimate['source'], 'collecting')
+        self.assertEqual(estimate['observed_capacity'], 61.0)
+
+    def test_exhausted_payg_keeps_observed_full_capacity_for_the_pool(self):
+        now = time.time()
+        value = {'currency': 'CNY', 'remaining': 0.0}
+        samples = [{'time': now - 3600, 'balances': {'CNY': 60.0}}]
+        estimate = quota.balance_consumption_estimate(value, samples, now)
+        self.assertEqual(estimate['hours'], 0.0)
+        self.assertEqual(estimate['rate_balance_per_hour'], 60.0)
+        self.assertEqual(estimate['observed_capacity'], 60.0)
 
     def test_payg_range_can_use_official_token_pricing_before_balance_history_matures(self):
         now = time.time()

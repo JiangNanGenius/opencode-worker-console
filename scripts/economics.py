@@ -196,80 +196,161 @@ def _non_negative(value):
     return value if math.isfinite(value) and value >= 0 else None
 
 
-def work_pool(config, quota_view):
-    """Normalized, additive view of the total available work pool.
+def _percent(amount, capacity):
+    if amount is None or capacity is None or capacity <= 0:
+        return None
+    return round(max(0.0, min(100.0, amount / capacity * 100)), 3)
 
-    The normalization boundary lives here, next to the existing configurable
-    CNY->AFP-equivalent ruler, so the UI never sums raw CNY against AFP units.
 
-    * ``balance`` is every fresh CNY pay-as-you-go balance converted with the
-      configured cost ruler (1/``afp_cny_per_unit``). Non-CNY balances are
-      excluded: there is no defined FX normalization for them.
-    * ``plan`` is the authoritative live Ark monthly AFP allowance (the
-      control-plane AFPMonthly ``remaining`` value), never a nominal plan-price
-      estimate.
+def _selected_window(provider, record):
+    windows = [item for item in record.get('windows') or [] if isinstance(item, dict)
+               and item.get('valid') is not False and _non_negative(item.get('remaining_percent')) is not None]
+    if not windows:
+        return None
+    preferred = 'overall' if provider == 'kimi-for-coding' else 'AFPWeekly'
+    return next((item for item in windows if item.get('name') == preferred), None) or \
+        max(windows, key=lambda item: _non_negative(item.get('duration_minutes')) or 0.0)
 
-    Each component carries its own status/unit/stale metadata so a missing,
-    zero or stale source renders as one segment or zero without being mistaken
-    for the other. Kimi is intentionally absent: its endpoint exposes no
-    additive work-unit allowance (see module note).
-    """
-    values = normalize((config or {}).get('economics'))
-    per_cny = 1.0 / values['afp_cny_per_unit']
-    view = quota_view if isinstance(quota_view, dict) else {}
 
-    balance_amount = 0.0
-    balance_source = 0.0
-    balance_currencies = []
-    balance_state = 'missing'
-    deepseek = view.get('deepseek') if isinstance(view.get('deepseek'), dict) else {}
-    if deepseek:
-        balances = deepseek.get('balances') or []
-        cny = [b for b in balances if isinstance(b, dict) and b.get('currency') == 'CNY']
-        balance_currencies = sorted({b.get('currency') for b in balances
-                                     if isinstance(b, dict) and b.get('currency')})
-        if cny:
-            known = [a for a in (_non_negative(b.get('remaining')) for b in cny) if a is not None]
-            if known:
-                balance_source = sum(known)
-                balance_amount = balance_source * per_cny
-                if deepseek.get('available') is False:
-                    balance_state = 'unavailable'
-                elif deepseek.get('stale'):
-                    balance_state = 'stale'
-                else:
-                    balance_state = 'ok'
-            else:
-                balance_state = 'unknown'
-        else:
-            balance_state = 'missing' if deepseek.get('state') in (None, 'ok') else 'unknown'
-
-    monthly = _monthly_ark(view)
-    ark = view.get('volcengine-agent-plan') if isinstance(view.get('volcengine-agent-plan'), dict) else {}
-    plan_amount = _non_negative(monthly['remaining']) if monthly else None
-    if plan_amount is None:
-        plan_state = 'missing' if not ark else ('unknown' if ark.get('state') not in (None, 'ok') else 'missing')
+def _window_fit(provider, record):
+    window = _selected_window(provider, record)
+    if window is None:
+        return {'amount': None, 'capacity': None, 'remaining_percent': None,
+                'source_amount': None, 'unit': 'fitted-hours',
+                'status': 'missing' if not record else 'unknown', 'stale': bool(record.get('stale'))}
+    remaining = _non_negative(window.get('remaining_percent'))
+    estimate = window.get('consumption_estimate') if isinstance(window.get('consumption_estimate'), dict) else {}
+    rate = _non_negative(estimate.get('rate_percent_per_hour'))
+    duration = _non_negative(window.get('duration_minutes'))
+    # The live burn rate is authoritative. A full-window duration is only the
+    # cold-start prior, so a newly reset plan immediately re-enters the pool
+    # while its next-cycle fit is still collecting.
+    fitted_capacity = 100.0 / rate if rate and rate > .000001 else None
+    window_capacity = duration / 60.0 if duration else None
+    # A subscription window cannot contribute more useful runtime than the
+    # time until its next refill. This keeps long idle periods from inflating a
+    # weekly plan into several weeks of apparent capacity.
+    capacity = min(fitted_capacity, window_capacity) if fitted_capacity is not None and window_capacity is not None \
+        else fitted_capacity if fitted_capacity is not None else window_capacity
+    amount = capacity * remaining / 100.0 if capacity is not None else None
+    if amount is not None and record.get('available') is False:
+        amount = 0.0
+    if remaining <= 0 or record.get('available') is False:
+        state = 'unavailable'
     else:
-        plan_state = 'stale' if ark.get('stale') else 'ok'
+        state = 'stale' if record.get('stale') else 'ok'
+    return {'amount': round(amount, 3) if amount is not None else None,
+            'capacity': round(capacity, 3) if capacity is not None else None,
+            'remaining_percent': _percent(amount, capacity),
+            'source_amount': round(remaining, 3), 'unit': 'fitted-hours',
+            'status': state, 'stale': state == 'stale', 'resets_at': window.get('resets_at'),
+            'window': window.get('name'),
+            'fit_source': 'observed_burn' if rate and rate > .000001 else 'window_prior'}
 
-    balance = {'amount': 0.0 if balance_state == 'unavailable' else round(balance_amount, 3),
-               'unit': 'AFP-equivalent',
-               'source_amount': round(balance_source, 3), 'currency': 'CNY',
-               'status': balance_state, 'stale': balance_state == 'stale',
-               'excluded_currencies': [c for c in balance_currencies if c != 'CNY']}
-    plan = {'amount': round(plan_amount, 3) if plan_amount is not None else None,
-            'source_amount': round(plan_amount, 3) if plan_amount is not None else None,
-            'unit': 'AFP', 'status': plan_state, 'stale': plan_state == 'stale',
-            'resets_at': monthly.get('resets_at') if monthly else None}
-    return {'unit': 'AFP-equivalent', 'total': round(balance['amount'] + (plan['amount'] or 0.0), 3),
-            'components': {'balance': balance, 'plan': plan},
-            'complete': balance_state in ('ok', 'stale') and plan_state in ('ok', 'stale'),
-            'normalization': {'rule': 'cny_balance / settings.economics.afp_cny_per_unit',
-                              'afp_eq_per_cny': per_cny,
-                              'plan_source': 'live Ark AFPMonthly remaining',
-                              'kimi_included': False,
-                              'notes': {'balance_is_cost_ruler': True,
-                                        'plan_is_authoritative_afp': True}}}
+
+def _balance_fit(record):
+    balances = record.get('balances') or []
+    cny = [item for item in balances if isinstance(item, dict) and item.get('currency') == 'CNY']
+    currencies = sorted({item.get('currency') for item in balances
+                         if isinstance(item, dict) and item.get('currency')})
+    remaining_value = remaining_hours = capacity_hours = 0.0
+    fitted = 0
+    for item in cny:
+        remaining = _non_negative(item.get('remaining'))
+        estimate = item.get('consumption_estimate') if isinstance(item.get('consumption_estimate'), dict) else {}
+        rate = _non_negative(estimate.get('rate_balance_per_hour'))
+        observed = _non_negative(estimate.get('observed_capacity'))
+        if remaining is None:
+            continue
+        remaining_value += remaining
+        if rate and rate > .000001:
+            remaining_hours += remaining / rate
+            capacity_hours += max(remaining, observed or remaining) / rate
+            fitted += 1
+    if not cny:
+        state = 'missing' if not record or record.get('state') in (None, 'ok') else 'unknown'
+    elif record.get('available') is False or remaining_value <= 0:
+        state = 'unavailable'
+    else:
+        state = 'stale' if record.get('stale') else 'ok'
+    amount = remaining_hours if fitted else None
+    capacity = capacity_hours if fitted else None
+    if amount is not None and record.get('available') is False:
+        amount = 0.0
+    return {'amount': round(amount, 3) if amount is not None else None,
+            'capacity': round(capacity, 3) if capacity is not None else None,
+            'remaining_percent': _percent(amount, capacity), 'unit': 'fitted-hours',
+            'source_amount': round(remaining_value, 3), 'currency': 'CNY',
+            'status': state, 'stale': state == 'stale',
+            'excluded_currencies': [currency for currency in currencies if currency != 'CNY'],
+            'fit_source': 'observed_burn' if fitted else 'collecting'}
+
+
+def _reset_seconds(value):
+    if isinstance(value, (int, float)) and math.isfinite(value):
+        return value / 1000.0 if value >= 1e12 else value
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value.strip().replace('Z', '+00:00')).timestamp()
+    except ValueError:
+        return None
+
+
+def _refill_forecast(components, capacity, now):
+    if capacity <= 0:
+        return []
+    current = {key: (item.get('amount') or 0.0) for key, item in components.items()
+               if item.get('capacity') is not None}
+    events = []
+    for key in ('kimi', 'plan'):
+        item = components[key]
+        stamp = _reset_seconds(item.get('resets_at'))
+        if stamp is not None and stamp > now and item.get('capacity') is not None:
+            events.append((stamp, key))
+    forecast = []
+    previous = now
+    for stamp, key in sorted(events):
+        elapsed = max(0.0, (stamp - previous) / 3600.0)
+        current = {name: max(0.0, amount - elapsed) for name, amount in current.items()}
+        current[key] = components[key]['capacity']
+        total = sum(current.values())
+        forecast.append({'provider': key, 'resets_at': components[key].get('resets_at'),
+                         'hours_until': round(max(0.0, (stamp - now) / 3600.0), 2),
+                         'projected_remaining_percent': _percent(total, capacity)})
+        previous = stamp
+    return forecast
+
+
+def work_pool(config, quota_view, now=None):
+    """Fit unlike provider quotas onto one actual-workload runtime axis.
+
+    Each slot's full width is its estimated runtime at its own observed burn
+    rate; the filled part is the fitted runtime still available. No AFP, token
+    price, or plan purchase price is used to weight this meter. Window duration
+    is a temporary cold-start prior only, allowing a reset source to reappear
+    before enough new-cycle samples exist.
+    """
+    view = quota_view if isinstance(quota_view, dict) else {}
+    deepseek = view.get('deepseek') if isinstance(view.get('deepseek'), dict) else {}
+    kimi = view.get('kimi-for-coding') if isinstance(view.get('kimi-for-coding'), dict) else {}
+    ark = view.get('volcengine-agent-plan') if isinstance(view.get('volcengine-agent-plan'), dict) else {}
+    components = {'balance': _balance_fit(deepseek),
+                  'kimi': _window_fit('kimi-for-coding', kimi),
+                  'plan': _window_fit('volcengine-agent-plan', ark)}
+    known = [item for item in components.values() if item.get('capacity') is not None]
+    total = sum(item.get('amount') or 0.0 for item in known)
+    capacity = sum(item['capacity'] for item in known)
+    refills = _refill_forecast(components, capacity, time.time() if now is None else now)
+    return {'unit': 'fitted-hours', 'total': round(total, 3),
+            'capacity': round(capacity, 3), 'remaining_percent': _percent(total, capacity),
+            'components': components, 'refills': refills,
+            'complete': bool(known) and all(item.get('status') in ('ok', 'stale') for item in known),
+            'normalization': {'rule': 'remaining_runtime / fitted_full_runtime',
+                              'kimi_included': components['kimi'].get('capacity') is not None,
+                              'notes': {'weights_use_observed_burn': True,
+                                        'afp_not_used_as_weight': True,
+                                        'prices_not_used_as_weight': True}}}
 
 
 def summary(config, quota_view):

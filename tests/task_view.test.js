@@ -34,6 +34,20 @@ test('activity shows the newest progress first without mutating the source event
  assert.deepEqual(events.map(event=>event.id),['old','new']);
 });
 
+test('truncated activity expands to the complete cached message and can collapse again', () => {
+ const activity={events:[{id:'evt-long',type:'assistant',label:'assistant',status:'completed',text:'preview…',truncated:true,time:2}]};
+ const collapsed=View.activityHTML(activity,{...display,taskId:'job-1'});
+ assert.match(collapsed,/data-expand-activity="evt-long"/);
+ assert.match(collapsed,/aria-expanded="false"/);
+ assert.match(collapsed,/activity\.expand/);
+ const key='job-1:evt-long';
+ const expanded=View.activityHTML(activity,{...display,taskId:'job-1',fullMessages:new Map([[key,'complete <tail>']]),expandedMessages:new Set([key])});
+ assert.match(expanded,/complete &lt;tail&gt;/);
+ assert.match(expanded,/aria-expanded="true"/);
+ assert.match(expanded,/activity\.collapse/);
+ assert.doesNotMatch(expanded,/complete <tail>/);
+});
+
 test('polling cancels a closed task and ignores late replies', async () => {
  let resolve,signal;
  const c=View.createController({changed:()=>{},request:(_p,options)=>{signal=options.signal;return new Promise(r=>resolve=r);}});
@@ -149,28 +163,36 @@ test('quota range distinguishes paused sampling, collection and burn estimates',
   assert.match(h.run("quotaWindows([{name:'AFPFiveHour',remaining_percent:70,duration_minutes:300,resets_at:new Date(Date.now()+3600000).toISOString()}],true)"),/quota-window-reset/);
 });
 
-test('work pool shows schedulable providers without cost-equivalent arithmetic', async () => {
+test('work pool uses fitted runtime, with DeepSeek as a small observed share', async () => {
   const h=appHarness();await tick();
-  h.run('data.quota={deepseek:{available:true,balances:[{remaining:60.21,currency:"CNY"}]},"kimi-for-coding":{available:true,windows:[{name:"overall",remaining_percent:0}]},"volcengine-agent-plan":{available:true,windows:[{name:"AFPWeekly",remaining_percent:44}]}};data.profiles={ds:{model:"deepseek/flash"},kimi:{model:"kimi-for-coding/k3"},ark:{model:"volcengine-agent-plan/k3"}};renderQuota()');
+  h.run('data.quota={deepseek:{available:true,balances:[{remaining:50,currency:"CNY"}]},"kimi-for-coding":{available:false,windows:[{name:"overall",remaining_percent:0}]},"volcengine-agent-plan":{available:true,windows:[{name:"AFPWeekly",remaining_percent:44}]}};data.economics={work_pool:{capacity:321.667,total:80,remaining_percent:24.87,refills:[{provider:"kimi",resets_at:new Date(Date.now()+72000000).toISOString(),projected_remaining_percent:66}],components:{balance:{capacity:30,amount:25,remaining_percent:83.333},kimi:{capacity:166.667,amount:0,remaining_percent:0},plan:{capacity:125,amount:55,remaining_percent:44}}}};data.profiles={ds:{model:"deepseek/flash"},kimi:{model:"kimi-for-coding/k3"},ark:{model:"volcengine-agent-plan/k3"}};renderQuota()');
   const bar=h.get('pool-bar');
-  assert.match(bar.innerHTML,/data-segment="deepseek"[^>]*width:33\.333%/);
-  assert.match(bar.innerHTML,/data-segment="kimi"/);
-  assert.match(bar.innerHTML,/data-segment="ark"/);
-  assert.equal(bar.getAttribute('aria-label'),'quota.poolSourcesAria');
-  assert.match(h.get('pool-summary').innerHTML,/2\/3/);
+  assert.match(bar.innerHTML,/data-segment="kimi"[^>]*width:0\.000%/);
+  assert.match(bar.innerHTML,/data-segment="ark"[^>]*width:17\.098%/);
+  assert.match(bar.innerHTML,/data-segment="deepseek"[^>]*width:7\.772%/);
+  assert.equal(bar.getAttribute('aria-label'),'quota.poolCapacityAria');
+  assert.match(h.get('pool-summary').innerHTML,/25%/);
   const components=h.get('pool-components').innerHTML;
-  assert.match(components,/¥60\.21/);
+  assert.match(components,/¥50\.00/);
   assert.match(components,/quota\.weekly · 0%/);
   assert.match(components,/quota\.weekly · 44%/);
   assert.doesNotMatch(h.get('pool-summary').innerHTML+components,/AFP-equivalent|≈/);
   assert.equal(h.get('pool-state').textContent,'quota.poolReduced');
+  assert.equal(h.get('pool-next').textContent,'quota.poolNextRefill');
 });
 
 test('work pool remains visible for a Kimi-only installation', async () => {
   const h=appHarness();await tick();
-  h.run('data.quota={"kimi-for-coding":{available:true,windows:[{name:"overall",remaining_percent:75}]}};data.profiles={kimi:{model:"kimi-for-coding/k3"}};renderQuota()');
-  assert.equal(h.get('pool-summary').innerHTML.includes('1/1'),true);
+  h.run('data.quota={"kimi-for-coding":{available:true,windows:[{name:"overall",remaining_percent:75}]}};data.economics={work_pool:{capacity:168,total:126,remaining_percent:75,components:{kimi:{capacity:168,amount:126,remaining_percent:75}}}};data.profiles={kimi:{model:"kimi-for-coding/k3"}};renderQuota()');
+  assert.match(h.get('pool-summary').innerHTML,/75%/);
   assert.match(h.get('pool-components').innerHTML,/quota\.kimiPlan/);
+});
+
+test('Kimi reset restores its fitted capacity to the total work pool', async () => {
+  const h=appHarness();await tick();
+  h.run('data.quota={"kimi-for-coding":{available:true,windows:[{name:"overall",remaining_percent:100}]}};data.economics={work_pool:{capacity:168,total:168,remaining_percent:100,components:{kimi:{capacity:168,amount:168,remaining_percent:100}}}};data.profiles={kimi:{model:"kimi-for-coding/k3"}};renderQuota()');
+  assert.match(h.get('pool-summary').innerHTML,/100%/);
+  assert.match(h.get('pool-bar').innerHTML,/data-segment="kimi"[^>]*width:100\.000%/);
 });
 
 

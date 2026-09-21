@@ -407,6 +407,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(503, {'error': str(e)})
         elif path == '/console-api/state':
             self.reply(200, state())
+        elif path.startswith('/console-api/task/') and '/event/' in path:
+            try:
+                tail = path[len('/console-api/task/'):]
+                task_id, event_id = tail.split('/event/', 1)
+                t = task(urllib.parse.unquote(task_id))
+                text = task_activity.full_event_text(t, urllib.parse.unquote(event_id))
+                self.reply(200, redact({'text': text}))
+            except ValueError as error:
+                self.reply(404, {'error': str(error)})
         elif path.startswith('/console-api/task/'):
             try:
                 t = task(path.rsplit('/', 1)[1])

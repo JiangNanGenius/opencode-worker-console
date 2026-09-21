@@ -24,14 +24,16 @@
     const partial = usage.complete === false ? `<p class="muted">${esc(tr('usage.partial'))}</p>` : '';
     return `<section class="task-usage" aria-label="${esc(tr('usage.heading'))}"><h3>${esc(tr('usage.heading'))}</h3><dl class="usage-breakdown">${values}</dl>${partial}<p class="muted">${esc(tr('usage.note'))}</p></section>`;
   }
-  function activityHTML(activity, { tr, esc, clock }) {
+  function activityHTML(activity, { tr, esc, clock, taskId = '', fullMessages = new Map(), expandedMessages = new Set() }) {
     activity = activity || {};
     const events = Array.isArray(activity.events) ? activity.events.slice().reverse() : [];
     const rows = events.map(event => {
       const labelKeys = {assistant:'activity.message',user:'activity.user',guidance:'activity.guidance',status:'activity.state'};
       const label = labelKeys[event.label] ? tr(labelKeys[event.label]) : (event.label || tr('activity.' + (event.type === 'tool' ? 'tool' : 'message')));
       const state = ['pending', 'running', 'completed', 'error'].includes(event.status) ? event.status : 'info';
-      return `<li data-event-id="${esc(event.id || '')}"><div class="activity-event-heading"><span class="activity-event-state ${state}">${esc(tr('activity.' + state))}</span><strong>${esc(label)}</strong><time>${esc(clock(event.time))}</time></div>${event.text ? `<pre>${esc(event.text)}</pre>` : ''}</li>`;
+      const eventId=event.id||'',messageKey=taskId+':'+eventId,full=fullMessages.get(messageKey),expandable=event.truncated===true||typeof full==='string',expanded=expandable&&expandedMessages.has(messageKey),text=typeof full==='string'?full:event.text;
+      const message=text?`<div class="activity-message ${expanded?'expanded':'collapsed'}" data-message-key="${esc(messageKey)}"><pre>${esc(text)}</pre>${expandable?`<button type="button" class="activity-expand" data-expand-activity="${esc(eventId)}" aria-expanded="${expanded}">${esc(tr(expanded?'activity.collapse':'activity.expand'))}</button>`:''}</div>`:'';
+      return `<li data-event-id="${esc(eventId)}"><div class="activity-event-heading"><span class="activity-event-state ${state}">${esc(tr('activity.' + state))}</span><strong>${esc(label)}</strong><time>${esc(clock(event.time))}</time></div>${message}</li>`;
     }).join('');
     const source = activity.source === 'live' ? 'activity.live' : 'activity.saved';
     return `<section class="task-activity" aria-label="${esc(tr('activity.heading'))}"><div class="activity-heading"><h3>${esc(tr('activity.heading'))}</h3><span class="muted">${esc(tr(source))}${activity.sampled_at ? ' · ' + esc(clock(activity.sampled_at)) : ''}</span></div>${activity.stale ? `<p class="activity-warning" role="status">${esc(tr('activity.stale'))}${activity.error ? ' ' + esc(activity.error) : ''}</p>` : ''}<div class="activity-scroll" tabindex="0" role="region" aria-label="${esc(tr('activity.heading'))}">${rows ? `<ol class="activity-events">${rows}</ol>` : `<p class="muted activity-empty">${esc(tr('activity.empty'))}</p>`}</div>${activity.has_more ? `<p class="muted">${esc(tr('activity.recentOnly'))}</p>` : ''}</section>`;

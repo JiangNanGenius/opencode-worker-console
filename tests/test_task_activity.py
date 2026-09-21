@@ -491,6 +491,23 @@ class RetainedEvidenceTests(IsolatedCase):
         self.assertIn('prompt carrying <redacted>', user_event['text'])
         self.assertNotIn(FAKE_KEY, user_event['text'])
 
+    def test_long_assistant_message_is_previewed_then_loaded_in_full(self):
+        task_id = 'job-0000000000000016'
+        full = ('Detailed progress line. ' * 30) + FAKE_KEY + ' complete tail marker'
+        messages = [assistant('msg_a', sample_tokens(10, 1, 2, 3, 4, 0), cost=0.01,
+                              parts=[text_part('prt_long', full)])]
+        self.write_messages(task_id, messages)
+        task = self.task(task_id)
+        activity = ta.activity_from_messages(messages, task)
+        event = next(item for item in activity['events'] if item['id'] == 'prt_long')
+        self.assertTrue(event['truncated'])
+        self.assertLess(len(event['text']), len(full))
+        with patch.object(common, 'api', side_effect=AssertionError('terminal tasks must not fetch')):
+            expanded = ta.full_event_text(task, 'prt_long')
+        self.assertIn('complete tail marker', expanded)
+        self.assertNotIn(FAKE_KEY, expanded)
+        self.assertIn('<redacted>', expanded)
+
     def test_events_are_bounded_chronological_and_stable(self):
         parts = [tool_part('prt_%03d' % index, inputs={'command': 'echo %d' % index},
                            at=DAY_MS + index * 1000) for index in range(90)]
@@ -638,6 +655,19 @@ class ConsoleIntegrationTests(IsolatedCase):
         self.assertEqual(entry['usage']['total'], 60)
         self.assertEqual(entry['usage']['source'], 'result')
         self.assertIsNone(entry['usage']['cache_read'])
+
+    def test_full_activity_message_endpoint_requires_auth_and_returns_complete_text(self):
+        task_id = 'job-0000000000000031'
+        full = ('long model response ' * 40) + 'endpoint tail marker'
+        self.write_messages(task_id, [assistant('msg_a', sample_tokens(12, 2, 2, 2, 6, 0), cost=0.01,
+                                               parts=[text_part('prt_long', full)])])
+        self.write_task(self.task(task_id))
+        self.start_server()
+        path = '/console-api/task/' + task_id + '/event/prt_long'
+        self.assertEqual(self.call('GET', path)['status'], 401)
+        response = self.call('GET', path, headers={'Cookie': self.login_cookie()})
+        self.assertEqual(response['status'], 200)
+        self.assertEqual(json.loads(response['body'])['text'], full)
 
 
 if __name__ == '__main__':

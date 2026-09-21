@@ -464,9 +464,10 @@ def _display_text(kind, value, limit):
             text = text.replace('\n\n\n', '\n\n')
     else:
         text = ' '.join(value.split())
-    if len(text) > limit:
+    truncated = len(text) > limit
+    if truncated:
         text = text[:limit].rstrip() + '…'
-    return text
+    return text, truncated
 
 
 def _finalize(events):
@@ -480,10 +481,12 @@ def _finalize(events):
         if not isinstance(event, dict):
             continue
         kind = event.get('type') if isinstance(event.get('type'), str) else 'status'
-        result.append({'id': event.get('id'), 'type': kind, 'status': event.get('status'),
-                       'label': event.get('label'),
-                       'text': _display_text(kind, event.get('text'), DISPLAY_LIMITS.get(kind, 200)),
-                       'time': event.get('time')})
+        text, truncated = _display_text(kind, event.get('text'), DISPLAY_LIMITS.get(kind, 200))
+        item = {'id': event.get('id'), 'type': kind, 'status': event.get('status'),
+                'label': event.get('label'), 'text': text, 'time': event.get('time')}
+        if truncated:
+            item['truncated'] = True
+        result.append(item)
     return result
 
 
@@ -516,6 +519,49 @@ def _build_events(messages, task, extra_events=(), limit=MAX_EVENTS):
 def events_from_messages(messages, task=None, limit=MAX_EVENTS):
     """Bounded, redacted, chronological events from native message dictionaries."""
     return _build_events(messages, task, limit=limit)
+
+
+def full_event_text(task, event_id):
+    """Return one complete redacted assistant text part on explicit request."""
+    if not isinstance(task, dict) or not isinstance(event_id, str) or not event_id:
+        raise ValueError('Invalid activity event')
+    messages = None
+    if _live_candidate(task):
+        try:
+            messages = common.api('/session/' + task['session_id'] + '/message?limit=' + str(MESSAGE_WINDOW),
+                                  _session_directory(task), timeout=max(5, LIVE_TIMEOUT))
+            if isinstance(messages, tuple):
+                messages = messages[0]
+        except Exception:
+            messages = None
+    if not isinstance(messages, list):
+        messages, _ = _load_messages(task.get('id'))
+    for message_index, message in enumerate(messages or []):
+        if not isinstance(message, dict):
+            continue
+        info = message.get('info') if isinstance(message.get('info'), dict) else {}
+        if info.get('role') != 'assistant':
+            continue
+        message_id = info.get('id') if isinstance(info.get('id'), str) and info.get('id') else \
+            'position:%d' % message_index
+        for part_index, part in enumerate(message.get('parts') or []):
+            if not isinstance(part, dict) or part.get('type') != 'text' or not isinstance(part.get('text'), str):
+                continue
+            candidate = part.get('id') or _stable_id('text', message_id, part_index)
+            if candidate == event_id:
+                redacted = common.redact(part['text'])
+                if not isinstance(redacted, str):
+                    raise ValueError('Activity message unavailable')
+                return redacted
+    result, _ = _read_json(common.STATE / 'artifacts' / str(task.get('id')) / 'result.json')
+    report = result.get('worker_report') if isinstance(result, dict) else None
+    summary = report.get('summary') if isinstance(report, dict) else None
+    candidate = _stable_id('result-summary', task.get('id'), summary[:200]) if isinstance(summary, str) else None
+    if candidate == event_id:
+        redacted = common.redact(summary)
+        if isinstance(redacted, str):
+            return redacted
+    raise ValueError('Activity message unavailable')
 
 
 def activity_from_messages(messages, task=None, source='saved', sampled_at=None, has_more=False,
