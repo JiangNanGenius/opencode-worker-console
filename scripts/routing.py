@@ -31,6 +31,7 @@ MAX_TIER_PROFILES = 16
 MAX_WEIGHT = 100
 MAX_CREDIT = MAX_WEIGHT * MAX_STAGE_ENTRIES
 MAX_LADDER_STEPS = 7
+MAX_SPILLOVER_SHARE = 50
 
 # Quota-aware dynamic admission weights inside one same-capability stage.
 # Stored policy weights stay the baseline preference; only the in-memory advance
@@ -133,6 +134,58 @@ def runtime_dynamics(value, policy, profiles):
 def configured_dynamics(c, policy=None):
     policy = policy if policy is not None else configured(c)
     return runtime_dynamics(c.get('routing_dynamics'), policy, c.get('profiles'))
+
+
+def validate_spillover(value, policy, profiles):
+    """Validate optional early fallback sharing while plan runway is constrained.
+
+    The target must already be a later fallback in every selected tier. This keeps
+    spillover within the user's ordered policy and prevents an arbitrary profile from
+    being injected into automatic routing. The percentage is a ceiling, not a fixed
+    share: runtime grows from zero toward it as the best remaining plan runway falls.
+    """
+    if value in (None, {}):
+        return None
+    if not isinstance(value, dict) or set(value) != {'enabled', 'profile', 'tiers', 'max_share_percent'}:
+        raise ValueError('quota_spillover requires enabled, profile, tiers and max_share_percent')
+    enabled = value.get('enabled')
+    if not isinstance(enabled, bool):
+        raise ValueError('quota_spillover.enabled must be boolean')
+    profile = value.get('profile')
+    profile_value = (profiles or {}).get(profile) if isinstance(profile, str) else None
+    if not isinstance(profile_value, dict) or profile_value.get('enabled') is False or not profile_value.get('model'):
+        raise ValueError('quota_spillover.profile must reference an enabled profile')
+    tiers = value.get('tiers')
+    if not isinstance(tiers, list) or not tiers or len(tiers) != len(set(tiers)) or \
+            any(not isinstance(tier, str) or tier not in TIERS for tier in tiers):
+        raise ValueError('quota_spillover.tiers must be unique fast, background or deep values')
+    maximum = value.get('max_share_percent')
+    if isinstance(maximum, bool) or not isinstance(maximum, int) or not 1 <= maximum <= MAX_SPILLOVER_SHARE:
+        raise ValueError('quota_spillover.max_share_percent must be an integer between 1 and ' +
+                         str(MAX_SPILLOVER_SHARE))
+    if not isinstance(policy, dict) or not policy:
+        raise ValueError('quota_spillover requires routing_policy')
+    for tier in tiers:
+        stages = policy.get(tier) or []
+        positions = [index for index, stage in enumerate(stages)
+                     if any(entry.get('profile') == profile for entry in stage)]
+        if not positions or positions[0] == 0:
+            raise ValueError('quota_spillover.profile must be a later fallback in routing_policy.' + tier)
+    return {'enabled': enabled, 'profile': profile, 'tiers': list(tiers),
+            'max_share_percent': maximum}
+
+
+def runtime_spillover(value, policy, profiles):
+    """Fail closed when a stored spillover rule no longer matches its policy."""
+    try:
+        return validate_spillover(value, policy, profiles)
+    except (ValueError, TypeError):
+        return None
+
+
+def configured_spillover(c, policy=None):
+    policy = policy if policy is not None else configured(c)
+    return runtime_spillover(c.get('quota_spillover'), policy, c.get('profiles'))
 
 
 def dynamic_stage(c, tier, index, policy=None):
@@ -464,6 +517,71 @@ def dynamics(entries, provider_by_profile, quota_view=None, now=None, adaptive=N
         info[entry['profile']]['share'] = entry['weight'] / total_effective
     reason = ('runway_shift_left' if step == -1 else 'runway_shift_right')
     return out, reason, info
+
+
+def spillover(entries, provider_by_profile, target_profile, runway_by_provider,
+              threshold_percent, max_share_percent):
+    """Blend a later pay-as-you-go fallback into a constrained plan stage.
+
+    The best known runway among the currently available plan providers controls the
+    blend. This preserves strong-plan capacity when all plans are tight, but avoids
+    paying for fallback merely because one plan is low while another remains healthy.
+    Unknown telemetry fails closed to the original stage. Returned weights total 100
+    for a stable, human-readable effective percentage.
+    """
+    original = [dict(entry) for entry in entries]
+    if not original or target_profile in {entry.get('profile') for entry in original}:
+        return original, 'spillover_not_needed', None
+    try:
+        threshold = float(threshold_percent) / 100.0
+        maximum = int(max_share_percent)
+    except (TypeError, ValueError):
+        return original, 'spillover_invalid', None
+    if threshold <= 0 or not 1 <= maximum <= MAX_SPILLOVER_SHARE:
+        return original, 'spillover_disabled', None
+    providers = []
+    for entry in original:
+        provider = provider_by_profile.get(entry['profile'])
+        if provider and provider not in providers:
+            providers.append(provider)
+    values = [runway_by_provider.get(provider) for provider in providers]
+    if not providers or any(isinstance(value, bool) or not isinstance(value, (int, float)) or
+                            not math.isfinite(value) for value in values):
+        return original, 'spillover_telemetry_unknown', None
+    best = max(0.0, max(float(value) for value in values))
+    if best >= threshold:
+        return original, 'spillover_runway_healthy', None
+    share = int(round(maximum * (1.0 - best / threshold)))
+    if share <= 0:
+        return original, 'spillover_below_one_percent', None
+    share = min(maximum, share)
+    source_budget = 100 - share
+    total = sum(entry['weight'] for entry in original) or 1
+    raw = [source_budget * entry['weight'] / total for entry in original]
+    scaled = [max(1, int(math.floor(value))) for value in raw]
+    # Distribute rounding remainder by largest fractional part, then policy order.
+    delta = source_budget - sum(scaled)
+    order = sorted(range(len(raw)), key=lambda index: (raw[index] - math.floor(raw[index]), -index),
+                   reverse=True)
+    cursor = 0
+    while delta > 0:
+        scaled[order[cursor % len(order)]] += 1
+        cursor += 1
+        delta -= 1
+    while delta < 0:
+        candidates = [index for index, value in enumerate(scaled) if value > 1]
+        if not candidates:
+            return original, 'spillover_invalid_weights', None
+        scaled[candidates[-1]] -= 1
+        delta += 1
+    out = [dict(entry, weight=scaled[index]) for index, entry in enumerate(original)]
+    out.append({'profile': target_profile, 'weight': share})
+    info = {entry['profile']: {'effective_weight': entry['weight'],
+                               'share': entry['weight'] / 100.0,
+                               'provider': provider_by_profile.get(entry['profile']),
+                               'runway': runway_by_provider.get(provider_by_profile.get(entry['profile']))}
+            for entry in out}
+    return out, 'quota_spillover_' + str(share) + 'pct', info
 
 
 def advance(entries, credits):

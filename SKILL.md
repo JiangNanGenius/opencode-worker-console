@@ -215,6 +215,17 @@ K3 Deep task may run globally. Other Deep work uses the configured Ark peer or l
 The threshold and native-K3 slot count are operator settings. A five-hour window is never
 mistaken for the weekly pool, and stale or missing telemetry does not invent a percentage.
 
+The optional early-spill rule protects strong subscription capacity before every plan reaches
+zero. When the combined reset-aware posture is `fast_preferred`, the bridge may blend a bounded
+share of eligible Fast/Normal admissions into a configured later fallback such as direct
+DeepSeek. The share rises gradually from zero as the best available plan runway falls below the
+threshold, and returns to zero after recovery. The healthier plan controls the calculation, so
+one low plan cannot trigger unnecessary paid fallback while another remains healthy. Unknown
+telemetry never triggers early spill. This is provider routing within the selected capability
+tier: Codex still chooses Fast, Normal or Deep from task uncertainty and keeps `profile=auto`.
+The Agent Plan preset defaults to Fast and Normal only with a 30% ceiling; Deep remains on its
+strong-model ladder unless the operator explicitly enables Deep spillover.
+
 Ark Auto (`ark-code-latest`) follows the model setting in the Ark console. Only a console
 setting of Auto enables provider-side automatic routing and its applicable discounts. It
 cannot guarantee K3, but the Worker Desk client ceiling is 1,024,000 so Auto can use a

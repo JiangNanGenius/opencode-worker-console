@@ -937,6 +937,9 @@ def _policy_route(t, c, q, stages, batch=None):
     preview = None
     first_reason = None
     tier = tier_of(t)
+    policy = routing.configured(c)
+    spill_config = routing.configured_spillover(c, policy)
+    spill_guidance = None
     for index, stage in enumerate(stages):
         candidates = []
         for entry in stage:
@@ -954,6 +957,26 @@ def _policy_route(t, c, q, stages, batch=None):
             adaptive = routing.dynamic_stage(c, tier, index)
             entries, dynamic_reason, _ = routing.dynamics(
                 base_entries, provider_by_profile, q, adaptive=adaptive)
+            # A later fallback may absorb a bounded share before subscriptions hit
+            # zero. Explicit profile requests never reach this function, and only
+            # stage zero is blended; once a stage is unavailable, normal ordered
+            # fallback semantics remain in charge.
+            if spill_config and spill_config['enabled'] and index == 0 and tier in spill_config['tiers']:
+                target = spill_config['profile']
+                target_provider, target_ok, target_reason = _allowed_profile(target, t, c, q)
+                source_providers = set(provider_by_profile.values())
+                if target_ok and target_provider not in source_providers:
+                    spill_guidance = spill_guidance or tier_guidance(c, q)
+                    if spill_guidance.get('quota_posture') == 'fast_preferred':
+                        provider_by_profile[target] = target_provider
+                        entries, spill_reason, _ = routing.spillover(
+                            entries, provider_by_profile, target,
+                            spill_guidance.get('runway') or {},
+                            spill_guidance.get('runway_threshold_percent', 75),
+                            spill_config['max_share_percent'])
+                        dynamic_reason += ':' + spill_reason
+                        if any(entry['profile'] == target for entry in entries):
+                            candidates.append(({'profile': target, 'weight': 1}, target_reason))
             if batch is not None:
                 chosen, credits = routing.advance(entries, batch.credits_for(tier))
                 batch.propose(tier, credits)
@@ -1191,6 +1214,8 @@ def routing_status(c, q):
     policy = routing.configured(c)
     if not policy:
         return None
+    spill_config = routing.configured_spillover(c, policy)
+    spill_guidance = tier_guidance(c, q) if spill_config and spill_config['enabled'] else None
     out = {}
     for tier in routing.TIERS:
         stages = policy.get(tier)
@@ -1213,8 +1238,25 @@ def routing_status(c, q):
                 profile = c['profiles'].get(entry['profile']) or {}
                 provider_by_profile[entry['profile']] = str(profile.get('model', '')).split('/', 1)[0]
             adaptive = routing.dynamic_stage(c, tier, index, policy)
-            _, reason, info = routing.dynamics(
+            effective, reason, info = routing.dynamics(
                 candidates, provider_by_profile, q, adaptive=adaptive)
+            if spill_config and index == 0 and tier in spill_config['tiers'] and \
+                    spill_guidance.get('quota_posture') == 'fast_preferred':
+                target = spill_config['profile']
+                target_profile = c.get('profiles', {}).get(target) or {}
+                target_provider = str(target_profile.get('model', '')).split('/', 1)[0]
+                complexity = 'deep' if tier == 'deep' else 'normal'
+                target_ok, _ = allowed(target_provider, q, complexity, c.get('kimi_reserve_percent', 0))
+                if target_ok and target_provider not in set(provider_by_profile.values()):
+                    provider_by_profile[target] = target_provider
+                    effective, spill_reason, spill_info = routing.spillover(
+                        effective, provider_by_profile, target,
+                        spill_guidance.get('runway') or {},
+                        spill_guidance.get('runway_threshold_percent', 75),
+                        spill_config['max_share_percent'])
+                    if spill_info:
+                        reason += ':' + spill_reason
+                        info = spill_info
             if info:
                 stage_views.append({'reason': reason, 'members': info})
         if stage_views:

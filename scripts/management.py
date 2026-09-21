@@ -173,6 +173,9 @@ def settings():
         dynamics = routing.runtime_dynamics(c.get('routing_dynamics'), policy, c.get('profiles'))
         if dynamics:
             out['routing_dynamics'] = dynamics
+        spillover = routing.runtime_spillover(c.get('quota_spillover'), policy, c.get('profiles'))
+        if spillover:
+            out['quota_spillover'] = spillover
     out['cleanup'] = cleanup.policy()
     return out
 
@@ -282,6 +285,16 @@ def _validate_settings(body):
                 raise ValueError('routing_dynamics requires routing_policy in the same request')
             import routing as routing_policy
             result['routing_dynamics'] = routing_policy.validate_dynamics(value, policy, profiles)
+    if 'quota_spillover' in body:
+        value = body['quota_spillover']
+        if value is None or value == {}:
+            result['quota_spillover'] = None
+        else:
+            policy = result.get('routing_policy')
+            if not policy:
+                raise ValueError('quota_spillover requires routing_policy in the same request')
+            import routing as routing_policy
+            result['quota_spillover'] = routing_policy.validate_spillover(value, policy, profiles)
     # Legacy per-task iteration caps in the body are ignored, never validated
     # and never re-persisted; workers have no default step or time cap.
     # Legacy global/provider cap fields sent by old clients are ignored, never
@@ -381,6 +394,8 @@ def save_settings(body):
     policy_value = candidate.pop('routing_policy', None)
     explicit_dynamics = 'routing_dynamics' in body
     dynamics_value = candidate.pop('routing_dynamics', None)
+    explicit_spillover = 'quota_spillover' in body
+    spillover_value = candidate.pop('quota_spillover', None)
     with common.locked():
         existing = common.read_json(common.CONFIG)
         if not isinstance(existing, dict) or not existing:
@@ -414,6 +429,7 @@ def save_settings(body):
             # Disabling the policy also disables its optional adaptive records.
             # Validate no stale ladder against a policy that no longer exists.
             existing.pop('routing_dynamics', None)
+            existing.pop('quota_spillover', None)
         elif explicit_dynamics:
             if dynamics_value is None:
                 existing.pop('routing_dynamics', None)
@@ -423,6 +439,16 @@ def save_settings(body):
             import routing as routing_policy
             existing['routing_dynamics'] = routing_policy.validate_dynamics(
                 existing['routing_dynamics'], effective_policy, candidate['profiles'])
+        if effective_policy:
+            if explicit_spillover:
+                if spillover_value is None:
+                    existing.pop('quota_spillover', None)
+                else:
+                    existing['quota_spillover'] = spillover_value
+            elif existing.get('quota_spillover') not in (None, {}):
+                import routing as routing_policy
+                existing['quota_spillover'] = routing_policy.validate_spillover(
+                    existing['quota_spillover'], effective_policy, candidate['profiles'])
         existing.update(candidate)
         existing['revision'] = revision + 1
         existing['restart_required'] = True

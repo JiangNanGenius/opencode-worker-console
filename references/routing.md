@@ -57,6 +57,14 @@ Normal-only plan allows either tier, and `neutral` when quota has no preference.
 `normal_flexible`, weigh error and rework risk, urgency and task size; Normal is available but
 not mandatory.
 
+An optional `quota_spillover` rule fills the gap between healthy weighted routing and total
+fallback. Under `fast_preferred`, it can add a later pay-as-you-go profile to the first Fast or
+Normal stage at a gradually increasing share. The share is zero at the runway threshold and
+reaches the configured ceiling only near zero runway. It uses the best known runway among the
+available subscription providers, does nothing on unknown telemetry, never changes explicit
+profile requests, and applies only to configured tiers. The Agent Plan preset uses direct
+DeepSeek with a 30% ceiling for Fast and Normal; Deep is excluded by default.
+
 Budget guidance is provider-neutral. In **Models & routing**, each configured provider can use
 live telemetry when available, a manually entered rolling window (remaining percentage, duration
 and an explicit-zone reset time), a monetary balance threshold for pay-as-you-go accounts, or

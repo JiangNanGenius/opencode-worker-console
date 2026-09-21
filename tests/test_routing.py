@@ -83,6 +83,20 @@ class RoutingPolicyTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 routing.validate_dynamics(value, policy, profiles())
 
+    def test_spillover_requires_a_bounded_later_fallback(self):
+        policy = {'background': BACKGROUND_POLICY}
+        value = {'enabled': True, 'profile': 'fallback', 'tiers': ['background'],
+                 'max_share_percent': 30}
+        self.assertEqual(routing.validate_spillover(value, policy, profiles()), value)
+        for invalid in (
+            dict(value, max_share_percent=51),
+            dict(value, tiers=['deep']),
+            dict(value, profile='senior-code'),
+            dict(value, tiers=['background', 'background']),
+        ):
+            with self.subTest(value=invalid), self.assertRaises(ValueError):
+                routing.validate_spillover(invalid, policy, profiles())
+
     def test_malformed_policies_are_rejected_and_fail_closed(self):
         cases = [
             ('none', None), ('empty', {}), ('list', []), ('text', 'deep'),
@@ -361,6 +375,46 @@ class RoutePolicyTests(unittest.TestCase):
         del c['profiles']['senior-code']
         self.assertEqual(quota.route(self.task(), c, self.q)[0], 'ark-auto')
 
+    def test_constrained_plan_pool_spills_a_bounded_share_before_exhaustion(self):
+        now = 1_800_000_000
+        c = json.loads(json.dumps(self.c))
+        c['fast_bias_runway_percent'] = 75
+        c['kimi_reserve_percent'] = 0
+        c['routing_policy'] = {
+            'fast': [[{'profile': 'ark-auto', 'weight': 1}],
+                     [{'profile': 'fallback', 'weight': 1}]],
+            'background': [[{'profile': 'senior-code', 'weight': 1},
+                            {'profile': 'ark-k3', 'weight': 1}],
+                           [{'profile': 'ark-auto', 'weight': 1}],
+                           [{'profile': 'fallback', 'weight': 1}]],
+        }
+        c['quota_spillover'] = {'enabled': True, 'profile': 'fallback',
+                                 'tiers': ['fast', 'background'], 'max_share_percent': 30}
+
+        def provider(percent):
+            return {'state': 'ok', 'available': True, 'stale': False,
+                    'windows': [{'valid': True, 'remaining_percent': percent,
+                                 'duration_minutes': 300, 'resets_at': now + 4 * 3600}]}
+        q = {'kimi-for-coding': provider(10), 'ark': provider(10), 'deepseek': provider(100)}
+        admissions = routing.Admissions(c['routing_policy'])
+        chosen = []
+        with patch.object(quota.time, 'time', return_value=now):
+            for _ in range(100):
+                profile, why = quota.route(self.task(), c, q, admissions)
+                admissions.commit()
+                chosen.append(profile)
+                self.assertIn('quota_spillover_', why)
+        # 10% remaining with 80% of the window left is 0.125x runway, producing
+        # a 25% DeepSeek share under a 30% ceiling.
+        self.assertEqual(chosen.count('fallback'), 25)
+        self.assertEqual(chosen.count('senior-code'), 38)
+        self.assertEqual(chosen.count('ark-k3'), 37)
+
+        explicit = self.task(requested_profile='senior-code')
+        self.assertEqual(quota.route(explicit, c, q)[0], 'senior-code')
+        deep = self.task(complexity='deep')
+        self.assertEqual(quota.route(deep, c, q)[0], 'deep-research')
+
     def test_recovery_alternatives_follow_policy_order(self):
         t = self.task(complexity='deep', requested_profile='deep-research')
         alts = quota.alternatives(t, self.c, self.q, exclude='kimi-for-coding')
@@ -605,6 +659,26 @@ class ManagementPolicyTests(unittest.TestCase):
         self.assertEqual(result['routing_dynamics'], body['routing_dynamics'])
         self.assertEqual(self.stored()['routing_dynamics'], body['routing_dynamics'])
         self.assertEqual(management.settings()['routing_dynamics'], body['routing_dynamics'])
+
+    def test_quota_spillover_saves_exports_and_round_trips(self):
+        body = self.body()
+        body['routing_policy'] = {'background': BACKGROUND_POLICY}
+        body['quota_spillover'] = {'enabled': True, 'profile': 'fallback',
+                                    'tiers': ['background'], 'max_share_percent': 30}
+        with patch.object(common, 'api', return_value={}):
+            result = management.save_settings(body)
+        self.assertEqual(result['quota_spillover'], body['quota_spillover'])
+        self.assertEqual(self.stored()['quota_spillover'], body['quota_spillover'])
+
+    def test_old_client_preserves_valid_quota_spillover(self):
+        body = self.body()
+        body['routing_policy'] = {'background': BACKGROUND_POLICY}
+        body['quota_spillover'] = {'enabled': True, 'profile': 'fallback',
+                                    'tiers': ['background'], 'max_share_percent': 25}
+        with patch.object(common, 'api', return_value={}):
+            management.save_settings(body)
+            result = management.save_settings(self.body())
+        self.assertEqual(result['quota_spillover'], body['quota_spillover'])
 
     def test_old_client_preserves_valid_dynamics(self):
         body = self.body()
@@ -1096,6 +1170,30 @@ class DynamicRunwayTests(unittest.TestCase):
             entries, {'primary': 'first', 'reviewer': 'second'}, q, now=1)
         self.assertEqual(effective, entries)
         self.assertEqual(reason, 'fixed_weights')
+
+    def test_spillover_grows_gradually_and_preserves_source_ratio(self):
+        entries = [{'profile': 'kimi', 'weight': 2}, {'profile': 'ark', 'weight': 1}]
+        providers = {'kimi': 'kimi-plan', 'ark': 'ark-plan', 'fallback': 'deepseek'}
+        effective, reason, info = routing.spillover(
+            entries, providers, 'fallback', {'kimi-plan': 0.48, 'ark-plan': 0.40}, 75, 30)
+        self.assertEqual(reason, 'quota_spillover_11pct')
+        self.assertEqual(sum(entry['weight'] for entry in effective), 100)
+        self.assertEqual(next(e['weight'] for e in effective if e['profile'] == 'fallback'), 11)
+        self.assertGreater(next(e['weight'] for e in effective if e['profile'] == 'kimi'),
+                           next(e['weight'] for e in effective if e['profile'] == 'ark'))
+        self.assertAlmostEqual(info['fallback']['share'], .11)
+
+    def test_spillover_uses_best_plan_and_fails_closed_on_unknown_runway(self):
+        entries = [{'profile': 'kimi', 'weight': 1}, {'profile': 'ark', 'weight': 1}]
+        providers = {'kimi': 'kimi-plan', 'ark': 'ark-plan', 'fallback': 'deepseek'}
+        unchanged, reason, _ = routing.spillover(
+            entries, providers, 'fallback', {'kimi-plan': .2, 'ark-plan': 1.1}, 75, 30)
+        self.assertEqual(unchanged, entries)
+        self.assertEqual(reason, 'spillover_runway_healthy')
+        unchanged, reason, _ = routing.spillover(
+            entries, providers, 'fallback', {'kimi-plan': .2, 'ark-plan': None}, 75, 30)
+        self.assertEqual(unchanged, entries)
+        self.assertEqual(reason, 'spillover_telemetry_unknown')
 
 
 if __name__ == '__main__':

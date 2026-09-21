@@ -88,6 +88,12 @@ DEFAULT_ROUTING_DYNAMICS = {
         '1': {'ladder': [[2, 1], [1, 1], [1, 2]]},
     },
 }
+DEFAULT_QUOTA_SPILLOVER = {
+    'enabled': True,
+    'profile': 'fallback',
+    'tiers': ['fast', 'background'],
+    'max_share_percent': 30,
+}
 # Concurrency is capped per owning Codex conversation (owner_thread_id), never
 # globally or per provider; the scheduler reads max_parallel_per_owner (default 4).
 # The low-weekly guard is independent from ordinary weighted routing. Once the
@@ -341,6 +347,7 @@ def load_or_build_config(args, opencode):
     if fresh and args.preset == 'ark-agent-plan':
         c['routing_policy'] = DEFAULT_ROUTING_POLICY
         c['routing_dynamics'] = DEFAULT_ROUTING_DYNAMICS
+        c['quota_spillover'] = DEFAULT_QUOTA_SPILLOVER
     # Legacy global/provider cap fields (max_parallel, max_kimi_parallel,
     # provider_limits) are never written for new installs and are left inert
     # on disk for existing configs; max_parallel_per_owner is the only cap.
