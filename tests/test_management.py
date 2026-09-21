@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import common
 import management
 import usage_ledger
+import workspace
 
 
 def provider_body():
@@ -35,7 +36,8 @@ class ManagementTests(unittest.TestCase):
         self.state = self.root / 'state'
         self.config = self.root / 'config.json'
         self.write_config(self.base_config())
-        self.patchers = [patch.object(common, 'STATE', self.state), patch.object(common, 'CONFIG', self.config)]
+        self.patchers = [patch.object(common, 'STATE', self.state), patch.object(workspace, 'STATE', self.state),
+                         patch.object(common, 'CONFIG', self.config)]
         for p in self.patchers:
             p.start()
         common.init()

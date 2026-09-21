@@ -91,7 +91,7 @@ function appHarness(){
  let revision=0;
  const profiles={'ark-k3':{label:'Ark Agent Plan · Kimi K3',model:'volcengine-agent-plan/kimi-k3'}};
  const fetch=async url=>({ok:true,json:async()=>url==='/console-api/state'?{tasks:fixtureTasks,quota:{},profiles,pool_healthy:true}:url==='/console-api/auth/status'?{authenticated:true,username:'fixture'}:{task:fixtureTasks.find(t=>url.endsWith(t.id)),activity:{source:'live',events:[{id:'e',text:'Update '+(++revision),status:'running'}]},usage:{total:20}}});
- const ctx={document,window:{TaskView:View,getSelection:()=>null,location:{replace(){throw Error('unexpected redirect');}}},TaskView:View,fetch,setInterval(){},Date,Map,Set,AbortController,console};
+ const ctx={document,window:{TaskView:View,getSelection:()=>null,location:{replace(){throw Error('unexpected redirect');}}},TaskView:View,fetch,setInterval(){},setTimeout(){return 1;},clearTimeout(){},Date,Map,Set,AbortController,console};
  vm.createContext(ctx);vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/app.js'),'utf8'),ctx);
  return {ctx,get,run:source=>vm.runInContext(source,ctx)};
 }
@@ -127,4 +127,20 @@ test('task tier labels custom and Ark profiles instead of assuming every unknown
  assert.match(row,/profile\.deep/);
  assert.match(row,/model-dot deep/);
  assert.doesNotMatch(row,/profile\.generic/);
+});
+
+test('quota range distinguishes paused sampling, collection and burn estimates', async () => {
+ const h=appHarness();await tick();
+ assert.equal(h.run("estimatedRange({consumption_estimate:{idle:true}})"),'quota.rangePaused');
+ assert.equal(h.run("estimatedRange({consumption_estimate:{hours:null}})"),'quota.rangeCollecting');
+ assert.equal(h.run("estimatedRange({consumption_estimate:{hours:12}})"),'quota.rangeHours');
+ assert.equal(h.run("quotaPace({remaining_percent:70,duration_minutes:10080,resets_at:new Date(Date.now()+100*3600000).toISOString(),consumption_estimate:{hours:40}})[0]"),'tight');
+});
+
+test('cleanup result stays visible in the task row and raises a success toast', async () => {
+ const h=appHarness();await tick();
+ h.run("taskCleanupResult({deleted:3,sessions_deleted:2,worktrees_released:1,freed_bytes:1048576,retained_for_review:[],errors:[]})");
+ assert.equal(h.get('toast').hidden,false);
+ assert.equal(h.get('toast-title').textContent,'tasks.cleanupDone');
+ assert.equal(h.get('task-cleanup-message').textContent,'tasks.cleanupResult');
 });

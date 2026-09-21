@@ -106,6 +106,9 @@ CONTROL_PLANE = {ARK_PROVIDER: ark_quota.fetch}
 
 
 BILLING = 'billing.json'
+HISTORY = 'quota-history.json'
+HISTORY_RETENTION_SECONDS = 35 * 86400
+HISTORY_MAX_SAMPLES = 720
 MONTHLY_REASON = 'monthly_usage_limit'
 BALANCE_REASON = 'insufficient_balance'
 GENERIC_REASON = 'billing_error'
@@ -443,6 +446,86 @@ def number(x):
         return None
 
 
+def _window_key(value):
+    return '%s|%s' % (value.get('name', ''), value.get('duration_minutes', ''))
+
+
+def _record_history(result, now):
+    """Retain bounded, credential-scoped quota samples without request content or secrets."""
+    history = read_json(STATE / HISTORY, {})
+    for provider, value in result.items():
+        if value.get('state') != 'ok' or not value.get('sampled_at'):
+            continue
+        identity = value.get('_credential')
+        record = history.get(provider, {}) if history.get(provider, {}).get('_credential') == identity else {}
+        samples = record.get('samples', []) if isinstance(record.get('samples'), list) else []
+        windows = {}
+        for item in value.get('windows', []):
+            remaining = number(item.get('remaining_percent'))
+            if item.get('valid', True) and remaining is not None:
+                windows[_window_key(item)] = {'remaining_percent': remaining,
+                                              'resets_at': item.get('resets_at')}
+        sampled = number(value.get('sampled_at'))
+        if windows and sampled is not None and (not samples or samples[-1].get('time') != sampled):
+            samples.append({'time': sampled, 'windows': windows})
+        samples = [x for x in samples if isinstance(x, dict) and number(x.get('time')) is not None
+                   and now - float(x['time']) <= HISTORY_RETENTION_SECONDS][-HISTORY_MAX_SAMPLES:]
+        history[provider] = {'_credential': identity, 'samples': samples}
+    write_json(STATE / HISTORY, history)
+
+
+def consumption_estimate(value, samples, now=None):
+    """Estimate wall-clock range at observed burn rate, including idle time."""
+    now = time.time() if now is None else now
+    remaining = number(value.get('remaining_percent'))
+    duration = number(value.get('duration_minutes'))
+    reset = routing._iso_seconds(value.get('resets_at'))
+    if remaining is None or remaining < 0:
+        return None
+    if remaining == 0:
+        return {'hours': 0.0, 'rate_percent_per_hour': None, 'source': 'exhausted',
+                'idle': False, 'sample_span_hours': 0.0}
+    cycle_rate = None
+    if duration and duration > 0 and reset:
+        elapsed_hours = max(0.0, (duration * 60 - max(0.0, reset - now)) / 3600)
+        used = max(0.0, 100.0 - remaining)
+        if elapsed_hours >= 1 / 12 and used >= .01:
+            cycle_rate = used / elapsed_hours
+    key = _window_key(value)
+    points = []
+    for sample in samples if isinstance(samples, list) else []:
+        stamp = number(sample.get('time')) if isinstance(sample, dict) else None
+        row = sample.get('windows', {}).get(key) if isinstance(sample, dict) else None
+        prior = number(row.get('remaining_percent')) if isinstance(row, dict) else None
+        same_cycle = not value.get('resets_at') or not row or row.get('resets_at') == value.get('resets_at')
+        if stamp is not None and prior is not None and same_cycle and 0 < now - stamp <= 24 * 3600:
+            points.append((stamp, prior))
+    points.sort()
+    recent_rate = None
+    span_hours = 0.0
+    if points:
+        oldest = next(((stamp, prior) for stamp, prior in points if now - stamp >= 300), None)
+        if oldest:
+            span_hours = (now - oldest[0]) / 3600
+            recent_rate = max(0.0, oldest[1] - remaining) / span_hours
+    if recent_rate is None and cycle_rate is None:
+        return {'hours': None, 'rate_percent_per_hour': None, 'source': 'collecting',
+                'idle': False, 'sample_span_hours': span_hours}
+    if recent_rate is None:
+        rate, source = cycle_rate, 'window_average'
+    elif cycle_rate is None:
+        rate, source = recent_rate, 'recent'
+    else:
+        recent_weight = min(.85, .35 + span_hours / 12)
+        rate = recent_rate * recent_weight + cycle_rate * (1 - recent_weight)
+        source = 'idle_adjusted' if recent_rate <= .001 else 'blended'
+    idle = recent_rate is not None and recent_rate <= .001 and span_hours >= 1 / 6
+    hours = remaining / rate if rate and rate > .001 else None
+    return {'hours': round(min(hours, 24 * 365), 2) if hours is not None else None,
+            'rate_percent_per_hour': round(rate, 4) if rate is not None else None,
+            'source': source, 'idle': idle, 'sample_span_hours': round(span_hours, 2)}
+
+
 def window(name, detail, duration=None):
     limit, remaining = number(detail.get('limit')), number(detail.get('remaining'))
     if remaining is None and 'remaining' not in detail and limit is not None:
@@ -576,13 +659,22 @@ def refresh(force=False):
                     # concurrent trip must never clear that newer circuit.
                     clear(p, sampled_since=now, identity=identities[p])
         write_json(STATE / 'quota.json', result)
+        _record_history(result, now)
         return view(result)
 
 
 def view(values):
     out = {}
+    history = read_json(STATE / HISTORY, {})
+    now = time.time()
     for p, v in values.items():
         v = {k: x for k, x in v.items() if not k.startswith('_')}
+        v['windows'] = [dict(item) for item in v.get('windows', [])]
+        samples = history.get(p, {}).get('samples', []) if isinstance(history.get(p), dict) else []
+        for item in v['windows']:
+            estimate = consumption_estimate(item, samples, now)
+            if estimate is not None:
+                item['consumption_estimate'] = estimate
         v['stale'] = v.get('state') != 'ok' or time.time() - v.get('sampled_at', 0) > 900
         if p == ARK_PROVIDER:
             # Safe metadata only: the credential source label, never a value or

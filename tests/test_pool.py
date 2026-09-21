@@ -14,6 +14,7 @@ import time
 import urllib.request
 import urllib.error
 import urllib.parse
+from datetime import datetime, timezone
 from contextlib import redirect_stdout
 from http.server import ThreadingHTTPServer
 import unittest
@@ -140,6 +141,36 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(n['windows'][0]['remaining_percent'], 15)
         self.assertIsNone(n['windows'][1]['remaining_percent'])
         self.assertIsNone(n['available'])
+
+    def test_consumption_estimate_uses_real_burn_and_idle_wall_time(self):
+        now = 2_000_000.0
+        window = {'name': 'AFPFiveHour', 'remaining_percent': 60,
+                  'duration_minutes': 300,
+                  'resets_at': datetime.fromtimestamp(now + 7200, timezone.utc).isoformat()}
+        key = quota._window_key(window)
+        burning = [{'time': now - 3600,
+                    'windows': {key: {'remaining_percent': 80, 'resets_at': window['resets_at']}}}]
+        active = quota.consumption_estimate(window, burning, now)
+        self.assertGreater(active['rate_percent_per_hour'], 10)
+        self.assertLess(active['hours'], 6)
+        idle = [{'time': now - 3600,
+                 'windows': {key: {'remaining_percent': 60, 'resets_at': window['resets_at']}}}]
+        paused = quota.consumption_estimate(window, idle, now)
+        self.assertTrue(paused['idle'])
+        self.assertGreater(paused['hours'], active['hours'])
+
+    def test_quota_view_exposes_estimate_without_exposing_history(self):
+        now = time.time()
+        reset = datetime.fromtimestamp(now + 3600, timezone.utc).isoformat()
+        raw = {'volcengine-agent-plan': {'state': 'ok', 'sampled_at': now, 'available': True,
+               'windows': [{'name': 'AFPFiveHour', 'remaining_percent': 50,
+                            'duration_minutes': 300, 'resets_at': reset, 'valid': True}]}}
+        key = quota._window_key(raw['volcengine-agent-plan']['windows'][0])
+        common.write_json(self.state / quota.HISTORY, {'volcengine-agent-plan': {'samples': [
+            {'time': now - 1800, 'windows': {key: {'remaining_percent': 60, 'resets_at': reset}}}]}})
+        rendered = quota.view(raw)['volcengine-agent-plan']['windows'][0]
+        self.assertIn('consumption_estimate', rendered)
+        self.assertNotIn('samples', rendered)
 
     def test_normal_background_prefers_kimi_fast_prefers_deepseek(self):
         t = self.new(profile='auto')
