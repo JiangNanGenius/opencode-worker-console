@@ -76,6 +76,13 @@ function attachPoolFit(source,component){
   source.remaining=Number.isFinite(remaining)&&remaining>=0?remaining:null;
   return source;
 }
+function fittedDuration(value){
+  const hours=Number(value);if(!Number.isFinite(hours)||hours<0)return tr('quota.rangeCollecting');
+  const minutes=Math.max(0,Math.round(hours*60));
+  if(minutes<60)return tr('quota.poolRunwayMinutes',{m:minutes});
+  if(minutes<2880)return tr('quota.poolRunwayHours',{h:Math.floor(minutes/60),m:minutes%60});
+  return tr('quota.poolRunwayDays',{d:Math.floor(minutes/1440),h:Math.floor(minutes%1440/60)});
+}
 function renderPoolBar(sources,pool){
   const el=$('pool-bar');if(!el)return;
   const fitted=sources.filter(x=>x.capacity!==null),capacity=fitted.reduce((sum,x)=>sum+x.capacity,0);
@@ -114,9 +121,11 @@ function renderPool(providers){
   setHTML($('pool-summary'),`<div class="pool-health"><strong>${Number.isFinite(remainingPercent)?Math.round(remainingPercent)+'%':'—'}</strong><span>${esc(tr('quota.poolRemaining'))}</span></div>`);
   renderPoolBar(sources,pool);
   setHTML($('pool-components'),sources.map(x=>`<div class="pool-component ${x.key} ${x.tone}"><i class="component-dot ${x.key}" aria-hidden="true"></i><span class="component-copy"><strong>${esc(x.label)}</strong><small>${esc(x.detail)}</small></span><span class="component-state">${esc(x.state)}</span></div>`).join(''));
-  const refill=Array.isArray(pool.refills)?pool.refills[0]:null;
+  const refill=Array.isArray(pool.refills)?pool.refills[0]:null,totalHours=Number(pool.total);
   const refillName=refill?.provider==='kimi'?tr('quota.kimiPlan'):refill?.provider==='plan'?tr('quota.arkPlan'):'';
-  $('pool-next').textContent=refill?tr('quota.poolNextRefill',{provider:refillName,time:resetCountdown(resetDate(refill.resets_at)),value:Math.round(refill.projected_remaining_percent)}):tr('quota.poolFitNote');
+  const endurance=Number.isFinite(totalHours)?fittedDuration(totalHours):tr('quota.rangeCollecting');
+  const next=refill?`${refillName} · ${resetTime(refill.resets_at)} · ${tr('quota.poolProjected',{value:Math.round(refill.projected_remaining_percent)})}`:tr('quota.poolNoRefill');
+  setHTML($('pool-next'),`<span><small>${esc(tr('quota.poolEndurance'))}</small><strong>${esc(endurance)}</strong></span><span><small>${esc(tr('quota.poolNextRefillLabel'))}</small><strong>${esc(next)}</strong></span>`);
 }
 function duration(item) { if (!item.started_at) return tr('duration.waiting'); const s = Math.max(0, Math.round((item.finished_at || Date.now()/1000)-item.started_at)); if(s<60)return tr('duration.seconds',{n:s}); if(s<3600)return tr('duration.minutes',{m:Math.floor(s/60),s:s%60}); return tr('duration.hours',{h:Math.floor(s/3600),m:Math.floor(s%3600/60)}); }
 function formatBytes(value){const n=Number(value);if(!Number.isFinite(n))return '—';const gb=n/2**30;return (I18n?I18n.number(gb,{maximumFractionDigits:gb>=100?0:1}):gb.toFixed(gb>=100?0:1))+' GB';}
@@ -253,7 +262,7 @@ function renderInlineDetail(state){
  else if(activityFocused)activity?.focus({preventScroll:true});
 }
 $('detail-body').addEventListener('click',async event=>{const button=event.target.closest('[data-expand-activity]');if(!button)return;const taskId=detailController.state().selected,eventId=button.dataset.expandActivity,key=taskId+':'+eventId;if(expandedActivityMessages.has(key)){expandedActivityMessages.delete(key);renderInlineDetail(detailController.state());return;}button.disabled=true;try{if(!fullActivityMessages.has(key)){const result=await request('/console-api/task/'+encodeURIComponent(taskId)+'/event/'+encodeURIComponent(eventId));fullActivityMessages.set(key,result.text||'');}expandedActivityMessages.add(key);renderInlineDetail(detailController.state());}catch(error){showError(error.message);}finally{button.disabled=false;}});
-function details(id){const direction=selectedTask===id?'collapse':'expand',task=data.tasks.find(item=>item.id===id);const initial=task?{task,objective:'',acceptance:[],activity:{source:'task',events:[],stale:true},usage:TaskView.usageOf(task)}:null;motionTransition('task-detail',()=>{detailController.open(id,initial);},direction);}
+function details(id){const direction=selectedTask===id?'collapse':'expand',task=data.tasks.find(item=>item.id===id);const initial=task?{task,objective:'',acceptance:[],activity:{source:'task',events:[],stale:false},usage:TaskView.usageOf(task)}:null;motionTransition('task-detail',()=>{detailController.open(id,initial);},direction);}
 $('groups').addEventListener('click',e=>{const b=e.target.closest('[data-group]');if(!b||b.dataset.group===selectedGroup)return;motionTransition('task-list',()=>{selectedGroup=b.dataset.group;renderGroups();renderTasks();});});
 $('filters').addEventListener('click',e=>{const b=e.target.closest('[data-filter]');if(!b||b.dataset.filter===selectedFilter)return;motionTransition('task-list',()=>{selectedFilter=b.dataset.filter;for(const x of $('filters').querySelectorAll('button')){x.classList.toggle('selected',x===b);x.setAttribute('aria-pressed',String(x===b));}renderTasks();});});
 $('search').addEventListener('input',renderTasks);

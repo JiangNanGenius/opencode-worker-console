@@ -52,6 +52,10 @@ import time
 import common
 
 LIVE_TTL = 3.0
+# A single missed poll or another open console tab refreshing the same session
+# is not an outage. Keep the last complete sample quiet for a few poll cycles;
+# only then mark it stale for the operator.
+LIVE_WARNING_AFTER = 16.0
 LIST_LIVE_TTL = 30.0
 LIVE_TIMEOUT = 2.0
 MESSAGE_WINDOW = 40
@@ -730,8 +734,12 @@ def _live_pair(task):
     if not lock.acquire(blocking=False):
         entry = _cached_live(task, fresh_only=False)
         if entry is not None:
-            return _pair(task, entry.get('usage'), entry.get('activity'), True, BUSY_ERROR)
-        return _pair(task, None, None, True, BUSY_ERROR)
+            old = _now() - entry.get('fetched_at', 0) >= LIVE_WARNING_AFTER
+            return _pair(task, entry.get('usage'), entry.get('activity'), old,
+                         BUSY_ERROR if old else None)
+        # A refresh is already producing the first live sample. Retained task
+        # state is a normal loading fallback, not proof that live updates failed.
+        return _pair(task, None, None, False, None)
     try:
         entry = _cached_live(task, fresh_only=True)
         if entry is not None:
@@ -762,7 +770,9 @@ def _live_pair(task):
         previous = _cached_live(task, fresh_only=False)
         merged_usage = fresh_usage if fresh_usage is not None else (previous or {}).get('usage')
         merged_activity = fresh_activity if fresh_activity is not None else (previous or {}).get('activity')
-        return _pair(task, merged_usage, merged_activity, True, '; '.join(errors) or None)
+        recent = previous is not None and _now() - previous.get('fetched_at', 0) < LIVE_WARNING_AFTER
+        return _pair(task, merged_usage, merged_activity, not recent,
+                     None if recent else ('; '.join(errors) or None))
     finally:
         lock.release()
 

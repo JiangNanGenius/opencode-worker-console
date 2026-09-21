@@ -191,7 +191,10 @@ test('work pool uses fitted runtime, with DeepSeek as a small observed share', a
   assert.match(components,/quota\.weekly · 44%/);
   assert.doesNotMatch(h.get('pool-summary').innerHTML+components,/AFP-equivalent|≈/);
   assert.equal(h.get('pool-state').textContent,'quota.conservationLevel2');
-  assert.equal(h.get('pool-next').textContent,'quota.poolNextRefill');
+  assert.match(h.get('pool-next').innerHTML,/quota\.poolEndurance/);
+  assert.match(h.get('pool-next').innerHTML,/quota\.poolRunwayDays/);
+  assert.match(h.get('pool-next').innerHTML,/quota\.poolNextRefillLabel/);
+  assert.match(h.get('pool-next').innerHTML,/quota\.poolProjected/);
 });
 
 test('work pool remains visible for a Kimi-only installation', async () => {

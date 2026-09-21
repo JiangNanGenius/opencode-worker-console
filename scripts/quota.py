@@ -1455,10 +1455,18 @@ def tier_guidance(c, q):
                     configured_provider_ids.add(model.split('/', 1)[0])
     supported_pool_ids = {'deepseek', 'kimi-for-coding', 'volcengine-agent-plan'}
     pool_fit = None
-    if configured_provider_ids and configured_provider_ids.issubset(supported_pool_ids):
+    plan_provider_ids = configured_provider_ids & {'kimi-for-coding', 'volcengine-agent-plan'}
+    if plan_provider_ids and configured_provider_ids.issubset(supported_pool_ids):
         import economics
-        candidate = economics.work_pool(c, q, now=now)
-        if candidate.get('complete') and isinstance(candidate.get('remaining_percent'), (int, float)):
+        # PAYG balance remains visible in the console's total endurance, but it
+        # is fallback capacity. It must not postpone subscription conservation.
+        candidate = economics.work_pool(c, q, now=now, include_payg_balance=False)
+        component_for = {'kimi-for-coding': 'kimi', 'volcengine-agent-plan': 'plan'}
+        plan_complete = all(isinstance((candidate.get('components') or {}).get(component_for[p]), dict) and
+                            (candidate.get('components') or {})[component_for[p]].get('capacity') is not None
+                            for p in plan_provider_ids)
+        if candidate.get('complete') and plan_complete and \
+                isinstance(candidate.get('remaining_percent'), (int, float)):
             pool_fit = candidate
     refill = (pool_fit.get('refills') or [None])[0] if pool_fit else None
     relief = 0.0

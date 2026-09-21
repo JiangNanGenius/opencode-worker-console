@@ -54,6 +54,13 @@ class EconomicsTests(unittest.TestCase):
         self.assertTrue(pool['normalization']['notes']['weights_use_observed_burn'])
         self.assertLess(pool['components']['balance']['capacity'] / pool['capacity'], .1)
 
+        plans = economics.work_pool({}, quota, include_payg_balance=False)
+        self.assertEqual(plans['components']['balance']['amount'], 25.0)
+        self.assertEqual(plans['total'], 55.0)
+        self.assertAlmostEqual(plans['capacity'], 291.667, places=3)
+        self.assertAlmostEqual(plans['remaining_percent'], 18.857, places=3)
+        self.assertFalse(plans['normalization']['payg_balance_included'])
+
         # A Kimi reset immediately restores its fitted full runtime to the pool.
         quota['kimi-for-coding']['available'] = True
         quota['kimi-for-coding']['windows'][0]['remaining_percent'] = 100

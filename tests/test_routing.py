@@ -445,7 +445,13 @@ class RoutePolicyTests(unittest.TestCase):
         # Ark runway is 37.2% / 80% = 46.5%, while the Kimi peer is unavailable.
         q = {'kimi-for-coding': provider(0, available=False),
              'volcengine-agent-plan': provider(37.2),
-             'deepseek': provider(100)}
+             # A large PAYG balance keeps total console endurance healthy, but
+             # cannot postpone subscription-plan conservation.
+             'deepseek': {'state': 'ok', 'available': True, 'stale': False,
+                          'balances': [{'currency': 'CNY', 'remaining': 1000,
+                                        'consumption_estimate': {
+                                            'rate_balance_per_hour': 1,
+                                            'observed_capacity': 1000}}], 'windows': []}}
         admissions = routing.Admissions(c['routing_policy'])
         chosen = []
         with patch.object(quota.time, 'time', return_value=now):

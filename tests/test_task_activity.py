@@ -312,6 +312,11 @@ class LiveSnapshotTests(IsolatedCase):
             self.assertEqual(live['usage']['source'], 'live')
             clock['t'] += ta.LIVE_TTL + 0.5
             with patch.object(common, 'api', side_effect=common.HttpFailure(None, 'local server down')):
+                transient = ta.snapshot(task)
+            self.assertFalse(transient['activity']['stale'])
+            self.assertIsNone(transient['activity']['error'])
+            clock['t'] += ta.LIVE_WARNING_AFTER
+            with patch.object(common, 'api', side_effect=common.HttpFailure(None, 'local server down')):
                 degraded = ta.snapshot(task)
             self.assertTrue(degraded['activity']['stale'])
             self.assertIn('down', degraded['activity']['error'])
@@ -370,8 +375,8 @@ class LiveSnapshotTests(IsolatedCase):
         with patch.object(common, 'api', side_effect=fake):
             results['second'] = ta.snapshot(task)
         self.assertEqual(running['max'], 1)
-        self.assertTrue(results['second']['activity']['stale'])
-        self.assertEqual(results['second']['activity']['error'], ta.BUSY_ERROR)
+        self.assertFalse(results['second']['activity']['stale'])
+        self.assertIsNone(results['second']['activity']['error'])
         release.set()
         thread.join(5)
         self.assertFalse(thread.is_alive())

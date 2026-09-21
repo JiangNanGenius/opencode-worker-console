@@ -118,10 +118,11 @@
 .component-copy strong{font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .component-copy small{font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .component-state{font-size:9px;color:var(--accent);font-weight:600;text-align:right;white-space:nowrap}.pool-component.tight .component-state{color:#96651f}.pool-component.critical .component-state{color:#a34c3b}.pool-component.unknown .component-state{color:var(--muted)}
-.pool-block #pool-next{grid-column:1/-1}
+.pool-timing{display:grid;grid-template-columns:minmax(120px,.55fr) minmax(0,1.45fr);gap:12px 26px;padding:1px 0 2px;color:var(--muted)}
+.pool-timing span{display:grid;gap:3px;min-width:0}.pool-timing small{font-size:9px}.pool-timing strong{font-size:10px;line-height:1.55;color:#44515a;font-weight:600;overflow-wrap:anywhere}
 .pool-health{display:flex;align-items:baseline;gap:8px}.pool-health strong{font-size:24px;line-height:1;font-weight:650;font-variant-numeric:tabular-nums}.pool-health span{font-size:10px;color:var(--muted)}
 @media(max-width:1200px){.pool-block{grid-template-columns:minmax(140px,.45fr) minmax(0,1fr)}}
-@media(max-width:760px){.pool-block{row-gap:12px}.pool-visual,.pool-summary{grid-column:1}.pool-components{grid-template-columns:minmax(0,1fr);gap:8px}.component-state{text-align:left}.work-pool-bar{height:10px}}
+@media(max-width:760px){.pool-block{row-gap:12px}.pool-visual,.pool-summary{grid-column:1}.pool-timing{grid-template-columns:minmax(0,1fr)}.pool-components{grid-template-columns:minmax(0,1fr);gap:8px}.component-state{text-align:left}.work-pool-bar{height:10px}}
 
 /* Restrained motion: tab indicator, view transition, card entry and state pulse. */
 .primary-nav button{position:relative;transition:background .28s ease,color .28s ease}

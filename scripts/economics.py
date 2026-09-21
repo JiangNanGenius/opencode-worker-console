@@ -322,7 +322,7 @@ def _refill_forecast(components, capacity, now):
     return forecast
 
 
-def work_pool(config, quota_view, now=None):
+def work_pool(config, quota_view, now=None, include_payg_balance=True):
     """Fit unlike provider quotas onto one actual-workload runtime axis.
 
     Each slot's full width is its estimated runtime at its own observed burn
@@ -338,16 +338,19 @@ def work_pool(config, quota_view, now=None):
     components = {'balance': _balance_fit(deepseek),
                   'kimi': _window_fit('kimi-for-coding', kimi),
                   'plan': _window_fit('volcengine-agent-plan', ark)}
-    known = [item for item in components.values() if item.get('capacity') is not None]
+    included = components if include_payg_balance else {
+        key: components[key] for key in ('kimi', 'plan')}
+    known = [item for item in included.values() if item.get('capacity') is not None]
     total = sum(item.get('amount') or 0.0 for item in known)
     capacity = sum(item['capacity'] for item in known)
-    refills = _refill_forecast(components, capacity, time.time() if now is None else now)
+    refills = _refill_forecast(included, capacity, time.time() if now is None else now)
     return {'unit': 'fitted-hours', 'total': round(total, 3),
             'capacity': round(capacity, 3), 'remaining_percent': _percent(total, capacity),
             'components': components, 'refills': refills,
             'complete': bool(known) and all(item.get('status') in ('ok', 'stale', 'unavailable')
                                             for item in known),
             'normalization': {'rule': 'remaining_runtime / fitted_full_runtime',
+                              'payg_balance_included': bool(include_payg_balance),
                               'kimi_included': components['kimi'].get('capacity') is not None,
                               'notes': {'weights_use_observed_burn': True,
                                         'afp_not_used_as_weight': True,
