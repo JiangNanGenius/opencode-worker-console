@@ -85,6 +85,26 @@ def _daily(records, now):
     return [dict(date=day.isoformat(), **values) for day, values in days.items()]
 
 
+def _timeline(records, now, seconds, buckets):
+    """Bucket task completion activity without exposing prompt or file content."""
+    step = seconds / buckets
+    start = now - seconds
+    rows = [{'start': start + index * step, 'end': start + (index + 1) * step,
+             'tasks': 0, 'tokens': 0, 'known_tokens': 0}
+            for index in range(buckets)]
+    for record in records:
+        stamp = record.get('finished_at') or record.get('created_at')
+        if stamp is None or stamp < start or stamp > now:
+            continue
+        index = min(buckets - 1, max(0, int((stamp - start) / step)))
+        rows[index]['tasks'] += 1
+        total = record['usage'].get('total')
+        if total is not None:
+            rows[index]['tokens'] += total
+            rows[index]['known_tokens'] += 1
+    return rows
+
+
 def _quota_history():
     raw = common.read_json(common.STATE / 'quota-history.json', {})
     result = {}
@@ -135,6 +155,8 @@ def summary(now=None):
         'by_model': _breakdown(records, 'model'),
         'by_profile': _breakdown(records, 'profile'),
         'by_status': _breakdown(records, 'status'),
+        'recent': {'hour': _timeline(records, now, 3600, 12),
+                   'day': _timeline(records, now, 86400, 24)},
         'daily': _daily(records, now),
         'quota_history': _quota_history(),
     }

@@ -26,6 +26,7 @@ import management
 import delegate
 import task_activity
 import credentials
+import system_status
 from common import CONFIG, HttpFailure, locked, update, write_json
 
 WEB = Path(__file__).resolve().parent.parent / 'web'
@@ -94,11 +95,15 @@ def state():
     c = config()
     quota_view = quota.view(read_json(STATE / 'quota.json', {}))
     import economics
+    host = system_status.snapshot()
+    host['workers'] = {'active': sum(t.get('status') in ('starting', 'running', 'stopping', 'uncertain') for t in entries),
+                       'queued': sum(t.get('status') == 'queued' for t in entries)}
     return redact({'tasks': entries, 'quota': quota_view,
                    'tier_guidance': quota.tier_guidance(c, quota_view),
                    'routing_status': quota.routing_status(c, quota_view),
                    'economics': economics.summary(c, quota_view),
                    'pool_healthy': all(health.values()), 'services': health,
+                   'host': host,
                    'profiles': {k: {'label': v.get('label', v['model']), 'model': v['model']} for k, v in c['profiles'].items()},
                    'updated_at': time.time(), 'max_parallel_per_owner': management.settings()['max_parallel_per_owner']})
 

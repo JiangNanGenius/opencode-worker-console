@@ -120,7 +120,8 @@ Deep work has no separate task-count limit.
 - **Parallel work:** four running workers per owning Codex conversation by default; independent capacity across conversations. Conflicting files/resources and provider availability still govern dispatch.
 - **Workspaces:** disjoint shared scopes, remote operational targets or isolated Git worktrees; review patches before integration.
 - **Long jobs:** no artificial model-step, tool-call or total-runtime cap. Observe and guide through completion; never blindly replay uncertain operations.
-- **Statistics:** a dedicated view combines current tasks with the compact post-cleanup ledger, showing 30-day activity, Tokens by model/tier/status/profile, fallback counts and recent quota/balance samples.
+- **Statistics:** charts for the last hour, last 24 hours and last 30 days, plus Tokens by model/tier/status/profile, fallback counts and recent quota/balance samples. Cleaned-task Token, model and retention metadata lives in an expandable **History ledger** inside Statistics and loads only when opened.
+- **Host status:** the Tasks view reports CPU, memory, available disk space, system load and running/queued worker counts in real time.
 - **Credentials:** existing authenticated tools and optional metadata-only secret references. Ark control-plane AK/SK references can be registered under **Models & routing → Quota query credentials** using an environment-variable name or an owner-only local file; values and source paths are never returned. [Credential handling](references/credentials.md).
 - **Console:** password login, optional LAN/proxy access, and English, Simplified/Traditional Chinese, Japanese and Korean UI.
 

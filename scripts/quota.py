@@ -533,7 +533,7 @@ def consumption_estimate(value, samples, now=None):
 
 
 def balance_consumption_estimate(value, samples, now=None):
-    """Estimate pay-as-you-go balance range from credential-scoped balance samples."""
+    """Estimate PAYG range from wall-clock burn, smoothing bursty model charges."""
     now = time.time() if now is None else now
     remaining = number(value.get('remaining')) if isinstance(value, dict) else None
     currency = value.get('currency') if isinstance(value, dict) else None
@@ -546,10 +546,13 @@ def balance_consumption_estimate(value, samples, now=None):
     for sample in samples if isinstance(samples, list) else []:
         stamp = number(sample.get('time')) if isinstance(sample, dict) else None
         prior = number((sample.get('balances') or {}).get(currency)) if isinstance(sample, dict) else None
-        if stamp is not None and prior is not None and 0 < now - stamp <= 24 * 3600:
+        if stamp is not None and prior is not None and 0 < now - stamp <= 7 * 86400:
             points.append((stamp, prior))
     points.sort()
-    oldest = next(((stamp, prior) for stamp, prior in points if now - stamp >= 300), None)
+    # A five-minute burst extrapolates a wildly pessimistic range for model APIs.
+    # Require one hour of wall-clock evidence, then use the longest available span
+    # so idle periods and uneven task dispatch are naturally included.
+    oldest = next(((stamp, prior) for stamp, prior in points if now - stamp >= 3600), None)
     if not oldest:
         return {'hours': None, 'rate_balance_per_hour': None, 'source': 'collecting',
                 'idle': False, 'sample_span_hours': 0.0}
@@ -557,9 +560,10 @@ def balance_consumption_estimate(value, samples, now=None):
     rate = max(0.0, oldest[1] - remaining) / span_hours
     idle = rate <= .000001
     hours = remaining / rate if not idle else None
+    confidence = 'high' if span_hours >= 24 else 'medium' if span_hours >= 6 else 'low'
     return {'hours': round(min(hours, 24 * 365), 2) if hours is not None else None,
-            'rate_balance_per_hour': round(rate, 6), 'source': 'recent', 'idle': idle,
-            'sample_span_hours': round(span_hours, 2)}
+            'rate_balance_per_hour': round(rate, 6), 'source': 'wall_clock', 'idle': idle,
+            'confidence': confidence, 'sample_span_hours': round(span_hours, 2)}
 
 
 def window(name, detail, duration=None):

@@ -184,6 +184,14 @@ class PoolTests(unittest.TestCase):
         self.assertAlmostEqual(estimate['hours'], 3.0, places=1)
         self.assertNotIn('samples', rendered)
 
+    def test_payg_range_does_not_extrapolate_a_short_burst(self):
+        now = time.time()
+        value = {'currency': 'CNY', 'remaining': 60.0}
+        samples = [{'time': now - 600, 'balances': {'CNY': 61.0}}]
+        estimate = quota.balance_consumption_estimate(value, samples, now)
+        self.assertIsNone(estimate['hours'])
+        self.assertEqual(estimate['source'], 'collecting')
+
     def test_quota_history_records_balance_numbers_without_provider_payload(self):
         now = time.time()
         quota._record_history({'deepseek': {'state': 'ok', 'sampled_at': now,

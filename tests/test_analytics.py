@@ -56,6 +56,9 @@ class AnalyticsTests(unittest.TestCase):
         self.assertNotIn('private prompt', encoded)
         self.assertNotIn('private title', encoded)
         self.assertEqual({row['name'] for row in result['by_model']}, {'acme/model-a', 'acme/model-b'})
+        self.assertEqual(sum(row['tasks'] for row in result['recent']['hour']), 1)
+        self.assertEqual(len(result['recent']['hour']), 12)
+        self.assertEqual(len(result['recent']['day']), 24)
 
     def test_quota_history_strips_credential_identity_and_unknown_payload(self):
         common.write_json(self.state / 'quota-history.json', {
