@@ -57,8 +57,8 @@ PRESETS = {
 }
 # The automatic ladder: K3 pair (2:1) → K2.8/Evolving pair (1:1) → Ark Auto →
 # direct DeepSeek. Same-capability pairs are one quota-aware pool each, grouped
-# by provider so equal headroom preserves the exact 2:1 and 1:1 baselines and
-# only materially imbalanced valid quota temporarily shifts effective shares.
+# by provider so equal headroom preserves the exact 2:1 and 1:1 baselines. Each
+# pair then follows its own continuous bounded curve as reset-aware runway changes.
 # Auto is its own ordered stage, never mixed into a random pool; direct DeepSeek
 # is the final fallback. ark-deepseek stays out of automatic routing (manual only).
 DEFAULT_ROUTING_POLICY = {
@@ -80,7 +80,7 @@ DEFAULT_ROUTING_POLICY = {
 }
 # Adaptive quota balancing is separate from ordinary weighting. This preset opts
 # in only for its two subscription pairs; every other install keeps fixed policy
-# weights unless the user explicitly enables a ladder in the console.
+# weights unless the user explicitly enables a curve envelope in the console.
 DEFAULT_ROUTING_DYNAMICS = {
     'background': {'0': {'ladder': [[2, 1], [1, 1], [1, 2]]}},
     'deep': {

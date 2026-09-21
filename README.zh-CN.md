@@ -98,7 +98,8 @@ python3 scripts/install.py --preset ark-agent-plan
 
 该预设让快速任务先用 Ark Auto；普通任务按 Kimi K2.8 : 方舟 Seed Evolving = 1:1；
 深度任务按原厂 Kimi K3 : 方舟 K3 = 2:1；之后依次回退到 Ark Auto 与 DeepSeek 直连。
-实时额度续航只允许把成对比例移动一档，不会改写保存的基准策略。
+每个成对任务池都有独立的连续负载曲线：实时额度续航在配置的比例控制点之间插值，既不改写
+保存的基准策略，也不会越过经济性边界。Fast、一级降载和二级降载也分别使用自己的曲线。
 
 这些选项只初始化**全新安装**，不会覆盖已有 profiles。`--no-start` 表示安装后不启动。登录、托管 OpenCode 路径、密码、验证、升级和排障见[完整安装指引](references/installation.zh-CN.md)。
 

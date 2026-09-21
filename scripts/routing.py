@@ -42,13 +42,14 @@ MAX_SPILLOVER_SHARE = 50
 # telemetry falls back to base weights; a zero authoritative window is enforced
 # earlier by provider admission (quota.allowed), which removes that candidate.
 #
-# Shifting is discrete and modest, never exact-depletion chasing with extreme
-# ratios. A two-provider subscription pool only ever moves one step from its
-# baseline ratio (allowed ladder per baseline below), with hysteresis so small
-# runway differences stay at baseline and recovery returns toward baseline.
-RUNWAY_MAX = 4.0            # Runway pressure cap: surplus beyond 4x on-track stops shifting.
-RUNWAY_STEP = 0.15          # Material normalized runway-signal gap that moves one ratio step.
-RUNWAY_HOLD = RUNWAY_STEP / 2  # Smaller drift than this stays at baseline (hysteresis).
+# Every opted-in two-provider pool has its own continuous load curve. The saved
+# ratios are curve control points: the stored policy ratio is the neutral anchor,
+# while the first and last points are the economic bounds. A fourfold runway
+# advantage reaches a bound; smaller differences interpolate smoothly between
+# adjacent control points. Whole-percent output keeps the scheduler stable
+# without turning the curve back into a few fixed steps.
+RUNWAY_MAX = 4.0
+EFFECTIVE_WEIGHT_TOTAL = 100
 
 def _ratio(value, field='routing_dynamics ladder'):
     if not isinstance(value, (list, tuple)) or len(value) != 2:
@@ -71,7 +72,7 @@ def validate_dynamics(value, policy, profiles):
 
     Shape: ``{tier: {"stage_index": {"ladder": [[2,1],[1,1],[1,2]]}}}``.
     Ratios run from left-leaning to right-leaning and must include the stage's stored
-    baseline ratio. Runtime moves at most one entry away from that baseline.
+    baseline ratio. Runtime continuously interpolates through these control points.
     """
     if value in (None, {}):
         return None
@@ -444,10 +445,10 @@ def dynamics(entries, provider_by_profile, quota_view=None, now=None, adaptive=N
     ``adaptive`` ladder. Without it the configured weights are fixed, including
     ordinary 1:1 review pools and primary/fallback setups.
 
-    An adaptive stage moves at most one discrete ladder step away from its stored
-    baseline on material runway imbalance and returns to baseline on recovery.
-    The ladder itself expresses the user's economic boundary; the runtime never
-    invents ratios or rewrites the saved policy.
+    Each adaptive stage owns a continuous curve. Its saved ratio list supplies
+    ordered control points, including the stored baseline anchor and the two
+    economic bounds. Runtime interpolates between them from the reset-aware runway
+    ratio and never moves outside the configured envelope or rewrites the policy.
     """
     import time as _time
     now = _time.time() if now is None else now
@@ -483,28 +484,25 @@ def dynamics(entries, provider_by_profile, quota_view=None, now=None, adaptive=N
         # stored baseline rather than loading partial telemetry onto one side.
         return list(entries), 'telemetry_unknown', info
     # Each provider group's baseline weight is the sum of its member profiles'
-    # base weights. The normalized runway signal is (group baseline weight ×
-    # runway), so equal on-track runway reduces exactly to the stored baseline
-    # (deep stays 2:1, background stays 1:1); only material imbalance moves one
-    # discrete step.
+    # base weights. Equal on-track runway reduces exactly to the stored baseline
+    # (deep stays 2:1, background stays 1:1). Relative runway then moves along
+    # this stage's own configured curve.
     group_base = {}
     for entry in entries:
         provider = provider_by_profile.get(entry['profile'])
         group_base[provider] = group_base.get(provider, 0) + entry['weight']
-    total_group_base = sum(group_base.values()) or 1
-    weighted = {provider: group_base[provider] * runway_by_provider[provider] for provider in providers}
-    total_weighted = sum(weighted.values())
-    if total_weighted <= 0:
+    if max(runway_by_provider.values()) <= 0:
         return list(entries), 'telemetry_unknown', info
-    group_signal = {provider: weighted[provider] / total_weighted for provider in providers}
-    group_base_share = {provider: group_base[provider] / total_group_base for provider in providers}
-    divergence = max(abs(group_signal[provider] - group_base_share[provider]) for provider in providers)
-    if divergence < RUNWAY_HOLD:
+    left, right = providers[0], providers[1]
+    left_runway = max(0.0, runway_by_provider[left])
+    right_runway = max(0.0, runway_by_provider[right])
+    if math.isclose(left_runway, right_runway, rel_tol=1e-9, abs_tol=1e-12):
         return list(entries), 'baseline_balanced', info
 
-    # Discrete bounded ratio for a two-provider subscription pool. Ordered by
-    # policy, left is the first provider, right the second.
-    left, right = providers[0], providers[1]
+    # Ordered by policy, left is the first provider and right is the second.
+    # A log runway ratio treats 2x and 1/2x symmetrically. Smoothstep makes the
+    # response gentle around the neutral anchor while still reaching the
+    # configured bound at a fourfold advantage (or when one side is empty).
     try:
         ladder = [_ratio(value) for value in adaptive.get('ladder', [])]
         baseline = _ratio((group_base[left], group_base[right]))
@@ -513,20 +511,27 @@ def dynamics(entries, provider_by_profile, quota_view=None, now=None, adaptive=N
         # Runtime is fail-closed: malformed optional dynamics never change the
         # ordinary stored weights.
         return list(entries), 'adaptive_invalid', info
-    # Positive advantage means the left provider has more runway than baseline
-    # implies; negative means the right provider does. One step per material
-    # imbalance; hysteresis keeps small gaps at baseline.
-    advantage = group_signal[left] - group_base_share[left]
-    if advantage >= RUNWAY_STEP:
-        step = -1 if baseline_index > 0 else 0  # shift share toward left
-    elif advantage <= -RUNWAY_STEP:
-        step = 1 if baseline_index < len(ladder) - 1 else 0  # shift toward right
+    if left_runway <= 0:
+        pressure = 1.0
+    elif right_runway <= 0:
+        pressure = -1.0
     else:
-        step = 0
-    ratio = ladder[baseline_index + step] if step else ladder[baseline_index]
-    if step == 0:
-        return list(entries), 'hysteresis_hold', info
-    group_effective = {left: ratio[0], right: ratio[1]}
+        pressure = max(-1.0, min(1.0,
+            math.log(right_runway / left_runway) / math.log(RUNWAY_MAX)))
+    direction = 1 if pressure > 0 else -1
+    magnitude = abs(pressure)
+    magnitude = magnitude * magnitude * (3.0 - 2.0 * magnitude)
+    end_index = len(ladder) - 1 if direction > 0 else 0
+    position = baseline_index + magnitude * (end_index - baseline_index)
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    fraction = position - lower
+    shares = [pair[0] / (pair[0] + pair[1]) for pair in ladder]
+    left_share = shares[lower] if lower == upper else \
+        shares[lower] + (shares[upper] - shares[lower]) * fraction
+    left_weight = max(1, min(EFFECTIVE_WEIGHT_TOTAL - 1,
+                             int(round(left_share * EFFECTIVE_WEIGHT_TOTAL))))
+    group_effective = {left: left_weight, right: EFFECTIVE_WEIGHT_TOTAL - left_weight}
     out = []
     for entry in entries:
         provider = provider_by_profile.get(entry['profile'])
@@ -538,7 +543,8 @@ def dynamics(entries, provider_by_profile, quota_view=None, now=None, adaptive=N
     for entry in out:
         info[entry['profile']]['effective_weight'] = entry['weight']
         info[entry['profile']]['share'] = entry['weight'] / total_effective
-    reason = ('runway_shift_left' if step == -1 else 'runway_shift_right')
+    reason = ('runway_curve_left_' if direction < 0 else 'runway_curve_right_') + \
+        str(group_effective[left]) + '_' + str(group_effective[right])
     return out, reason, info
 
 

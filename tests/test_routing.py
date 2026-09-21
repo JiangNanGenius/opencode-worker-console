@@ -487,6 +487,40 @@ class RoutePolicyTests(unittest.TestCase):
             self.assertIn(restored, {'senior-code', 'ark-k3'})
             self.assertNotIn('quota_conservation_level2', why)
 
+    def test_level2_normal_inherits_the_fast_pools_continuous_curve(self):
+        c = json.loads(json.dumps(self.c))
+        c['kimi_reserve_percent'] = 0
+        c['routing_policy'] = {
+            'fast': [[{'profile': 'senior-code', 'weight': 1},
+                      {'profile': 'ark-auto', 'weight': 1}],
+                     [{'profile': 'fallback', 'weight': 1}]],
+            'background': [[{'profile': 'senior-code', 'weight': 1}],
+                           [{'profile': 'fallback', 'weight': 1}]],
+        }
+        c['routing_dynamics'] = {
+            'fast': {'0': {'ladder': [[2, 1], [1, 1], [1, 2]]}},
+        }
+        c['quota_spillover'] = {'enabled': True, 'profile': 'fallback',
+                                 'tiers': ['fast', 'background'], 'max_share_percent': 30,
+                                 'level2_runway_percent': 25}
+        q = {
+            'kimi-for-coding': {'state': 'ok', 'available': True, 'stale': False,
+                                'windows': [{'valid': True, 'remaining_percent': 20}]},
+            'ark': {'state': 'ok', 'available': True, 'stale': False,
+                    'windows': [{'valid': True, 'remaining_percent': 100}]},
+            'deepseek': {'state': 'ok', 'available': True, 'stale': False, 'windows': []},
+        }
+        guidance = {'quota_posture': 'fast_preferred', 'conservation_level': 2,
+                    'conservation_refill_safe': False, 'combined_remaining_complete': True,
+                    'combined_remaining_percent': 20, 'level2_runway_percent': 25,
+                    'runway_threshold_percent': 38, 'runway': {'kimi-for-coding': .2, 'ark': 1}}
+        with patch.object(quota, 'tier_guidance', return_value=guidance):
+            _, reason = quota.route(self.task(), c, q)
+            status = quota.routing_status(c, q)
+        self.assertIn('quota_conservation_level2:runway_curve_right_33_67', reason)
+        self.assertIn('quota_conservation_level2:runway_curve_right_33_67',
+                      status['background'][0]['reason'])
+
     def test_recovery_alternatives_follow_policy_order(self):
         t = self.task(complexity='deep', requested_profile='deep-research')
         alts = quota.alternatives(t, self.c, self.q, exclude='kimi-for-coding')
@@ -1190,32 +1224,66 @@ class DynamicRunwayTests(unittest.TestCase):
             now=1, adaptive=self.mid_adaptive)
         self.assertEqual([e['weight'] for e in effective], [1, 1])
 
-    def test_kimi_pressure_moves_only_one_bounded_step_toward_ark(self):
+    def test_kimi_pressure_reaches_the_bounded_ark_end_of_its_curve(self):
         q = {'kimi-for-coding': self.sample(20), 'volcengine-agent-plan': self.sample(100)}
         deep, reason, _ = routing.dynamics(
             [{'profile': 'native', 'weight': 2}, {'profile': 'ark', 'weight': 1}],
             {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q,
             now=1, adaptive=self.deep_adaptive)
-        self.assertEqual([e['weight'] for e in deep], [1, 1])
-        self.assertEqual(reason, 'runway_shift_right')
+        self.assertEqual([e['weight'] for e in deep], [50, 50])
+        self.assertEqual(reason, 'runway_curve_right_50_50')
         mid, _, _ = routing.dynamics(
             [{'profile': 'native', 'weight': 1}, {'profile': 'ark', 'weight': 1}],
             {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q,
             now=1, adaptive=self.mid_adaptive)
-        self.assertEqual([e['weight'] for e in mid], [1, 2])
+        self.assertEqual([e['weight'] for e in mid], [33, 67])
 
-    def test_ark_pressure_moves_only_one_bounded_step_toward_native_kimi(self):
+    def test_ark_pressure_reaches_the_bounded_native_kimi_end_of_its_curve(self):
         q = {'kimi-for-coding': self.sample(100), 'volcengine-agent-plan': self.sample(20)}
         deep, _, _ = routing.dynamics(
             [{'profile': 'native', 'weight': 2}, {'profile': 'ark', 'weight': 1}],
             {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q,
             now=1, adaptive=self.deep_adaptive)
-        self.assertEqual([e['weight'] for e in deep], [3, 1])
+        self.assertEqual([e['weight'] for e in deep], [75, 25])
         mid, _, _ = routing.dynamics(
             [{'profile': 'native', 'weight': 1}, {'profile': 'ark', 'weight': 1}],
             {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q,
             now=1, adaptive=self.mid_adaptive)
-        self.assertEqual([e['weight'] for e in mid], [2, 1])
+        self.assertEqual([e['weight'] for e in mid], [67, 33])
+
+    def test_each_tier_interpolates_continuously_between_its_own_control_points(self):
+        q = {'kimi-for-coding': self.sample(50),
+             'volcengine-agent-plan': self.sample(100)}
+        deep, deep_reason, deep_info = routing.dynamics(
+            [{'profile': 'native', 'weight': 2}, {'profile': 'ark', 'weight': 1}],
+            {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q,
+            now=1, adaptive=self.deep_adaptive)
+        mid, mid_reason, mid_info = routing.dynamics(
+            [{'profile': 'native', 'weight': 1}, {'profile': 'ark', 'weight': 1}],
+            {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q,
+            now=1, adaptive=self.mid_adaptive)
+        self.assertEqual([e['weight'] for e in deep], [58, 42])
+        self.assertEqual([e['weight'] for e in mid], [42, 58])
+        self.assertEqual(deep_reason, 'runway_curve_right_58_42')
+        self.assertEqual(mid_reason, 'runway_curve_right_42_58')
+        self.assertAlmostEqual(deep_info['ark']['share'], .42)
+        self.assertAlmostEqual(mid_info['ark']['share'], .58)
+
+    def test_curve_uses_relative_runway_even_when_both_are_above_on_track(self):
+        q = {
+            'kimi-for-coding': {'state': 'ok', 'available': True, 'stale': False,
+                'windows': [{'valid': True, 'remaining_percent': 100,
+                             'resets_at': 2, 'duration_minutes': 1 / 30}]},
+            'volcengine-agent-plan': {'state': 'ok', 'available': True, 'stale': False,
+                'windows': [{'valid': True, 'remaining_percent': 100,
+                             'resets_at': 1.5, 'duration_minutes': 1 / 30}]},
+        }
+        effective, reason, _ = routing.dynamics(
+            [{'profile': 'native', 'weight': 1}, {'profile': 'ark', 'weight': 1}],
+            {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q,
+            now=1, adaptive=self.mid_adaptive)
+        self.assertEqual([e['weight'] for e in effective], [42, 58])
+        self.assertEqual(reason, 'runway_curve_right_42_58')
 
     def test_unknown_or_stale_telemetry_never_changes_baseline(self):
         entries = [{'profile': 'native', 'weight': 2}, {'profile': 'ark', 'weight': 1}]

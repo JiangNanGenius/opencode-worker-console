@@ -213,6 +213,13 @@ DeepSeek; ordinary work uses native Kimi K2.8 and Ark Seed Evolving at 1:1, then
 direct DeepSeek; deep work uses native Kimi K3 and Ark K3 at 2:1, then the ordinary pair, Ark
 Auto and direct DeepSeek.
 
+Every explicitly adaptive pair owns a continuous runway curve. The configured ratios are control
+points, the saved policy weight is its neutral anchor, and the outer points are economic bounds.
+Fresh reset-aware runway interpolates between points instead of jumping among fixed ratios. Fast
+fallback sharing, Level 1 and Level 2 conservation also have separate curves; if Level 2 borrows a
+multi-provider Fast pool, it inherits that pool's curve. Missing or stale telemetry returns to the
+saved baseline rather than guessing.
+
 The bridge also owns low-weekly protection. By default, when the fresh authoritative Kimi
 weekly/overall pool is at or below 5%, automatic Normal work leaves Kimi and only one native
 K3 Deep task may run globally. Other Deep work uses the configured Ark peer or later stages.
@@ -267,9 +274,9 @@ large context across providers
 to chase a discount mid-session. Keep accepted work on its pinned model, reuse relevant sessions,
 and pass compact evidence to the coordinator. Use `stats` to assess actual task distribution;
 job counts are not token, money or quota ratios. Quota telemetry adjusts a pair only when that
-exact stage has an explicit bounded ladder. Fixed pools never drift. Stale or unknown telemetry
-keeps the baseline. In the optional Agent Plan preset, K3 can move only among 3:1, 2:1 and 1:1,
-while K2.8/Evolving can move only among 2:1, 1:1 and 1:2. All Ark profiles share one AFP runway,
+exact stage has an explicit bounded curve. Fixed pools never drift. Stale or unknown telemetry
+keeps the baseline. In the optional Agent Plan preset, K3 moves continuously from 3:1 through
+2:1 to 1:1, while K2.8/Evolving moves continuously from 2:1 through 1:1 to 1:2. All Ark profiles share one AFP runway,
 so Auto usage reduces the same allowance signal used by Ark K3/Evolving.
 Keep the highest **verified supported** reasoning variant; the built-in Kimi, DeepSeek and Ark
 profiles currently support `max`.

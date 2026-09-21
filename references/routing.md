@@ -14,7 +14,7 @@ then choose one of these patterns in **Models & routing**:
 - **One model per tier:** the simple `routing` map selects one profile for fast, background and deep work.
 - **Primary + backup:** put each profile in its own ordered stage. The next stage is considered only when every model in the earlier stage is unavailable.
 - **Fixed weighted pool:** put two or more profiles in one stage and assign integer weights. The weights stay fixed.
-- **Quota-adaptive pool:** explicitly enable a bounded ratio ladder for one two-provider stage. Fresh quota runway may move one step from the saved baseline; missing or stale telemetry keeps the baseline.
+- **Quota-adaptive pool:** explicitly enable a bounded continuous curve for one two-provider stage. Its ratios are control points, the saved weight is the neutral anchor, and fresh quota runway interpolates between them. Missing or stale telemetry keeps the baseline.
 
 Ordered fallback and weighted sharing can be mixed independently for each task tier. A user with
 one subscription needs no policy at all; a user with one paid plan and one pay-as-you-go backup can
@@ -182,16 +182,19 @@ stage, task status exposes `fallback_used: true` and a routing notice. Ordinary 
 silent; coordinators tell the user only when this final fallback is actually used.
 
 The baseline favors native Kimi because buying the same Kimi model through Ark is usually a poor
-economic trade. Fresh reset-aware quota telemetry can move the ratios by one step only:
+economic trade. Each pool has its own continuous, reset-aware curve:
 
 | Pool | Baseline | Allowed range |
 | --- | --- | --- |
-| native Kimi K3 : Ark K3 | 2:1 | 3:1, 2:1 or 1:1; Ark K3 never leads |
-| native Kimi K2.8 : Ark Evolving | 1:1 | 2:1, 1:1 or 1:2 |
+| native Kimi K3 : Ark K3 | 2:1 | continuously from 3:1 through 2:1 to 1:1; Ark K3 never leads |
+| native Kimi K2.8 : Ark Evolving | 1:1 | continuously from 2:1 through 1:1 to 1:2 |
 
 For each valid window, runway is `remaining fraction / time fraction until reset`. The most
 constrained window represents the provider. Stale, missing or unauthenticated telemetry keeps the
-baseline. Ark Auto, Evolving and K3 share one runway, so heavy Auto use naturally reduces later
+baseline. A 2x runway difference produces an intermediate ratio; a 4x difference reaches the
+configured outer bound. The Fast tier's fallback share, level 1 conservation and level 2
+conservation use separate curves. When level 2 reuses a multi-provider Fast pool, it also inherits
+that pool's own curve. Ark Auto, Evolving and K3 share one runway, so heavy Auto use naturally reduces later
 Ark share. Endpoint-confirmed zero removes the provider. A confirmed quota/window stop or
 model-origin HTTP 429 can continue within the same OpenCode session on the next route. The
 transition keeps the transcript and workspace, adds the failed provider to the exclusion set,

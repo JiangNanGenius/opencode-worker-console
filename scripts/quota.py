@@ -1004,7 +1004,7 @@ def _allowed_profile(name, t, c, q):
 
 def _first_available_policy_stage(tier, t, c, q, policy):
     """Return the first usable stage without advancing its admission counter."""
-    for stage in (policy or {}).get(tier) or []:
+    for index, stage in enumerate((policy or {}).get(tier) or []):
         candidates = []
         providers = {}
         for entry in stage:
@@ -1013,8 +1013,8 @@ def _first_available_policy_stage(tier, t, c, q, policy):
                 candidates.append((entry, why))
                 providers[entry['profile']] = provider
         if candidates:
-            return candidates, providers
-    return [], {}
+            return candidates, providers, index
+    return [], {}, None
 
 
 def _level2_conservation_active(tier, spill_config, guidance):
@@ -1119,13 +1119,16 @@ def _policy_route(t, c, q, stages, batch=None):
             if spill_config and spill_config['enabled'] and index == 0:
                 spill_guidance = spill_guidance or tier_guidance(c, q)
                 if _level2_conservation_active(tier, spill_config, spill_guidance):
-                    fast_candidates, fast_providers = _first_available_policy_stage('fast', t, c, q, policy)
+                    fast_candidates, fast_providers, fast_stage_index = _first_available_policy_stage(
+                        'fast', t, c, q, policy)
                     if fast_candidates:
                         candidates = fast_candidates
                         base_entries = [entry for entry, _ in candidates]
                         provider_by_profile = fast_providers
                         level2 = True
-            adaptive = None if level2 else routing.dynamic_stage(c, tier, index)
+            adaptive = routing.dynamic_stage(
+                c, 'fast' if level2 else tier,
+                fast_stage_index if level2 else index, policy)
             entries, dynamic_reason, _ = routing.dynamics(
                 base_entries, provider_by_profile, q, adaptive=adaptive)
             if level2:
@@ -1414,7 +1417,7 @@ def routing_status(c, q):
             level2 = False
             if spill_config and spill_config['enabled'] and index == 0 and \
                     _level2_conservation_active(tier, spill_config, spill_guidance):
-                fast_candidates, _ = _first_available_policy_stage(
+                fast_candidates, _, fast_stage_index = _first_available_policy_stage(
                     'fast', {'complexity': 'normal'}, c, q, policy)
                 if fast_candidates:
                     candidates = [entry for entry, _ in fast_candidates]
@@ -1423,7 +1426,9 @@ def routing_status(c, q):
             for entry in candidates:
                 profile = c['profiles'].get(entry['profile']) or {}
                 provider_by_profile[entry['profile']] = str(profile.get('model', '')).split('/', 1)[0]
-            adaptive = None if level2 else routing.dynamic_stage(c, tier, index, policy)
+            adaptive = routing.dynamic_stage(
+                c, 'fast' if level2 else tier,
+                fast_stage_index if level2 else index, policy)
             effective, reason, info = routing.dynamics(
                 candidates, provider_by_profile, q, adaptive=adaptive)
             if level2:
