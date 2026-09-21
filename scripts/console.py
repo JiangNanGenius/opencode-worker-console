@@ -32,7 +32,8 @@ from common import CONFIG, HttpFailure, locked, update, write_json
 WEB = Path(__file__).resolve().parent.parent / 'web'
 
 # The login page reuses the existing translation bundle, so it is public too.
-PUBLIC_ASSETS = {'login.js': 'text/javascript', 'style.css': 'text/css', 'i18n.js': 'text/javascript'}
+PUBLIC_ASSETS = {'login.js': 'text/javascript', 'style.css': 'text/css', 'i18n.js': 'text/javascript',
+                 'worker-desk-icon.svg': 'image/svg+xml', 'worker-desk-icon.png': 'image/png'}
 # Authenticated application assets are never served anonymously.
 PRIVATE_ASSETS = {'app.js': 'text/javascript', 'manage.js': 'text/javascript', 'i18n.js': 'text/javascript',
                   'setup.js': 'text/javascript', 'task-view.js': 'text/javascript'}

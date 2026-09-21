@@ -12,10 +12,13 @@ import quota
 
 
 STATE_FILE = 'notifications.json'
+DEFAULT_ICON = ('https://cdn.jsdelivr.net/gh/JiangNanGenius/'
+                'opencode-worker-console@main/web/worker-desk-icon.png')
 DEFAULTS = {
     'enabled': False,
     'credential': 'bark-endpoint',
     'group': 'Worker Desk',
+    'icon': DEFAULT_ICON,
     'quota_transitions': True,
     'model_switches': False,
 }
@@ -33,6 +36,9 @@ def normalize(value):
     group = raw.get('group')
     if isinstance(group, str) and group.strip():
         result['group'] = group.strip()[:64]
+    icon = raw.get('icon')
+    if isinstance(icon, str):
+        result['icon'] = icon.strip()
     return result
 
 
@@ -47,6 +53,13 @@ def validate(value):
         raise ValueError('notifications.credential is too long')
     if not result['group']:
         raise ValueError('notifications.group cannot be empty')
+    if len(result['icon']) > 2048:
+        raise ValueError('notifications.icon is too long')
+    if result['icon']:
+        parsed = urllib.parse.urlsplit(result['icon'])
+        if (parsed.scheme != 'https' or not parsed.hostname or parsed.username or
+                parsed.password or parsed.fragment):
+            raise ValueError('notifications.icon must be an HTTPS URL without user info or fragment')
     return result
 
 
@@ -68,8 +81,11 @@ def send(title, body, *, level='active', config=None):
     settings = normalize(config if config is not None else common.config().get('notifications'))
     if not settings['enabled']:
         return {'sent': False, 'reason': 'disabled'}
-    payload = json.dumps({'title': str(title)[:120], 'body': str(body)[:1000],
-                          'group': settings['group'], 'level': level}, ensure_ascii=False).encode()
+    message = {'title': str(title)[:120], 'body': str(body)[:1000],
+               'group': settings['group'], 'level': level}
+    if settings['icon']:
+        message['icon'] = settings['icon']
+    payload = json.dumps(message, ensure_ascii=False).encode()
     try:
         request = urllib.request.Request(_endpoint(settings['credential']), data=payload,
                                          headers={'Content-Type': 'application/json; charset=utf-8'},

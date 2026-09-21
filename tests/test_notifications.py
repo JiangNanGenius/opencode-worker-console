@@ -30,13 +30,21 @@ class NotificationTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_bark_send_never_returns_endpoint_or_response(self):
-        cfg = {'enabled': True, 'credential': 'bark-endpoint', 'group': 'Desk'}
+        cfg = {'enabled': True, 'credential': 'bark-endpoint', 'group': 'Desk',
+               'icon': 'https://cdn.example/worker-desk.png'}
         with patch.object(notifications.credentials, '_resolve_reference',
                           return_value='https://api.day.app/private-key/'), \
-             patch.object(notifications.urllib.request.OpenerDirector, 'open', return_value=_Response()):
+             patch.object(notifications.urllib.request.OpenerDirector, 'open', return_value=_Response()) as opened:
             result = notifications.send('Title', 'Body', config=cfg)
         self.assertTrue(result['sent'])
         self.assertNotIn('private-key', json.dumps(result))
+        payload = json.loads(opened.call_args.args[0].data)
+        self.assertEqual(payload['icon'], cfg['icon'])
+
+    def test_notification_icon_is_https_and_can_be_disabled(self):
+        with self.assertRaisesRegex(ValueError, 'HTTPS URL'):
+            notifications.validate({'icon': 'http://example.test/icon.png'})
+        self.assertEqual(notifications.validate({'icon': ''})['icon'], '')
 
     def test_quota_events_seed_then_notify_only_on_transition(self):
         cfg = {'notifications': {'enabled': True, 'quota_transitions': True}}

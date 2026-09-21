@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Worker Desk">
+  <rect width="1024" height="1024" rx="224" fill="#202a32"/>
+  <g fill="none" stroke="#9ecfc0" stroke-width="64">
+    <rect x="192" y="192" width="256" height="256" rx="48"/>
+    <rect x="576" y="192" width="256" height="256" rx="48"/>
+    <rect x="192" y="576" width="256" height="256" rx="48"/>
+    <rect x="576" y="576" width="256" height="256" rx="48"/>
+  </g>
+</svg>
