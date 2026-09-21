@@ -130,6 +130,15 @@ class UsageCountingTests(IsolatedCase):
         self.assertEqual(usage['source'], 'saved')
         self.assertTrue(usage['complete'])
 
+    def test_usage_is_split_by_actual_provider_model_without_changing_total(self):
+        first = assistant('msg_a', sample_tokens(100, 10, 5, 5, 80), cost=0.01)
+        second = assistant('msg_b', sample_tokens(40, 4, 2, 2, 32), cost=0.02)
+        second['info'].update(providerID='ark', modelID='auto')
+        usage = ta.usage_from_messages([first, second])
+        self.assertEqual(usage['total'], 140)
+        self.assertEqual([(item['model'], item['total']) for item in usage['by_model']],
+                         [('acme/worker', 100), ('ark/auto', 40)])
+
     def test_provider_total_is_never_added_to_its_components(self):
         messages = [assistant('msg_a', sample_tokens(100, 10, 5, 5, 80))]
         usage = ta.usage_from_messages(messages)
@@ -677,8 +686,9 @@ class ConsoleIntegrationTests(IsolatedCase):
         self.assertEqual(sorted(payload['activity'].keys()),
                          ['error', 'events', 'has_more', 'sampled_at', 'source', 'stale'])
         self.assertEqual(sorted(payload['usage'].keys()),
-                         ['cache_read', 'cache_write', 'complete', 'cost', 'input', 'output', 'reasoning',
+                         ['by_model', 'cache_read', 'cache_write', 'complete', 'cost', 'input', 'output', 'reasoning',
                           'source', 'total'])
+        self.assertEqual(payload['usage']['by_model'][0]['model'], 'acme/worker')
         asset = self.call('GET', '/console-assets/task-view.js', headers={'Cookie': cookie})
         self.assertEqual(asset['status'], 200)
         self.assertEqual(asset['body'], b'/* task view */')

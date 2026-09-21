@@ -67,8 +67,53 @@ class ProactiveRerouteTests(unittest.TestCase):
         self.assertEqual(updated['profile'], 'ark-auto')
         self.assertEqual(updated['proactive_reroute_levels'], [2])
         self.assertTrue(updated['route_history'][-1]['queued_boundary_switch'])
+        self.assertEqual(updated['route_history'][-1]['switch_state'], 'queued')
+        self.assertEqual(updated['route_history'][-1]['message_id'], updated['message_id'])
         self.assertEqual(call.call_args.args[1], '/prompt_async')
         self.assertIn('Do not repeat completed', call.call_args.args[3]['parts'][0]['text'])
+
+    def test_switch_is_active_only_after_requested_model_assistant_turn(self):
+        common.update('job-long', profile='ark-auto', message_id='msg_switch', route_history=[{
+            'from_profile': 'senior-code', 'to_profile': 'ark-auto',
+            'queued_boundary_switch': True, 'message_id': 'msg_switch',
+            'switch_state': 'queued',
+        }])
+        old_turn = {'info': {'id': 'a_old', 'role': 'assistant',
+                             'providerID': 'ark', 'modelID': 'evolving'}}
+        boundary = {'info': {'id': 'msg_switch', 'role': 'user'}}
+        queued = worker.observe_live_models_and_switches(
+            common.task('job-long'), [old_turn, boundary])
+        self.assertEqual(queued['route_history'][-1]['switch_state'], 'queued')
+        self.assertEqual(queued['actual_models'], ['ark/evolving'])
+
+        new_turn = {'info': {'id': 'a_new', 'role': 'assistant',
+                             'providerID': 'ark', 'modelID': 'auto',
+                             'time': {'created': 1789988691674}}}
+        active = worker.observe_live_models_and_switches(
+            common.task('job-long'), [old_turn, boundary, new_turn])
+        hop = active['route_history'][-1]
+        self.assertEqual(hop['switch_state'], 'active')
+        self.assertEqual(hop['assistant_message_id'], 'a_new')
+        self.assertEqual(hop['actual_model'], 'ark/auto')
+        self.assertEqual(active['actual_models'], ['ark/auto', 'ark/evolving'])
+        self.assertEqual([item['model'] for item in active['usage']['by_model']],
+                         ['ark/auto', 'ark/evolving'])
+        self.assertIsInstance(active['last_activity'], dict)
+        self.assertEqual(active['last_activity']['type'], 'status')
+
+    def test_wrong_model_after_boundary_does_not_activate_switch(self):
+        common.update('job-long', profile='ark-auto', message_id='msg_switch', route_history=[{
+            'from_profile': 'senior-code', 'to_profile': 'ark-auto',
+            'queued_boundary_switch': True, 'message_id': 'msg_switch',
+            'switch_state': 'queued',
+        }])
+        messages = [
+            {'info': {'id': 'msg_switch', 'role': 'user'}},
+            {'info': {'id': 'a_wrong', 'role': 'assistant',
+                      'providerID': 'ark', 'modelID': 'evolving'}},
+        ]
+        observed = worker.observe_live_models_and_switches(common.task('job-long'), messages)
+        self.assertEqual(observed['route_history'][-1]['switch_state'], 'queued')
 
     def test_deep_and_explicit_tasks_never_move(self):
         for fields in ({'tier': 'deep'}, {'requested_profile': 'senior-code'}):
@@ -77,4 +122,3 @@ class ProactiveRerouteTests(unittest.TestCase):
                 self.assertFalse(worker.proactive_reroute_if_needed(
                     common.task('job-long'), {'type': 'busy'}))
             call.assert_not_called()
-

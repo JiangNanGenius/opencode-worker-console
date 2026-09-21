@@ -280,6 +280,67 @@ def summarize_messages(messages):
             'last_info': last.get('info', {})}
 
 
+def observe_live_models_and_switches(t, messages):
+    """Persist models that actually produced assistant turns.
+
+    A successful ``prompt_async`` only proves that a continuation was accepted.
+    The model switch becomes active after the previous turn finishes and OpenCode
+    creates an assistant message with the requested provider/model.  Keeping these
+    states separate prevents the console from presenting an enqueued switch as an
+    already-running model.
+    """
+    actual_models = sorted(set(
+        info.get('providerID', '') + '/' + info.get('modelID', '')
+        for message in messages
+        for info in [message.get('info', {})]
+        if info.get('role') == 'assistant' and info.get('providerID') and info.get('modelID')
+    ))
+    history = [dict(hop) if isinstance(hop, dict) else hop
+               for hop in (t.get('route_history') or [])]
+    usage = task_activity.usage_from_messages(messages, complete_history=True, source='live')
+    latest_events, _ = task_activity.events_from_messages(messages, t, limit=1)
+    latest_activity = latest_events[-1] if latest_events else None
+    changed = actual_models != (t.get('actual_models') or []) or usage != t.get('usage') or \
+        latest_activity != t.get('last_activity')
+    message_positions = {
+        message.get('info', {}).get('id'): index
+        for index, message in enumerate(messages)
+        if message.get('info', {}).get('id')
+    }
+    cfg = config()
+    for index, hop in enumerate(history):
+        if not isinstance(hop, dict) or not hop.get('queued_boundary_switch') or \
+                hop.get('switch_state') in ('active', 'rejected'):
+            continue
+        boundary_id = hop.get('message_id')
+        if not boundary_id and index == len(history) - 1:
+            # Compatibility for queued switches created before message IDs and
+            # activation state were persisted in route history.
+            boundary_id = t.get('message_id')
+        boundary = message_positions.get(boundary_id)
+        target = (cfg.get('profiles', {}).get(hop.get('to_profile')) or {}).get('model')
+        if boundary is None or not target:
+            continue
+        for message in messages[boundary + 1:]:
+            info = message.get('info', {})
+            if info.get('role') != 'assistant':
+                continue
+            actual = info.get('providerID', '') + '/' + info.get('modelID', '')
+            if actual != target:
+                continue
+            when = (info.get('time') or {}).get('created') or time.time()
+            if isinstance(when, (int, float)) and when > 100000000000:
+                when /= 1000
+            hop.update(switch_state='active', activated_at=when,
+                       assistant_message_id=info.get('id'), actual_model=actual)
+            changed = True
+            break
+    if changed:
+        return update(t['id'], actual_models=actual_models, route_history=history,
+                      usage=usage, last_activity=latest_activity)
+    return t
+
+
 def reroute_after_capacity_stop(t, provider, trigger):
     """Continue a confirmed quota/capacity stop in the same session on the next route.
 
@@ -423,7 +484,8 @@ def proactive_reroute_if_needed(t, native_status):
     history.append({'from_profile': previous_profile, 'from_provider': previous_provider,
                     'to_profile': profile, 'to_provider': next_provider,
                     'trigger': 'quota_conservation_level_' + str(level),
-                    'route_reason': reason, 'at': now, 'queued_boundary_switch': True})
+                    'route_reason': reason, 'at': now, 'queued_boundary_switch': True,
+                    'message_id': message_id, 'switch_state': 'queued'})
     levels = sorted(set((t.get('proactive_reroute_levels') or []) + [level]))
     previous = {'profile': previous_profile, 'message_id': t.get('message_id'),
                 'dispatch_attempted_at': t.get('dispatch_attempted_at'),
@@ -456,6 +518,7 @@ def proactive_reroute_if_needed(t, native_status):
         return True
     except HttpFailure as error:
         history[-1]['accepted'] = False
+        history[-1]['switch_state'] = 'rejected'
         history[-1]['error'] = 'http_' + str(error.status) if error.status else 'transport'
         # A rejected queued continuation did not take ownership; restore the live turn.
         if error.status and 400 <= error.status < 500:
@@ -631,6 +694,7 @@ def run_task(task_id, shutdown):
                     shutdown.wait(3)
                     continue
                 messages = call(t, '/message')
+                t = observe_live_models_and_switches(t, messages)
                 seen = any(m.get('info', {}).get('id') == t['message_id'] for m in messages)
                 native_status = api('/session/status', t['directory']).get(t['session_id'], {'type': 'idle'})
                 is_idle = native_status.get('type') == 'idle'

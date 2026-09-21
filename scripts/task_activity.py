@@ -161,7 +161,7 @@ def usage_from_session(session):
     return _usage(components, total, cost, 'live', complete)
 
 
-def usage_from_messages(messages, complete_history=True, source='saved'):
+def usage_from_messages(messages, complete_history=True, source='saved', include_models=True):
     """Recompute usage from real assistant message IDs (deduplicated, never incremented)."""
     unique = {}
     if isinstance(messages, list):
@@ -174,7 +174,10 @@ def usage_from_messages(messages, complete_history=True, source='saved'):
             unique[key] = info
     if not unique and complete_history:
         # A complete, empty history really did use zero tokens.
-        return _usage({name: 0 for name in COMPONENTS}, 0, 0.0, source, True)
+        result = _usage({name: 0 for name in COMPONENTS}, 0, 0.0, source, True)
+        if include_models:
+            result['by_model'] = []
+        return result
     if not unique:
         return empty_usage(source)
     sums = {name: 0 for name in COMPONENTS}
@@ -213,13 +216,38 @@ def usage_from_messages(messages, complete_history=True, source='saved'):
     cost_value = cost if cost_seen else None
     complete = (complete_history and total_value is not None and cost_value is not None and
                 all(present[name] and not missing[name] for name in COMPONENTS))
-    return _usage(values, total_value, cost_value, source, complete)
+    result = _usage(values, total_value, cost_value, source, complete)
+    if include_models:
+        groups = {}
+        for key, info in unique.items():
+            provider, model = info.get('providerID'), info.get('modelID')
+            name = provider + '/' + model if isinstance(provider, str) and provider and \
+                isinstance(model, str) and model else 'unknown'
+            groups.setdefault(name, []).append({'info': info})
+        result['by_model'] = []
+        for name in sorted(groups):
+            item = usage_from_messages(groups[name], complete_history=complete_history,
+                                       source=source, include_models=False)
+            result['by_model'].append(dict(item, model=name))
+    return result
 
 
 def _normalize_usage(value):
     source = value.get('source') if isinstance(value.get('source'), str) and value.get('source') else 'saved'
-    return _usage({name: _num(value.get(name)) for name in COMPONENTS},
-                  _num(value.get('total')), _num(value.get('cost')), source, value.get('complete') is True)
+    result = _usage({name: _num(value.get(name)) for name in COMPONENTS},
+                    _num(value.get('total')), _num(value.get('cost')), source, value.get('complete') is True)
+    by_model = value.get('by_model')
+    if isinstance(by_model, list):
+        result['by_model'] = []
+        for item in by_model:
+            if not isinstance(item, dict) or not isinstance(item.get('model'), str):
+                continue
+            normalized = _usage({name: _num(item.get(name)) for name in COMPONENTS},
+                                _num(item.get('total')), _num(item.get('cost')), source,
+                                item.get('complete') is True)
+            normalized['model'] = item['model']
+            result['by_model'].append(normalized)
+    return result
 
 
 def _read_json(path):
@@ -749,6 +777,9 @@ def _live_pair(task):
         errors = []
         try:
             fresh_usage = usage_from_session(common.api('/session/' + session_id, directory, timeout=LIVE_TIMEOUT))
+            stored = _normalize_usage(task['usage']) if isinstance(task.get('usage'), dict) else None
+            if stored and isinstance(stored.get('by_model'), list):
+                fresh_usage['by_model'] = stored['by_model']
         except Exception as exc:
             errors.append('usage: ' + _error_text(exc))
         try:

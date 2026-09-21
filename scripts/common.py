@@ -202,7 +202,7 @@ def public_task(t):
             'proactive_reroute_levels',
             'created_at', 'started_at', 'finished_at', 'reason', 'queue_reason', 'route_reason',
             'actual_models', 'fallback_used', 'routing_notice', 'review_required', 'cancellation', 'artifact_dir',
-            'summary', 'elapsed_seconds', 'errors', 'recovery', 'auto_approve']
+            'summary', 'elapsed_seconds', 'errors', 'recovery', 'auto_approve', 'last_activity']
     return {k: t[k] for k in keys if k in t}
 
 

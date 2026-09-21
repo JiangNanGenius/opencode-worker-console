@@ -21,8 +21,10 @@
   function usageHTML(usage, { tr, esc, number }) {
     usage = usage || {};
     const values = fields.map(key => `<div><dt>${esc(tr('usage.' + key))}</dt><dd>${numeric(usage[key]) ? esc(number(usage[key])) : '—'}</dd></div>`).join('');
+    const models = Array.isArray(usage.by_model) && usage.by_model.length > 1
+      ? `<div class="usage-models"><h4>${esc(tr('usage.byModel'))}</h4>${usage.by_model.map(item=>`<div><span>${esc(item.model||tr('usage.unknownModel'))}</span><strong>${numeric(item.total)?esc(number(item.total)):'—'}</strong></div>`).join('')}</div>` : '';
     const partial = usage.complete === false ? `<p class="muted">${esc(tr('usage.partial'))}</p>` : '';
-    return `<section class="task-usage" aria-label="${esc(tr('usage.heading'))}"><h3>${esc(tr('usage.heading'))}</h3><dl class="usage-breakdown">${values}</dl>${partial}<p class="muted">${esc(tr('usage.note'))}</p></section>`;
+    return `<section class="task-usage" aria-label="${esc(tr('usage.heading'))}"><h3>${esc(tr('usage.heading'))}</h3><dl class="usage-breakdown">${values}</dl>${models}${partial}<p class="muted">${esc(tr('usage.note'))}</p></section>`;
   }
   function activityHTML(activity, { tr, esc, clock, taskId = '', fullMessages = new Map(), expandedMessages = new Set() }) {
     activity = activity || {};

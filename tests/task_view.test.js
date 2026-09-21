@@ -18,6 +18,17 @@ test('usage keeps unknown distinct from zero and never adds reasoning twice', ()
  assert.match(View.usageHTML({},display),/<dd>—<\/dd>/);
 });
 
+test('usage keeps the task total and shows actual model segments after a switch', () => {
+ const usage={total:140,input:14,output:7,reasoning:7,cache_read:112,cache_write:0,complete:true,
+   by_model:[{model:'ark/evolving',total:100},{model:'ark/auto',total:40}]};
+ const html=View.usageHTML(usage,display);
+ assert.match(html,/usage\.byModel/);
+ assert.match(html,/ark\/evolving/);
+ assert.match(html,/100/);
+ assert.match(html,/ark\/auto/);
+ assert.match(html,/40/);
+});
+
 test('activity escapes every untrusted field and marks a stale sample', () => {
  const html=View.activityHTML({stale:true,error:'<secret>',source:'saved',has_more:true,events:[{id:'" onclick="bad',status:'evil',label:'<img>',text:'<script>bad()</script>',time:2}]},display);
  assert.ok(!html.includes('<script>'));
