@@ -1,6 +1,6 @@
 interface:
   display_name: "OpenCode Worker Pool"
   short_description: "Delegate complete outcomes to general-purpose agents"
-  default_prompt: "Use $delegate-opencode to delegate a complete authorized outcome, including verification. Choose Fast, Normal or Deep by unresolved uncertainty and keep profile=auto. Read the current quota posture, submit clear scope and acceptance, wait through completion, then review evidence. The bridge owns model choice and fallback."
+  default_prompt: "Use $delegate-opencode to delegate a complete authorized outcome, including verification. Choose Fast, Normal or Deep by unresolved uncertainty and keep profile=auto. For substantial or continuing work, send a self-contained structured handoff with current state, decisions, evidence, constraints, acceptance and do-not-repeat items. Wait through completion, then review evidence. The bridge owns model choice and fallback."
 policy:
   allow_implicit_invocation: true

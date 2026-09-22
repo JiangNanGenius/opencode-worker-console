@@ -36,6 +36,23 @@ verification; do not duplicate their repository reading locally.
   the main outcome, `--parent-task-id` continues one; preserve other tasks' ownership.
   `--notify-on-complete` sends one Bark alert for a key milestone only.
 
+## Hand off a self-contained outcome
+
+The initial handoff must pass a cold-start test: a capable engineer who cannot see the upstream
+conversation can finish the outcome without guessing any decision or redoing known work. Always
+pass conversation-only facts that affect execution: the intended result, relevant current state,
+settled decisions and their practical rationale, concrete evidence or artifact IDs/paths/URLs,
+authority and constraints, acceptance evidence, open questions, and anything that must not be
+repeated. For a continuation, state `Done`, `In progress`, `Remaining`, and `Do not repeat`.
+
+Let the worker rediscover repository facts, commands and conventions from the workspace; do not
+omit facts it cannot discover there. Be concise but lossless: there is no arbitrary prompt-length
+cap for a substantial task. Do not dump the whole chat, private chain of thought, credentials or
+irrelevant history. Put substantial or continuing work in a private JSON spec with a structured
+multiline `objective`; use `steer` later only for material new information, not to repair an
+intentionally thin initial handoff. Use the template and examples in
+[the handoff contract](references/handoff.md).
+
 ## Submit reliably
 
 Use `~/.local/bin/delegate-opencode` (or this skill's `scripts/delegate.py`). `submit` starts
@@ -54,7 +71,7 @@ delegate-opencode submit --directory "$PWD" --tier normal --profile auto \
   'Investigate the reported problem and recommend a complete fix without changing systems.'
 ```
 
-For writes add `--mode write` with `--scope` and/or `--target`. Complex specs go in a private JSON
+For writes add `--mode write` with `--scope` and/or `--target`. Substantial and complex specs go in a private JSON
 file: `submit --spec /absolute/private/task.json`. Never use `--spec -` unless the caller actually
 writes JSON to process stdin — a command string alone does not supply an in-memory object.
 Prefer a private spec file unless the payload is explicitly piped to stdin. For independent in-memory specs submit

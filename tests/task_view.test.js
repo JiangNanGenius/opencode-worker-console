@@ -146,6 +146,28 @@ function appHarness(){
  return {ctx,get,run:source=>vm.runInContext(source,ctx)};
 }
 
+test('long-operation progress keeps unknown values indeterminate instead of showing zero', async () => {
+ const h=appHarness();await tick();
+ assert.equal(h.run('progressHTML(null)'), '');
+ const unknown=h.run(`progressHTML({phase:'Compile',percent:null,eta_seconds:null,status:'running'})`);
+ assert.match(unknown,/operation-track indeterminate/);
+ assert.match(unknown,/status\.running/);
+ assert.doesNotMatch(unknown,/0%/);
+ const measured=h.run(`progressHTML({phase:'Compile',percent:42,eta_seconds:120,status:'running'})`);
+ assert.match(measured,/42%/);
+ assert.doesNotMatch(measured,/indeterminate/);
+});
+
+test('task rows show progress only when a durable progress record exists', async () => {
+ const h=appHarness();await tick();
+ assert.doesNotMatch(h.get('task-rows').children[0].innerHTML,/row-progress/);
+ h.run(`data.tasks[0].progress={phase:'Upload',percent:null,status:'running'};renderTasks()`);
+ const row=h.get('task-rows').children[0].innerHTML;
+ assert.match(row,/row-progress indeterminate/);
+ assert.match(row,/Upload/);
+ assert.doesNotMatch(row,/0%/);
+});
+
 test('real task list inserts detail immediately after selected row and keeps its node on refresh', async () => {
  const h=appHarness();await tick();
  h.run("details('b')");await tick();

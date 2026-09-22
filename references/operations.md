@@ -24,7 +24,8 @@ delegate-opencode cancel JOB_ID --reason user_requested
 delegate-opencode stats
 ```
 
-For complex text, prefer `submit --spec /absolute/private/task.json`. `--spec -` requires a
+For substantial, continuing or complex work, follow the
+[handoff contract](handoff.md) and prefer `submit --spec /absolute/private/task.json`. `--spec -` requires a
 JSON object on the process stdin; calling `functions.exec_command` with a command string alone
 does not supply it. For an in-memory JavaScript object use
 `encodeURIComponent(JSON.stringify(spec)).replace(/'/g, "%27")`, put that result inside one
