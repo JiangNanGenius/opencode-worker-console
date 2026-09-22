@@ -1608,7 +1608,11 @@ def _control_policy(c):
     import hashlib
     import json
     fields = ('profiles', 'routing_policy', 'routing', 'routing_dynamics', 'budget_signals', 'quota_spillover', 'fast_bias_runway_percent')
-    return hashlib.sha256(json.dumps({k: c.get(k) for k in fields}, sort_keys=True).encode()).hexdigest()
+    # Bump when the meaning of the persisted conservation level changes. Version 2
+    # separates renewable short-window pressure from durable plan capacity, so an
+    # old level derived from the former mixed signal must not remain latched.
+    payload = {'controller_schema': 3, **{k: c.get(k) for k in fields}}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
 def observe_load(c, q, now=None):
@@ -1704,8 +1708,10 @@ def tier_guidance(c, q, _raw=False):
     level2_base = max(0.0, min(100.0, float(level2_base)))
 
     # Shared, provider-neutral burn forecasts supply effective refills. The UI
-    # pool percentage is descriptive; conservation uses bottleneck coverage of
-    # time to refill, including the bounded near-term workload adjustment.
+    # pool percentage and conservation pressure use each subscription's durable
+    # weekly/monthly window. Short rolling windows remain authoritative for
+    # immediate admission and per-stage balancing, but a burst inside a renewable
+    # five-hour window must not make an otherwise full weekly plan look depleted.
     configured_provider_ids = set()
     for tier_name in ('fast', 'background'):
         for stage in (policy or {}).get(tier_name) or []:
@@ -1716,11 +1722,14 @@ def tier_guidance(c, q, _raw=False):
     pool_fit = None
     spill_provider = str(((c.get('profiles') or {}).get((spill_config or {}).get('profile')) or {}).get('model', '')).split('/')[0]
     plan_provider_ids = {p for p in configured_provider_ids if (q.get(p) or {}).get('windows') and p != spill_provider}
+    durable_fits = {}
     if plan_provider_ids:
         import economics
         candidate = economics.work_pool(c, q, now=now, include_payg_balance=False)
         if candidate.get('complete') and isinstance(candidate.get('remaining_percent'), (int, float)):
             pool_fit = candidate
+        durable_fits = {provider: economics._window_fit(provider, q.get(provider) or {}, now)
+                        for provider in plan_provider_ids}
     refill = (pool_fit.get('refills') or [None])[0] if pool_fit else None
     relief = 0.0
     if refill and isinstance(refill.get('hours_until'), (int, float)) and \
@@ -1764,6 +1773,9 @@ def tier_guidance(c, q, _raw=False):
         return {'index': None, 'configured': [], 'available': []}
 
     def remaining(provider):
+        durable = durable_fits.get(provider)
+        if durable and isinstance(durable.get('source_amount'), (int, float)):
+            return float(durable['source_amount'])
         values = []
         for window in (q.get(provider) or {}).get('windows') or []:
             if not isinstance(window, dict):
@@ -1818,7 +1830,10 @@ def tier_guidance(c, q, _raw=False):
                for provider, item in signals.items()}
     combined_remaining = pool_fit.get('remaining_percent') if pool_fit else None
     combined_complete = bool(pool_fit)
-    plan_signals = {p: routing._runway(q.get(p), now) for p in plan_provider_ids}
+    plan_signals = {
+        provider: (fit.get('runway') if fit.get('status') == 'ok' and not fit.get('stale') else None)
+        for provider, fit in durable_fits.items()
+    }
     # Fresh authoritative zero is a valid capacity observation despite unavailability.
     for p in plan_provider_ids:
         record = q.get(p) or {}
@@ -1875,7 +1890,10 @@ def tier_guidance(c, q, _raw=False):
             'conservation_level': conservation_level,
             'raw_conservation_level': raw_level,
             'capacity_pressure_percent': pressure_percent,
-            'capacity_confidence': ('observed' if reliable and all((q.get(p) or {}).get('capacity_forecast', {}).get('hours') is not None for p in plan_provider_ids if (q.get(p) or {}).get('available') is True) else 'prior' if reliable else 'unknown'),
+            'capacity_confidence': ('observed' if reliable and all(
+                durable_fits.get(p, {}).get('fit_source') == 'observed_burn'
+                for p in plan_provider_ids if (q.get(p) or {}).get('available') is True)
+                else 'prior' if reliable else 'unknown'),
             'runway_threshold_percent': threshold_percent,
             'runway_threshold_base_percent': threshold_base,
             'level2_runway_percent': level2_threshold,

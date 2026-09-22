@@ -41,11 +41,40 @@ class CapacityTests(unittest.TestCase):
         self.assertIsNone(routing._window_runway(w, NOW))
         self.assertFalse(capacity.provider(provider([w]), NOW)['fresh'])
 
-    def test_short_window_zero_blocks_full_week(self):
+    def test_short_window_zero_blocks_calls_without_erasing_full_week_progress(self):
         q = provider([win('AFPWeekly', 90, 90), win('five', 0, 0, 2, 300)])
+        q['available'] = False
         fit = economics._window_fit('volcengine-agent-plan', q, NOW)
-        self.assertEqual(fit['amount'], 0)
-        self.assertEqual(fit['window'], 'five')
+        self.assertEqual(fit['amount'], 90)
+        self.assertEqual(fit['remaining_percent'], 90)
+        self.assertEqual(fit['window'], 'AFPWeekly')
+        self.assertEqual(fit['immediate_window'], 'five')
+        self.assertFalse(fit['available_now'])
+        self.assertTrue(fit['temporarily_blocked'])
+
+    def test_five_hour_burst_does_not_collapse_kimi_weekly_pool_progress(self):
+        five = win('window_0', 93, 1.58, 4.9, 300)
+        week = win('overall', 99, 308, 164.9, 10080)
+        q = provider([five, week])
+        fit = economics._window_fit('kimi-for-coding', q, NOW)
+        self.assertEqual(fit['window'], 'overall')
+        self.assertEqual(fit['immediate_window'], 'window_0')
+        self.assertAlmostEqual(fit['remaining_percent'], 99, places=2)
+        self.assertGreater(fit['amount'], 160)
+        self.assertLess(fit['immediate_runway'], .4)
+        self.assertGreater(fit['runway'], 1.8)
+
+    def test_durable_progress_uses_wall_clock_rate_not_active_batch_peak(self):
+        week = win('overall', 97, 7.25, 165, 10080)
+        week['consumption_estimate'] = {
+            'hours': 7.25, 'rate_percent_per_hour': .9,
+            'active_rate_percent_per_hour': 13.38, 'active_sample_hours': .22}
+        q = provider([week])
+        fit = economics._window_fit('kimi-for-coding', q, NOW)
+        self.assertAlmostEqual(fit['capacity'], 100 / .9, places=3)
+        self.assertAlmostEqual(fit['amount'], 97 / .9, places=3)
+        self.assertGreater(fit['runway'], .6)
+        self.assertLess(fit['immediate_runway'], .05)
 
     def test_short_window_reset_cannot_restore_exhausted_month(self):
         q = provider([win('five', 0, 0, 1, 300), win('AFPMonthly', 0, 0, 240, 43200)])

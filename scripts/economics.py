@@ -371,8 +371,20 @@ def _window_fit(provider, record, now=None):
     forecasts = capacity_model.provider(record, now)
     remaining = _non_negative(window.get('remaining_percent'))
     estimate = window.get('consumption_estimate') if isinstance(window.get('consumption_estimate'), dict) else {}
-    rates = [_non_negative(estimate.get(k)) for k in ('rate_percent_per_hour', 'active_rate_percent_per_hour')]
-    fitted_window = capacity_model.window(window, now)
+    # Long-horizon capacity uses the idle-inclusive wall-clock rate. The active
+    # burst rate answers a different question (how fast the current batch can hit
+    # a rolling limit) and remains available through the immediate forecast.
+    durable_window = dict(window)
+    durable_estimate = dict(estimate)
+    durable_estimate.pop('active_rate_percent_per_hour', None)
+    durable_estimate.pop('active_sample_hours', None)
+    if _non_negative(durable_estimate.get('rate_percent_per_hour')) is not None:
+        # Native telemetry's hours field is based on max(wall, active). When a
+        # wall-clock rate is available, recompute durable hours from that rate.
+        durable_estimate.pop('hours', None)
+    durable_window['consumption_estimate'] = durable_estimate
+    rates = [_non_negative(estimate.get('rate_percent_per_hour'))]
+    fitted_window = capacity_model.window(durable_window, now)
     rate = fitted_window['rate_percent_per_hour'] if fitted_window else max((r for r in rates if r is not None), default=None)
     duration = _non_negative(window.get('duration_minutes'))
     # The live burn rate is authoritative. A full-window duration is only the
@@ -386,28 +398,39 @@ def _window_fit(provider, record, now=None):
     capacity = min(fitted_capacity, window_capacity) if fitted_capacity is not None and window_capacity is not None \
         else fitted_capacity if fitted_capacity is not None else window_capacity
     amount = capacity * remaining / 100.0 if capacity is not None else None
-    # Any shared window can stop work. Unknown short-window rates do not invent a
-    # five-hour lifetime, but a measured short-window bottleneck must constrain it.
-    observed = [w['hours'] for w in forecasts['windows']
-                if w['source'] == 'observed_burn' and w['hours'] is not None]
-    if amount is not None and observed:
-        amount = min(amount, min(observed))
-    if any(w['remaining_percent'] <= 0 for w in forecasts['windows']):
+    # Short rolling windows govern immediate admission and dynamic balancing, but
+    # they refill repeatedly inside a weekly/monthly plan. They must not collapse
+    # the durable pool meter to one burst window's remaining runtime. Preserve the
+    # account's current callability separately so the router can still stop or
+    # redirect work when a five-hour window is actually exhausted.
+    selected_name = window.get('name')
+    short_window_block = bool(record.get('available') is False and remaining and
+                              record.get('state', 'ok') == 'ok' and not record.get('billing') and
+                              any(w.get('name') != selected_name and w.get('valid') is not False and
+                                  _non_negative(w.get('remaining_percent')) == 0
+                                  for w in record.get('windows') or [] if isinstance(w, dict)))
+    hard_unavailable = record.get('available') is False and not short_window_block
+    if amount is not None and hard_unavailable:
         amount = 0.0
-    if amount is not None and record.get('available') is False:
-        amount = 0.0
-    stale = bool(record.get('stale')) or record.get('state', 'ok') != 'ok' or any(w['expired'] for w in forecasts['windows'])
-    if amount == 0 or record.get('available') is False:
+    stale = bool(record.get('stale')) or record.get('state', 'ok') != 'ok' or bool(
+        fitted_window and fitted_window.get('expired'))
+    if amount == 0 or hard_unavailable:
         state = 'unavailable'
     else:
         state = 'stale' if stale else 'ok'
+    immediate_window = forecasts.get('bottleneck')
+    immediate_runway = forecasts.get('runway')
     return {'amount': round(amount, 3) if amount is not None else None,
             'capacity': round(capacity, 3) if capacity is not None else None,
             'remaining_percent': _percent(amount, capacity),
             'source_amount': round(remaining, 3), 'unit': 'fitted-hours',
             'status': state, 'stale': stale, 'resets_at': window.get('resets_at'),
-            'window': forecasts['bottleneck'] or window.get('name'),
-            'runway': forecasts['runway'],
+            'window': selected_name,
+            'runway': fitted_window.get('runway') if fitted_window else None,
+            'available_now': record.get('available'),
+            'temporarily_blocked': short_window_block,
+            'immediate_window': immediate_window,
+            'immediate_runway': immediate_runway,
             'fit_source': 'observed_burn' if rate and rate > .000001 else 'window_prior'}
 
 

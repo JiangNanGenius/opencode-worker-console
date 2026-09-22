@@ -44,7 +44,8 @@ class PoolTests(unittest.TestCase):
                       'deep-research': {'model': 'kimi-for-coding/k3'}}}
         self.config.write_text(json.dumps(self.c))
         self.identities = {'deepseek': 'cred-a', 'kimi-for-coding': 'cred-k'}
-        self.patchers = [patch.object(m, 'STATE', self.state) for m in (common, quota, workspace, worker, delegate)]
+        self.patchers = [patch.object(m, 'STATE', self.state)
+                         for m in (common, quota, routing, workspace, worker, delegate)]
         self.patchers += [patch.object(common, 'CONFIG', self.config), patch.object(delegate, 'CONFIG', self.config),
                           patch.object(quota, 'credential_identity', lambda p: self.identities.get(p))]
         for p in self.patchers:
