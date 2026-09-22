@@ -96,7 +96,7 @@ DEFAULT_QUOTA_SPILLOVER = {
     'tiers': ['fast', 'background'],
     'max_share_percent': 33,
     'level2_runway_percent': 25,
-    'level2_offpeak_share_percent': 70,
+    'level2_offpeak_share_percent': 75,
     'level2_min_balance_cny': 30.0,
 }
 DEFAULT_DEEPSEEK_HOLIDAY_CALENDAR = {

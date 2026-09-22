@@ -78,9 +78,9 @@ fallback. Level 1 adds a later pay-as-you-go profile to the first Fast or Normal
 gradually increasing share. Level 2 uses its own faster continuous curve and temporarily replaces
 automatic Normal's source stage with the first available Fast source stage. Deep and explicit
 profiles never change. The Agent Plan preset uses 38% and 25% baselines with a 33% Level 1 cap
-and a 70% Level 2 high-pressure cap while fresh DeepSeek CNY balance remains at least 30.
+and a 75% Level 2 high-pressure cap while fresh DeepSeek CNY balance remains at least 30.
 Off-peak traffic may use that cap throughout Level 2. At peak prices the cap starts at 33% and
-rises continuously to 70% only when the source-plan runway falls from the Level 2 threshold to
+rises continuously to 75% only when the source-plan runway falls from the Level 2 threshold to
 half that threshold. These are adaptive guard rails, not fixed switch points: the combined work pool is
 fitted from observed working-pace burn, with a bounded demand adjustment for the admitted
 workload. A near effective refill can soften both thresholds by up to 30%; the separate
@@ -96,12 +96,18 @@ holidays.
 
 When one Normal-stage subscription is healthy and another is below the Level 1 runway threshold,
 spillover follows the constrained provider rather than the combined pool. It replaces only that
-provider's existing share and is capped at half of that slice, so the weaker cash model never
-outweighs the paid model it assists. With the preset's 70% Kimi upper bound, severe Ark pressure
-therefore approaches Kimi 70% / Ark 15% / DeepSeek 15%. As the Ark reset gets closer, the same
-remaining allowance produces a higher runway, Ark widens again and DeepSeek falls continuously
+provider's existing share. The replacement follows the same continuous runway curve and may
+consume that whole slice under extreme pressure, but never touches the healthy plan's share. With
+the preset's 70% Kimi upper bound, severe Ark pressure can therefore approach Kimi 70% / Ark 0% /
+DeepSeek 30%, leaving Ark allowance for Fast work. As the Ark reset gets closer, the same remaining
+allowance produces a higher runway, Ark returns to Normal and DeepSeek falls continuously
 to zero. This keeps both subscriptions on course for depletion without spending cash merely
 because one provider has more wall-clock time left.
+
+The subscription-pair curve and fallback-replacement curve form one coupled controller: Kimi and
+Ark first divide paid-plan work from their own reset-aware runway, then DeepSeek replaces only the
+currently constrained slice. The three balances therefore influence one decision without being
+flattened into a misleading common percentage or a hard provider switch.
 
 The console's total-work-pool meter treats a pay-as-you-go balance increase as a new observation
 epoch. It never nets post-top-up balance against pre-top-up samples. When both observed balance
@@ -151,7 +157,7 @@ The stored shape is deliberately provider-neutral:
     "tiers": ["fast", "background"],
     "max_share_percent": 33,
     "level2_runway_percent": 25,
-    "level2_offpeak_share_percent": 70,
+    "level2_offpeak_share_percent": 75,
     "level2_min_balance_cny": 30
   }
 }

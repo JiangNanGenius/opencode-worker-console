@@ -32,7 +32,7 @@ MAX_WEIGHT = 100
 MAX_CREDIT = MAX_WEIGHT * MAX_STAGE_ENTRIES
 MAX_LADDER_STEPS = 7
 MAX_SPILLOVER_SHARE = 50
-MAX_LEVEL2_SPILLOVER_SHARE = 70
+MAX_LEVEL2_SPILLOVER_SHARE = 75
 
 # Quota-aware dynamic admission weights inside one same-capability stage.
 # Stored policy weights stay the baseline preference; only the in-memory advance
@@ -609,16 +609,18 @@ def spillover(entries, provider_by_profile, target_profile, runway_by_provider,
                            if provider_by_profile.get(entry['profile']) == replace_provider]
         replace_budget = sum(normalized[index] for index, entry in enumerate(original)
                              if provider_by_profile.get(entry['profile']) == replace_provider)
-        # In a mixed paid-plan pool the cash fallback is the weaker helper. It
-        # may relieve a constrained plan, but never outweigh that plan inside
-        # its existing slice. Single-source Level 2 remains free to reach its
-        # separately configured emergency ceiling.
-        share = min(share, replace_budget // 2)
+        # In a mixed paid-plan pool the cash fallback replaces only the
+        # constrained provider's existing slice. The replacement is continuous
+        # and may consume that whole slice under extreme pressure, leaving the
+        # healthy subscription untouched and the constrained plan available for
+        # another tier such as Fast. It never grows beyond the replaced slice.
+        share = min(share, replace_budget)
         if share <= 0:
             return original, 'spillover_below_one_percent', None
         replacement_weights = _scaled_entry_weights(replace_entries, replace_budget - share)
         replacement_by_profile = {entry['profile']: replacement_weights[index]
-                                  for index, entry in enumerate(replace_entries)}
+                                  for index, entry in enumerate(replace_entries)
+                                  if index < len(replacement_weights)}
         out = []
         for index, entry in enumerate(original):
             if provider_by_profile.get(entry['profile']) == replace_provider:

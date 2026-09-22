@@ -106,8 +106,9 @@ reset-aware runway moves through configured ratio control points without rewriti
 baseline or crossing its economic bounds. Fast fallback sharing has separate healthy, level 1
 and level 2 curves, so full capacity and constrained capacity do not collapse to one fixed value.
 When Kimi is healthy but Ark is still severely constrained, Normal may reach roughly
-70% Kimi / 15% Ark / 15% DeepSeek. Ark's share widens again as its reset-aware runway improves;
-cash fallback never outweighs the paid Ark slice in this mixed-plan state.
+70% Kimi / 0% Ark / 30% DeepSeek. The fallback continuously replaces only the constrained
+Ark slice, so Ark can focus on Fast work; Ark's Normal share widens again as its reset-aware
+runway improves.
 
 These options initialize a **fresh** installation, not replace existing profiles. `--no-start` installs without launching services. [Full installation guide](references/installation.md): provider login, managed binary path, passwords, verification, updates and recovery.
 
@@ -138,7 +139,7 @@ Workers can own investigation, implementation, test repair, writing, SSH operati
 
 The coordinator classifies uncertainty only: **Fast** for complete work with a clear direction and acceptance boundary, **Normal** for a concrete goal that still needs open investigation, and **Deep** for abstract goals, system-wide causes and difficult trade-offs. The bridge then selects a provider through a single model, ordered fallback chain, fixed pool or quota-adaptive pool. One provider is enough; multiple plans are an enhancement.
 
-Capacity protection uses two continuous curves. Level 1 gradually gives a later pay-as-you-go model some Fast/Normal work as subscription runway falls. Fast follows the runway of its own configured source, so a freshly restored Normal/Deep subscription cannot hide a nearly exhausted Fast plan. Level 2 ramps faster and temporarily serves automatic Normal work from the Fast source pool. Deep and explicitly pinned models do not change. Its DeepSeek ceiling is 70% while the configured balance floor is intact: off-peak reaches that ceiling earlier, while peak traffic rises from the Level 1 ceiling only as subscription runway becomes severe. Weekends are always off-peak, while weekday public holidays come from a configurable, locally cached calendar subscription. See [routing and plan efficiency](references/routing.md).
+Capacity protection uses two continuous curves. Level 1 gradually gives a later pay-as-you-go model some Fast/Normal work as subscription runway falls. Fast follows the runway of its own configured source, so a freshly restored Normal/Deep subscription cannot hide a nearly exhausted Fast plan. Level 2 ramps faster and temporarily serves automatic Normal work from the Fast source pool. Deep and explicitly pinned models do not change. Its DeepSeek ceiling is 75% while the configured balance floor is intact: off-peak reaches that ceiling earlier, while peak traffic rises from the Level 1 ceiling only as subscription runway becomes severe. Weekends are always off-peak, while weekday public holidays come from a configurable, locally cached calendar subscription. See [routing and plan efficiency](references/routing.md).
 
 ### Keep long jobs running
 
