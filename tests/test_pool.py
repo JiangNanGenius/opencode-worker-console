@@ -1170,6 +1170,29 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(saved['cancellation']['reason'], 'superseded')
         self.assertEqual(saved['cancellation']['source'], 'cli')
 
+    def test_cli_task_delete_requires_confirmation_and_uses_full_lifecycle_cleanup(self):
+        import service
+        import management
+        argv = ['delegate.py', 'task', 'delete', 'job-a', 'job-b']
+        with patch.object(sys, 'argv', argv), patch.object(service, 'start'):
+            with self.assertRaisesRegex(ValueError, 'user-authorized permanent task deletion'):
+                delegate.main()
+
+        output = io.StringIO()
+        argv.append('--yes')
+        expected = {'deleted': 2, 'worktrees_released': 2}
+        with patch.object(sys, 'argv', argv), patch.object(service, 'start'), \
+                patch.object(management, 'delete_tasks', return_value=expected) as remove, \
+                redirect_stdout(output):
+            delegate.main()
+        remove.assert_called_once_with({
+            'action': 'delete', 'ids': ['job-a', 'job-b'],
+            'close_uncertain': True,
+            'discard_cancelled_worktrees': True,
+            'discard_unintegrated_worktrees': True,
+        })
+        self.assertEqual(json.loads(output.getvalue()), expected)
+
     def test_wait_result_requires_continuation_until_terminal(self):
         running = delegate.wait_result({'id': 'job-test', 'status': 'running'}, 30)
         self.assertFalse(running['terminal'])

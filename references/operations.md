@@ -344,6 +344,8 @@ delegate-opencode steer JOB_ID 'Check this edge case before finishing.' --reques
 delegate-opencode sessions --search parser
 delegate-opencode session bind SESSION_ID --directory /absolute/project
 delegate-opencode session delete SESSION_ID --yes
+delegate-opencode task delete JOB_ID --yes
+delegate-opencode task clear-finished --yes
 delegate-opencode cleanup
 delegate-opencode cleanup --apply
 ```
@@ -360,7 +362,11 @@ New sessions and tasks accept an explicit workspace; named workspace shortcuts a
 
 Permanent deletion in the session library requires typing the title. The CLI `--yes` path is
 for a coordinator acting on an explicit user request. Neither path deletes active session
-trees. Task-list batch cleanup has its own confirmation: it writes the compact accounting
+trees. Deleting a native session alone does not delete its bridge task row. `task delete` owns
+the full bridge lifecycle: it writes the compact accounting ledger, removes the linked native
+session and disposable evidence, then releases the managed terminal worktree. Active tasks are
+always rejected. `task clear-completed` and `task clear-finished` provide the same confirmed
+operation for explicit bulk cleanup. Task-list batch cleanup has its own confirmation: it writes the compact accounting
 ledger, deletes linked native conversations and disposable evidence, and releases an isolated
 worktree only after integration or when its Git status proves that the worker made no changes.
 Unintegrated work remains as a visible task for review.

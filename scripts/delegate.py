@@ -599,6 +599,11 @@ def main():
     s = sub.add_parser('steer'); s.add_argument('id'); s.add_argument('text'); s.add_argument('--request-id')
     s = sub.add_parser('sessions'); s.add_argument('--search', default=''); s.add_argument('--directory'); s.add_argument('--archived', action='store_true')
     s = sub.add_parser('session'); s.add_argument('action', choices=['rename','archive','restore','fork','delete','bind']); s.add_argument('id'); s.add_argument('--title'); s.add_argument('--directory'); s.add_argument('--yes', action='store_true')
+    s = sub.add_parser('task', help='Delete bridge tasks and their linked sessions/worktrees')
+    tsub = s.add_subparsers(dest='action', required=True)
+    td = tsub.add_parser('delete'); td.add_argument('ids', nargs='+'); td.add_argument('--yes', action='store_true')
+    tc = tsub.add_parser('clear-completed'); tc.add_argument('--yes', action='store_true')
+    tf = tsub.add_parser('clear-finished'); tf.add_argument('--yes', action='store_true')
     s = sub.add_parser('cleanup'); s.add_argument('--apply', action='store_true'); s.add_argument('--force', action='store_true')
     s = sub.add_parser('credential', help='Metadata-only local credential references and a redacting runner')
     csub = s.add_subparsers(dest='action', required=True)
@@ -623,7 +628,7 @@ def main():
         return credentials.command(args)
     if args.cmd == 'daemon':
         return daemon()
-    if args.cmd in ('submit', 'wait', 'cancel', 'console', 'steer', 'sessions', 'session', 'cleanup') or (args.cmd == 'transcript' and not args.saved):
+    if args.cmd in ('submit', 'wait', 'cancel', 'console', 'steer', 'sessions', 'session', 'task', 'cleanup') or (args.cmd == 'transcript' and not args.saved):
         from service import start
         start()
     if args.cmd == 'steer':
@@ -641,6 +646,24 @@ def main():
             raw = management._fetch_session(management._validate_session_id(args.id))
             body.update(confirm_session_id=args.id, confirm_title=raw['title'])
         result = management.update_session(args.id, body)
+    elif args.cmd == 'task':
+        if not args.yes:
+            raise ValueError('Use --yes only for a user-authorized permanent task deletion')
+        import management
+        action = {'delete': 'delete', 'clear-completed': 'clear_completed',
+                  'clear-finished': 'clear_finished'}[args.action]
+        body = {
+            'action': action,
+            # One confirmed task deletion owns the complete bridge lifecycle:
+            # compact usage is retained, while the linked native session,
+            # evidence and any managed terminal worktree are removed together.
+            'close_uncertain': True,
+            'discard_cancelled_worktrees': True,
+            'discard_unintegrated_worktrees': True,
+        }
+        if args.action == 'delete':
+            body['ids'] = args.ids
+        result = management.delete_tasks(body)
     elif args.cmd == 'cleanup':
         import cleanup
         result = cleanup.run(apply=args.apply, force=args.force)

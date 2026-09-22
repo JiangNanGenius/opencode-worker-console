@@ -166,5 +166,9 @@ alerts remain automatic. Endpoints are private credential references, never prom
 
 `transcript JOB_ID` reads actual messages, tool I/O and errors (paged, or `--full --output
 /private/path.json`; `--saved` reads retained evidence offline). `sessions --search`,
-`session rename/archive/restore/fork/bind/delete` and `cleanup` manage sessions and workspaces. Full
+`session rename/archive/restore/fork/bind/delete` and `cleanup` manage native sessions and retained
+data. To permanently remove a finished bridge task, its linked OpenCode session, evidence and
+managed worktree in one transaction, use `task delete JOB_ID --yes`; use `task clear-finished
+--yes` only for an explicit bulk-cleanup request. The compact usage ledger remains until its
+configured expiry. Full
 usage, lifecycle, retention and service maintenance are in [operations](references/operations.md).
