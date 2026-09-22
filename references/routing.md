@@ -74,9 +74,11 @@ An optional `quota_spillover` rule fills the gap between healthy weighted routin
 fallback. Level 1 adds a later pay-as-you-go profile to the first Fast or Normal stage at a
 gradually increasing share. Level 2 uses its own faster continuous curve and temporarily replaces
 automatic Normal's source stage with the first available Fast source stage. Deep and explicit
-profiles never change. The Agent Plan preset uses 38% and 25% baselines with a 33% Level 1/peak
-cap. During DeepSeek off-peak hours the Level 2 cap rises to 50% when fresh CNY balance remains
-at least 30. These are adaptive guard rails, not fixed switch points: the combined work pool is
+profiles never change. The Agent Plan preset uses 38% and 25% baselines with a 33% Level 1 cap
+and a 70% Level 2 high-pressure cap while fresh DeepSeek CNY balance remains at least 30.
+Off-peak traffic may use that cap throughout Level 2. At peak prices the cap starts at 33% and
+rises continuously to 70% only when the source-plan runway falls from the Level 2 threshold to
+half that threshold. These are adaptive guard rails, not fixed switch points: the combined work pool is
 fitted from observed working-pace burn, with a bounded demand adjustment for the admitted
 workload. A near effective refill can soften both thresholds by up to 30%; the separate
 refill-safe bypass requires the refill within two hours and every currently available provider
@@ -137,7 +139,7 @@ The stored shape is deliberately provider-neutral:
     "tiers": ["fast", "background"],
     "max_share_percent": 33,
     "level2_runway_percent": 25,
-    "level2_offpeak_share_percent": 50,
+    "level2_offpeak_share_percent": 70,
     "level2_min_balance_cny": 30
   }
 }
@@ -145,6 +147,8 @@ The stored shape is deliberately provider-neutral:
 
 Adaptive records are opt-in and tied to a stage index. Ordinary weights never become dynamic just
 because they happen to be `1:1` or `2:1`.
+`level2_offpeak_share_percent` is retained as the compatible configuration key; it now represents
+the Level 2 high-pressure ceiling used immediately off-peak and reached progressively at peak.
 
 ## Ark Agent Plan
 

@@ -23,8 +23,10 @@ verification; do not duplicate their repository reading locally.
   remote-only write needs a target, not a dummy local scope or repo; state environment and allowed
   effects in the objective. Targets convey authority, never credentials or access-control bypass.
 - `mode: read` is inspection only, including remote systems. `mode: write` needs scopes, targets,
-  or both. Shared workspace is the default; use `--large`/`--workspace isolated` for broad or
-  uncertain cross-module edits. Give tasks acting on one deployment, service, database or device a
+  or both. Shared/main workspace is the default even for broad repository edits; overlapping scopes
+  and resources are serialized by the bridge. Use explicit `--workspace isolated` only when the
+  user asks for isolation, conflicting work must proceed in parallel, or destructive experiments
+  need a disposable checkout. Give tasks acting on one deployment, service, database or device a
   single stable `--resource` lock name (for example `ssh:host:service`), not per-model locks.
 - Auto Approve is on by default: ordinary tools and commands are allowed; supplied `commands` are
   suggested checks, not an exclusive allowlist, and no artificial iteration, tool-call or runtime

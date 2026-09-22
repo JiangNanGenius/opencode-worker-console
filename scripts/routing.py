@@ -32,6 +32,7 @@ MAX_WEIGHT = 100
 MAX_CREDIT = MAX_WEIGHT * MAX_STAGE_ENTRIES
 MAX_LADDER_STEPS = 7
 MAX_SPILLOVER_SHARE = 50
+MAX_LEVEL2_SPILLOVER_SHARE = 70
 
 # Quota-aware dynamic admission weights inside one same-capability stage.
 # Stored policy weights stay the baseline preference; only the in-memory advance
@@ -173,9 +174,9 @@ def validate_spillover(value, policy, profiles):
         raise ValueError('quota_spillover.level2_runway_percent must be an integer between 0 and 100')
     offpeak = value.get('level2_offpeak_share_percent')
     if offpeak is not None and (isinstance(offpeak, bool) or not isinstance(offpeak, int) or
-                                not maximum <= offpeak <= MAX_SPILLOVER_SHARE):
+                                not maximum <= offpeak <= MAX_LEVEL2_SPILLOVER_SHARE):
         raise ValueError('quota_spillover.level2_offpeak_share_percent must be an integer between ' +
-                         str(maximum) + ' and ' + str(MAX_SPILLOVER_SHARE))
+                         str(maximum) + ' and ' + str(MAX_LEVEL2_SPILLOVER_SHARE))
     floor = value.get('level2_min_balance_cny')
     if floor is not None and (isinstance(floor, bool) or not isinstance(floor, (int, float)) or
                               not math.isfinite(floor) or not 0 <= floor <= 10000000):
@@ -556,7 +557,7 @@ def spillover(entries, provider_by_profile, target_profile, runway_by_provider,
         level2_threshold = float(level2_threshold_percent) / 100.0
         level2_maximum = int(level2_max_share_percent)
         level2_active = 0 < level2_threshold < threshold and best <= level2_threshold and \
-            maximum <= level2_maximum <= MAX_SPILLOVER_SHARE
+            maximum <= level2_maximum <= MAX_LEVEL2_SPILLOVER_SHARE
     except (TypeError, ValueError):
         level2_active = False
     if level2_active:

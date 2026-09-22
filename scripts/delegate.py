@@ -224,8 +224,10 @@ def submit(spec):
         raise ValueError('Write tasks require at least one explicit local scope or operational target')
     workspace = spec.get('workspace', 'auto')
     if workspace == 'auto':
-        # Isolation partitions local paths; target-only work has no local scope to isolate.
-        workspace = 'isolated' if mode == 'write' and scopes and (spec.get('large') or '.' in scopes) else 'shared'
+        # The installed development checkout is the normal execution surface.
+        # Scope/resource conflict checks serialize overlapping writers, so repository
+        # breadth alone must not create a disk-heavy worktree. Isolation is explicit.
+        workspace = 'shared'
     if workspace not in ('shared', 'isolated'):
         raise ValueError('Workspace must be auto, shared or isolated')
     if workspace == 'isolated' and git_root(root) != root:

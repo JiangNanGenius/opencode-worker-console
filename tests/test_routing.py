@@ -87,14 +87,14 @@ class RoutingPolicyTests(unittest.TestCase):
         policy = {'background': BACKGROUND_POLICY}
         value = {'enabled': True, 'profile': 'fallback', 'tiers': ['background'],
                  'max_share_percent': 30, 'level2_runway_percent': 50,
-                 'level2_offpeak_share_percent': 50, 'level2_min_balance_cny': 30.0}
+                 'level2_offpeak_share_percent': 70, 'level2_min_balance_cny': 30.0}
         self.assertEqual(routing.validate_spillover(value, policy, profiles()), value)
         for invalid in (
             dict(value, max_share_percent=51),
             dict(value, level2_runway_percent=101),
             dict(value, level2_runway_percent=-1),
             dict(value, level2_offpeak_share_percent=29),
-            dict(value, level2_offpeak_share_percent=51),
+            dict(value, level2_offpeak_share_percent=71),
             dict(value, level2_min_balance_cny=-1),
             dict(value, tiers=['deep']),
             dict(value, profile='senior-code'),
@@ -525,6 +525,42 @@ class RoutePolicyTests(unittest.TestCase):
             guidance = quota.tier_guidance(c, q, _raw=True)
         self.assertFalse(guidance['conservation_refill_safe'])
         self.assertEqual(guidance['conservation_level'], 2)
+
+    def test_kimi_recovery_does_not_hide_fast_arks_low_runway(self):
+        now = 1_800_000_000
+        c = json.loads(json.dumps(self.c))
+        c['kimi_reserve_percent'] = 0
+        c['profiles']['ark-auto']['model'] = 'volcengine-agent-plan/ark-code-latest'
+        c['profiles']['ark-k3']['model'] = 'volcengine-agent-plan/kimi-k3'
+        c['routing_policy'] = {
+            'fast': [[{'profile': 'ark-auto', 'weight': 1}],
+                     [{'profile': 'fallback', 'weight': 1}]],
+            'background': [[{'profile': 'senior-code', 'weight': 1},
+                            {'profile': 'ark-k3', 'weight': 1}],
+                           [{'profile': 'ark-auto', 'weight': 1}],
+                           [{'profile': 'fallback', 'weight': 1}]],
+        }
+        c['quota_spillover'] = {'enabled': True, 'profile': 'fallback',
+                                 'tiers': ['fast', 'background'], 'max_share_percent': 33,
+                                 'level2_runway_percent': 25}
+
+        def observed(percent, hours, reset_hours):
+            return {'state': 'ok', 'available': True, 'stale': False,
+                    'windows': [{'name': 'window', 'valid': True,
+                                 'remaining_percent': percent, 'duration_minutes': 10080,
+                                 'resets_at': now + reset_hours * 3600,
+                                 'consumption_estimate': {'hours': hours}}]}
+
+        q = {'kimi-for-coding': observed(100, 100, 100),
+             'volcengine-agent-plan': observed(10, 10, 100),
+             'deepseek': {'state': 'ok', 'available': True, 'stale': False, 'windows': []}}
+        with patch.object(quota.time, 'time', return_value=now):
+            guidance = quota.tier_guidance(c, q, _raw=True)
+            status = quota.routing_status(c, q)
+        self.assertEqual(guidance['quota_posture'], 'normal_flexible')
+        self.assertEqual(guidance['conservation_level'], 0)
+        self.assertGreater(status['fast'][0]['members']['fallback']['share'], 0)
+        self.assertNotIn('fallback', status['background'][0]['members'])
 
     def test_level2_normal_inherits_the_fast_pools_continuous_curve(self):
         c = json.loads(json.dumps(self.c))
@@ -1388,21 +1424,26 @@ class DynamicRunwayTests(unittest.TestCase):
         self.assertAlmostEqual(info['fallback']['share'], .35)
         capped, reason, _ = routing.spillover(
             entries, providers, 'fallback', {'ark-plan': .15}, 38, 33,
-            level2_threshold_percent=25, level2_max_share_percent=50)
-        self.assertEqual(reason, 'quota_spillover_level2_50pct')
-        self.assertEqual(capped[-1]['weight'], 50)
+            level2_threshold_percent=25, level2_max_share_percent=70)
+        self.assertEqual(reason, 'quota_spillover_level2_70pct')
+        self.assertEqual(capped[-1]['weight'], 70)
 
-    def test_level2_offpeak_cap_requires_fresh_balance_above_floor(self):
+    def test_level2_cap_uses_price_window_until_plan_pressure_is_severe(self):
         c = {'profiles': profiles()}
-        spill = {'max_share_percent': 33, 'level2_offpeak_share_percent': 50,
+        spill = {'max_share_percent': 33, 'level2_runway_percent': 25,
+                 'level2_offpeak_share_percent': 70,
                  'level2_min_balance_cny': 30}
         record = {'deepseek': {'available': True, 'stale': False,
                                'balances': [{'currency': 'CNY', 'remaining': 53.5}]}}
         with patch('economics.deepseek_peak', return_value=False):
-            self.assertEqual(quota._level2_spillover_cap(c, record, spill, 'deepseek'), 50)
+            self.assertEqual(quota._level2_spillover_cap(c, record, spill, 'deepseek', .20), 70)
             record['deepseek']['balances'][0]['remaining'] = 29.99
-            self.assertEqual(quota._level2_spillover_cap(c, record, spill, 'deepseek'), 33)
+            self.assertEqual(quota._level2_spillover_cap(c, record, spill, 'deepseek', .10), 33)
         record['deepseek']['balances'][0]['remaining'] = 53.5
+        with patch('economics.deepseek_peak', return_value=True):
+            self.assertEqual(quota._level2_spillover_cap(c, record, spill, 'deepseek', .25), 33)
+            self.assertEqual(quota._level2_spillover_cap(c, record, spill, 'deepseek', .20), 48)
+            self.assertEqual(quota._level2_spillover_cap(c, record, spill, 'deepseek', .10), 70)
         with patch('economics.deepseek_peak', return_value=True):
             self.assertEqual(quota._level2_spillover_cap(c, record, spill, 'deepseek'), 33)
 

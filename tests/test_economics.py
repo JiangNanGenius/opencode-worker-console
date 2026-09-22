@@ -150,11 +150,13 @@ class EconomicsTests(unittest.TestCase):
                                               {'level_since': 1000}, now=1000)
         self.assertEqual(fresh['raw_hours'], 10)
         self.assertGreater(fresh['adjusted_hours'], 15)
+        self.assertGreater(fresh['provider_multipliers']['volcengine-agent-plan'], 2)
         self.assertEqual(pool['total'], 10)  # routing input remains untouched
         faded = economics.display_endurance(config, pool, guidance, routing,
                                               {'level_since': 1000}, now=1000 + 6 * 3600)
         self.assertEqual(faded['adjusted_hours'], 10)
         self.assertEqual(faded['multiplier'], 1)
+        self.assertEqual(faded['provider_multipliers']['volcengine-agent-plan'], 1)
 
     def test_validation_rejects_unknown_negative_or_missing_values(self):
         valid = dict(economics.DEFAULTS)

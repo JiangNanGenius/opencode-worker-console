@@ -62,6 +62,13 @@ class WorkspaceTests(unittest.TestCase):
         # 'large' must not force an isolated worktree when there is no local scope.
         t = self.remote_write(large=True)
         self.assertEqual(t['workspace'], 'shared')
+
+    def test_large_repository_write_uses_main_workspace_unless_isolation_is_explicit(self):
+        t = common.task(delegate.submit({
+            'directory': str(self.work), 'objective': 'update the repository',
+            'mode': 'write', 'scopes': ['.'], 'large': True,
+            'profile': 'fallback'})['id'])
+        self.assertEqual(t['workspace'], 'shared')
         self.assertEqual(workspace.prepare(t), str(self.work))
 
     def test_scope_validation_and_isolated_git_requirement_unchanged(self):

@@ -40,6 +40,9 @@ specifications. Fields: `directory`, `objective`, `title`, `acceptance` (string 
 `targets` (operational target array such as `ssh:example.com:nginx`),
 `commands` (suggested checks; exact allowlist when Auto Approve is off), `resources` (shared lock-name array),
 `workspace` (`auto`/`shared`/`isolated`), `large`, `web`, and `notify_on_complete` (boolean).
+`auto` uses the shared/main checkout, including broad repository writes; scope and resource locks
+serialize overlapping writers. `large` remains accepted for compatibility but does not create a
+worktree. Request `isolated` explicitly only when a separate checkout is intentional.
 The CLI form is `--notify-on-complete`; use it only for a key user-facing milestone that merits
 one Bark event after successful completion. Each event is delivered independently to every
 configured client. For a verified milestone outside one worker task, use `notify --title ...

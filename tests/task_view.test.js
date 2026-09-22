@@ -191,6 +191,9 @@ test('quota range distinguishes paused sampling, collection and burn estimates',
   assert.match(h.run("quotaWindows([{name:'AFPFiveHour',remaining_percent:70,duration_minutes:300,resets_at:new Date(Date.now()+3600000).toISOString()}],true)"),/quota-window-reset/);
   const details=h.run("quotaWindows([{name:'AFPFiveHour',remaining_percent:70,duration_minutes:300,resets_at:new Date(Date.now()+3600000).toISOString(),consumption_estimate:{hours:1}},{name:'AFPWeekly',remaining_percent:60,duration_minutes:10080,resets_at:new Date(Date.now()+100*3600000).toISOString(),consumption_estimate:{hours:20}}],true)");
   assert.equal((details.match(/quota\.bottleneckRunway/g)||[]).length,1);
+  h.run('data.economics={work_pool:{display_projection:{provider_multipliers:{"volcengine-agent-plan":2}}}}');
+  assert.equal(h.run("estimatedRange({consumption_estimate:{hours:30}},'volcengine-agent-plan')"),'quota.rangeDays');
+  assert.equal(h.run("estimatedRange({consumption_estimate:{hours:30}},'kimi-for-coding')"),'quota.rangeHours');
 });
 
 test('quota display uses the shared backend forecast even after workload adjustment', async () => {
