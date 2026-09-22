@@ -1132,6 +1132,38 @@ def _spillover_runway_view(guidance, providers, source_specific=False):
     return guidance.get('runway') or {}
 
 
+def _spillover_source(guidance, providers, tier, level2):
+    """Choose the runway signal and optional source that fallback may replace.
+
+    A multi-plan Normal stage should continue using a healthy subscription, but
+    one healthy plan must not force a depleted peer to keep its full share. In
+    that mixed state, fallback replaces only the constrained provider. As reset
+    approaches, its reset-aware runway rises and the replacement fades away.
+    """
+    guidance = guidance if isinstance(guidance, dict) else {}
+    providers = set(providers)
+    source_specific = tier == 'fast' or level2
+    view = _spillover_runway_view(guidance, providers, source_specific)
+    replacement = None
+    if not source_specific and len(providers) > 1:
+        specific = _spillover_runway_view(guidance, providers, True)
+        values = {provider: specific.get(provider) for provider in providers}
+        if all(isinstance(value, (int, float)) and not isinstance(value, bool) and
+               math.isfinite(value) for value in values.values()):
+            threshold = float(guidance.get('runway_threshold_percent') or 0) / 100.0
+            constrained = min(values, key=values.get)
+            if threshold > 0 and values[constrained] < threshold <= max(values.values()):
+                source_specific = True
+                view = specific
+                replacement = constrained
+    values = ([view.get(replacement)] if replacement else
+              [view.get(provider) for provider in providers])
+    runway = max((float(value) for value in values
+                  if isinstance(value, (int, float)) and not isinstance(value, bool) and
+                  math.isfinite(value)), default=None)
+    return source_specific, view, replacement, runway
+
+
 def _level2_spillover_cap(c, q, spill_config, target_provider, runway=None, now=None):
     """Return a price-aware Level 2 cap that yields to severe plan pressure.
 
@@ -1236,17 +1268,13 @@ def _policy_route(t, c, q, stages, batch=None):
                 source_providers = set(provider_by_profile.values())
                 if target_ok and target_provider not in source_providers:
                     spill_guidance = spill_guidance or tier_guidance(c, q)
-                    source_specific = tier == 'fast' or level2
+                    source_specific, runway_view, replacement_provider, source_runway = \
+                        _spillover_source(spill_guidance, source_providers, tier, level2)
                     if source_specific or spill_guidance.get('quota_posture') == 'fast_preferred':
                         provider_by_profile[target] = target_provider
-                        level2_active = int(spill_guidance.get('conservation_level') or 0) >= 2
-                        runway_view = _spillover_runway_view(
-                            spill_guidance, source_providers, source_specific)
-                        source_values = [runway_view.get(provider) for provider in source_providers]
-                        source_runway = max((float(value) for value in source_values
-                                             if isinstance(value, (int, float)) and
-                                             not isinstance(value, bool) and math.isfinite(value)),
-                                            default=None)
+                        level2_active = level2 or (
+                            tier == 'fast' and
+                            int(spill_guidance.get('conservation_level') or 0) >= 2)
                         entries, spill_reason, _ = routing.spillover(
                             entries, provider_by_profile, target,
                             runway_view,
@@ -1256,7 +1284,8 @@ def _policy_route(t, c, q, stages, batch=None):
                                                       if level2_active else None),
                             level2_max_share_percent=(_level2_spillover_cap(
                                 c, q, spill_config, target_provider, source_runway)
-                                if level2_active else None))
+                                if level2_active else None),
+                            replace_provider=replacement_provider)
                         dynamic_reason += ':' + spill_reason
                         if any(entry['profile'] == target for entry in entries):
                             candidates.append(({'profile': target, 'weight': 1}, target_reason))
@@ -1539,7 +1568,9 @@ def routing_status(c, q):
                 candidates, provider_by_profile, q, adaptive=adaptive)
             if level2:
                 reason = 'quota_conservation_level2:' + reason
-            source_specific = tier == 'fast' or level2
+            source_providers = set(provider_by_profile.values())
+            source_specific, runway_view, replacement_provider, source_runway = \
+                _spillover_source(spill_guidance, source_providers, tier, level2)
             if spill_config and index == 0 and tier in spill_config['tiers'] and \
                     (source_specific or spill_guidance.get('quota_posture') == 'fast_preferred'):
                 target = spill_config['profile']
@@ -1549,15 +1580,9 @@ def routing_status(c, q):
                 target_ok, _ = allowed(target_provider, q, complexity, c.get('kimi_reserve_percent', 0))
                 if target_ok and target_provider not in set(provider_by_profile.values()):
                     provider_by_profile[target] = target_provider
-                    level2_active = int(spill_guidance.get('conservation_level') or 0) >= 2
-                    source_providers = set(provider_by_profile.values()) - {target_provider}
-                    runway_view = _spillover_runway_view(
-                        spill_guidance, source_providers, source_specific)
-                    source_values = [runway_view.get(provider) for provider in source_providers]
-                    source_runway = max((float(value) for value in source_values
-                                         if isinstance(value, (int, float)) and
-                                         not isinstance(value, bool) and math.isfinite(value)),
-                                        default=None)
+                    level2_active = level2 or (
+                        tier == 'fast' and
+                        int(spill_guidance.get('conservation_level') or 0) >= 2)
                     effective, spill_reason, spill_info = routing.spillover(
                         effective, provider_by_profile, target,
                         runway_view,
@@ -1567,7 +1592,8 @@ def routing_status(c, q):
                                                   if level2_active else None),
                         level2_max_share_percent=(_level2_spillover_cap(
                             c, q, spill_config, target_provider, source_runway)
-                            if level2_active else None))
+                            if level2_active else None),
+                        replace_provider=replacement_provider)
                     if spill_info:
                         reason += ':' + spill_reason
                         info = spill_info

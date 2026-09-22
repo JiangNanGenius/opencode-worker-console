@@ -517,16 +517,41 @@ def dynamics(entries, provider_by_profile, quota_view=None, now=None, adaptive=N
     return out, reason, info
 
 
+def _scaled_entry_weights(entries, budget):
+    """Scale positive entry weights to one integer budget in policy order."""
+    if not entries or budget <= 0:
+        return []
+    total = sum(entry['weight'] for entry in entries) or 1
+    raw = [budget * entry['weight'] / total for entry in entries]
+    scaled = [max(1, int(math.floor(value))) for value in raw]
+    delta = budget - sum(scaled)
+    order = sorted(range(len(raw)), key=lambda index: (raw[index] - math.floor(raw[index]), -index),
+                   reverse=True)
+    cursor = 0
+    while delta > 0:
+        scaled[order[cursor % len(order)]] += 1
+        cursor += 1
+        delta -= 1
+    while delta < 0:
+        candidates = [index for index, value in enumerate(scaled) if value > 1]
+        if not candidates:
+            return []
+        scaled[candidates[-1]] -= 1
+        delta += 1
+    return scaled
+
+
 def spillover(entries, provider_by_profile, target_profile, runway_by_provider,
               threshold_percent, max_share_percent, level2_threshold_percent=None,
-              level2_max_share_percent=None):
+              level2_max_share_percent=None, replace_provider=None):
     """Blend a later pay-as-you-go fallback into a constrained plan stage.
 
     The best known runway among the currently available plan providers controls the
-    blend. This preserves strong-plan capacity when all plans are tight, but avoids
-    paying for fallback merely because one plan is low while another remains healthy.
-    Unknown telemetry fails closed to the original stage. Returned weights total 100
-    for a stable, human-readable effective percentage.
+    ordinary blend. A multi-plan stage may instead name one constrained provider:
+    fallback then replaces only that provider's share, preserving the healthy paid
+    plan while preventing the constrained peer from draining early. Unknown telemetry
+    fails closed to the original stage. Returned weights total 100 for a stable,
+    human-readable effective percentage.
     """
     original = [dict(entry) for entry in entries]
     if not original or target_profile in {entry.get('profile') for entry in original}:
@@ -538,11 +563,13 @@ def spillover(entries, provider_by_profile, target_profile, runway_by_provider,
         return original, 'spillover_invalid', None
     if threshold <= 0 or not 1 <= maximum <= MAX_SPILLOVER_SHARE:
         return original, 'spillover_disabled', None
-    providers = []
+    source_providers = []
     for entry in original:
         provider = provider_by_profile.get(entry['profile'])
-        if provider and provider not in providers:
-            providers.append(provider)
+        if provider and provider not in source_providers:
+            source_providers.append(provider)
+    providers = ([replace_provider] if replace_provider in source_providers else
+                 source_providers)
     values = [runway_by_provider.get(provider) for provider in providers]
     if not providers or any(isinstance(value, bool) or not isinstance(value, (int, float)) or
                             not math.isfinite(value) for value in values):
@@ -574,26 +601,38 @@ def spillover(entries, provider_by_profile, target_profile, runway_by_provider,
     if share <= 0:
         return original, 'spillover_below_one_percent', None
     share = min(effective_maximum, share)
-    source_budget = 100 - share
-    total = sum(entry['weight'] for entry in original) or 1
-    raw = [source_budget * entry['weight'] / total for entry in original]
-    scaled = [max(1, int(math.floor(value))) for value in raw]
-    # Distribute rounding remainder by largest fractional part, then policy order.
-    delta = source_budget - sum(scaled)
-    order = sorted(range(len(raw)), key=lambda index: (raw[index] - math.floor(raw[index]), -index),
-                   reverse=True)
-    cursor = 0
-    while delta > 0:
-        scaled[order[cursor % len(order)]] += 1
-        cursor += 1
-        delta -= 1
-    while delta < 0:
-        candidates = [index for index, value in enumerate(scaled) if value > 1]
-        if not candidates:
+    if replace_provider:
+        normalized = _scaled_entry_weights(original, 100)
+        if not normalized:
             return original, 'spillover_invalid_weights', None
-        scaled[candidates[-1]] -= 1
-        delta += 1
-    out = [dict(entry, weight=scaled[index]) for index, entry in enumerate(original)]
+        replace_entries = [entry for entry in original
+                           if provider_by_profile.get(entry['profile']) == replace_provider]
+        replace_budget = sum(normalized[index] for index, entry in enumerate(original)
+                             if provider_by_profile.get(entry['profile']) == replace_provider)
+        # In a mixed paid-plan pool the cash fallback is the weaker helper. It
+        # may relieve a constrained plan, but never outweigh that plan inside
+        # its existing slice. Single-source Level 2 remains free to reach its
+        # separately configured emergency ceiling.
+        share = min(share, replace_budget // 2)
+        if share <= 0:
+            return original, 'spillover_below_one_percent', None
+        replacement_weights = _scaled_entry_weights(replace_entries, replace_budget - share)
+        replacement_by_profile = {entry['profile']: replacement_weights[index]
+                                  for index, entry in enumerate(replace_entries)}
+        out = []
+        for index, entry in enumerate(original):
+            if provider_by_profile.get(entry['profile']) == replace_provider:
+                weight = replacement_by_profile.get(entry['profile'], 0)
+            else:
+                weight = normalized[index]
+            if weight > 0:
+                out.append(dict(entry, weight=weight))
+    else:
+        source_budget = 100 - share
+        scaled = _scaled_entry_weights(original, source_budget)
+        if not scaled:
+            return original, 'spillover_invalid_weights', None
+        out = [dict(entry, weight=scaled[index]) for index, entry in enumerate(original)]
     out.append({'profile': target_profile, 'weight': share})
     info = {entry['profile']: {'effective_weight': entry['weight'],
                                'share': entry['weight'] / 100.0,

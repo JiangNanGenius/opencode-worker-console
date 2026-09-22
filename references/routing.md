@@ -91,6 +91,15 @@ weekdays are peak only from 09:00-12:00 and 14:00-18:00; weekends remain off-pea
 official make-up workdays. A configurable, locally cached subscription identifies weekday public
 holidays.
 
+When one Normal-stage subscription is healthy and another is below the Level 1 runway threshold,
+spillover follows the constrained provider rather than the combined pool. It replaces only that
+provider's existing share and is capped at half of that slice, so the weaker cash model never
+outweighs the paid model it assists. With the preset's 70% Kimi upper bound, severe Ark pressure
+therefore approaches Kimi 70% / Ark 15% / DeepSeek 15%. As the Ark reset gets closer, the same
+remaining allowance produces a higher runway, Ark widens again and DeepSeek falls continuously
+to zero. This keeps both subscriptions on course for depletion without spending cash merely
+because one provider has more wall-clock time left.
+
 The console's total-work-pool meter treats a pay-as-you-go balance increase as a new observation
 epoch. It never nets post-top-up balance against pre-top-up samples. When both observed balance
 burn and official token pricing are available, the higher burn rate bounds displayed endurance;
@@ -228,7 +237,7 @@ economic trade. Each pool has its own continuous, reset-aware curve:
 | Pool | Baseline | Allowed range |
 | --- | --- | --- |
 | native Kimi K3 : Ark K3 | 2:1 | continuously from 3:1 through 2:1 to 1:1; Ark K3 never leads |
-| native Kimi K2.8 : Ark Evolving | 1:1 | continuously from 2:1 through 1:1 to 1:2 |
+| native Kimi K2.8 : Ark Evolving | 1:1 | continuously from 7:3 through 1:1 to 1:2 |
 
 Runway is estimated from observed working-pace burn: remaining allowance hours at the fitted
 active burn rate divided by wall-clock time to the reset. The tightest of a provider's windows

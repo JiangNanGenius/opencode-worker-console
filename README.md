@@ -103,6 +103,9 @@ DeepSeek as ordered fallbacks. Every paired tier has its own continuous load cur
 reset-aware runway moves through configured ratio control points without rewriting the saved
 baseline or crossing its economic bounds. Fast fallback sharing has separate healthy, level 1
 and level 2 curves, so full capacity and constrained capacity do not collapse to one fixed value.
+When Kimi is healthy but Ark is still severely constrained, Normal may reach roughly
+70% Kimi / 15% Ark / 15% DeepSeek. Ark's share widens again as its reset-aware runway improves;
+cash fallback never outweighs the paid Ark slice in this mixed-plan state.
 
 These options initialize a **fresh** installation, not replace existing profiles. `--no-start` installs without launching services. [Full installation guide](references/installation.md): provider login, managed binary path, passwords, verification, updates and recovery.
 

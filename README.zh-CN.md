@@ -100,6 +100,8 @@ python3 scripts/install.py --preset ark-agent-plan
 深度任务按原厂 Kimi K3 : 方舟 K3 = 2:1；之后依次回退到 Ark Auto 与 DeepSeek 直连。
 每个成对任务池都有独立的连续负载曲线：实时额度续航在配置的比例控制点之间插值，既不改写
 保存的基准策略，也不会越过经济性边界。Fast、一级降载和二级降载也分别使用自己的曲线。
+当 Kimi 健康而方舟仍严重紧张时，普通档可接近 Kimi 70% / 方舟 15% / DeepSeek 15%；
+方舟按重置时间计算的续航改善后会重新扩大份额。在这种混合套餐状态下，现金兜底不会超过方舟份额。
 
 这些选项只初始化**全新安装**，不会覆盖已有 profiles。`--no-start` 表示安装后不启动。登录、托管 OpenCode 路径、密码、验证、升级和排障见[完整安装指引](references/installation.zh-CN.md)。
 

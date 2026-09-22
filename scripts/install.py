@@ -82,7 +82,7 @@ DEFAULT_ROUTING_POLICY = {
 # in only for its two subscription pairs; every other install keeps fixed policy
 # weights unless the user explicitly enables a curve envelope in the console.
 DEFAULT_ROUTING_DYNAMICS = {
-    'background': {'0': {'ladder': [[2, 1], [1, 1], [1, 2]]}},
+    'background': {'0': {'ladder': [[7, 3], [1, 1], [1, 2]]}},
     'deep': {
         '0': {'ladder': [[3, 1], [2, 1], [1, 1]]},
         '1': {'ladder': [[2, 1], [1, 1], [1, 2]]},

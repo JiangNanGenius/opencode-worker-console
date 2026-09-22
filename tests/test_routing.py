@@ -526,7 +526,7 @@ class RoutePolicyTests(unittest.TestCase):
         self.assertFalse(guidance['conservation_refill_safe'])
         self.assertEqual(guidance['conservation_level'], 2)
 
-    def test_kimi_recovery_does_not_hide_fast_arks_low_runway(self):
+    def test_kimi_recovery_keeps_kimi_primary_and_replaces_only_tight_ark_share(self):
         now = 1_800_000_000
         c = json.loads(json.dumps(self.c))
         c['kimi_reserve_percent'] = 0
@@ -539,6 +539,9 @@ class RoutePolicyTests(unittest.TestCase):
                             {'profile': 'ark-k3', 'weight': 1}],
                            [{'profile': 'ark-auto', 'weight': 1}],
                            [{'profile': 'fallback', 'weight': 1}]],
+        }
+        c['routing_dynamics'] = {
+            'background': {'0': {'ladder': [[7, 3], [1, 1], [1, 2]]}},
         }
         c['quota_spillover'] = {'enabled': True, 'profile': 'fallback',
                                  'tiers': ['fast', 'background'], 'max_share_percent': 33,
@@ -560,7 +563,18 @@ class RoutePolicyTests(unittest.TestCase):
         self.assertEqual(guidance['quota_posture'], 'normal_flexible')
         self.assertEqual(guidance['conservation_level'], 0)
         self.assertGreater(status['fast'][0]['members']['fallback']['share'], 0)
-        self.assertNotIn('fallback', status['background'][0]['members'])
+        members = status['background'][0]['members']
+        self.assertEqual(members['senior-code']['share'], .70)
+        self.assertEqual(members['ark-k3']['share'], .15)
+        self.assertEqual(members['fallback']['share'], .15)
+
+        # The same ten working hours become sustainable when Ark's reset moves
+        # close enough. Its paid-plan share then widens and DeepSeek withdraws.
+        q['volcengine-agent-plan']['windows'][0]['resets_at'] = now + 20 * 3600
+        with patch.object(quota.time, 'time', return_value=now):
+            recovered = quota.routing_status(c, q)['background'][0]['members']
+        self.assertNotIn('fallback', recovered)
+        self.assertGreater(recovered['ark-k3']['share'], .15)
 
     def test_level2_normal_inherits_the_fast_pools_continuous_curve(self):
         c = json.loads(json.dumps(self.c))
@@ -1409,6 +1423,31 @@ class DynamicRunwayTests(unittest.TestCase):
             entries, providers, 'fallback', {'kimi-plan': .2, 'ark-plan': None}, 75, 30)
         self.assertEqual(unchanged, entries)
         self.assertEqual(reason, 'spillover_telemetry_unknown')
+
+    def test_spillover_replaces_only_the_constrained_plan_in_a_mixed_pool(self):
+        entries = [{'profile': 'kimi', 'weight': 70}, {'profile': 'ark', 'weight': 30}]
+        providers = {'kimi': 'kimi-plan', 'ark': 'ark-plan', 'fallback': 'deepseek'}
+        effective, reason, info = routing.spillover(
+            entries, providers, 'fallback', {'kimi-plan': 1.2, 'ark-plan': .07},
+            38, 33, replace_provider='ark-plan')
+        self.assertEqual(reason, 'quota_spillover_15pct')
+        self.assertEqual(effective, [
+            {'profile': 'kimi', 'weight': 70},
+            {'profile': 'ark', 'weight': 15},
+            {'profile': 'fallback', 'weight': 15},
+        ])
+        self.assertEqual(info['kimi']['share'], .70)
+        self.assertEqual(info['ark']['share'], .15)
+        self.assertEqual(info['fallback']['share'], .15)
+
+        # The same balance becomes sustainable as its reset approaches, so
+        # paid-plan work returns to Ark and cash fallback disappears.
+        unchanged, reason, info = routing.spillover(
+            entries, providers, 'fallback', {'kimi-plan': 1.2, 'ark-plan': .5},
+            38, 33, replace_provider='ark-plan')
+        self.assertEqual(reason, 'spillover_runway_healthy')
+        self.assertEqual(unchanged, entries)
+        self.assertIsNone(info)
 
     def test_level2_spillover_has_its_own_accelerated_curve(self):
         entries = [{'profile': 'ark', 'weight': 1}]
