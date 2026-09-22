@@ -106,7 +106,9 @@ error/rework risk, urgency and size, and `neutral` means task needs alone decide
 percentages or downgrade work that needs the higher tier; quote `conservation_level` (`0`/`1`/`2`)
 when explaining capacity. Policy stages, fallback, conservation, prices, ratios, curves and plan
 presets are operator concerns documented authoritatively in [routing](references/routing.md) — do
-not imitate provider decisions in prompts.
+not imitate provider decisions in prompts. In the built-in Ark preset, Ark Auto is the stronger
+Fast route and direct DeepSeek is the lowest-capability final fallback. A larger DeepSeek share
+during severe conservation is an economic survival measure, never a quality preference.
 
 Optional: set `capability_floor` to `fast`/`normal`/`deep` only for a deliberate requirement that
 conservation or fallback must never serve the task below that tier. It cannot exceed the requested

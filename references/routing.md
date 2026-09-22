@@ -3,8 +3,11 @@
 [简体中文](routing.zh-CN.md)
 
 Prefer complete outcomes, usable subscription allowance and enough model/context capacity.
-Subscriptions are already paid for; direct DeepSeek balance is incremental spend. Do not split a
-coherent task or replay its context merely to change providers.
+Subscriptions are already paid for; direct DeepSeek balance is incremental spend. In the built-in
+Ark preset, the capability order is explicit: K3 routes, K2.8/Evolving, Ark Auto, then direct
+DeepSeek as the lowest-capability final fallback. A temporarily large DeepSeek share under severe
+conservation protects subscription runway; it does not reverse that capability order. Do not split
+a coherent task or replay its context merely to change providers.
 
 ## Generic routing patterns
 

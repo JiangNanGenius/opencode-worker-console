@@ -99,7 +99,9 @@ python3 scripts/install.py --preset ark-agent-plan
 
 That preset uses Ark Auto for fast work; Kimi K2.8 and Ark Seed Evolving at 1:1 for
 ordinary work; native Kimi K3 and Ark K3 at 2:1 for deep work; then Ark Auto and direct
-DeepSeek as ordered fallbacks. Every paired tier has its own continuous load curve: live,
+DeepSeek as ordered fallbacks. Ark Auto is stronger; direct DeepSeek is the lowest-capability
+final fallback, even when severe conservation temporarily gives it more traffic. Every paired
+tier has its own continuous load curve: live,
 reset-aware runway moves through configured ratio control points without rewriting the saved
 baseline or crossing its economic bounds. Fast fallback sharing has separate healthy, level 1
 and level 2 curves, so full capacity and constrained capacity do not collapse to one fixed value.

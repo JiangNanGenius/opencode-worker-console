@@ -59,8 +59,10 @@ PRESETS = {
 # direct DeepSeek. Same-capability pairs are one quota-aware pool each, grouped
 # by provider so equal headroom preserves the exact 2:1 and 1:1 baselines. Each
 # pair then follows its own continuous bounded curve as reset-aware runway changes.
-# Auto is its own ordered stage, never mixed into a random pool; direct DeepSeek
-# is the final fallback. ark-deepseek stays out of automatic routing (manual only).
+# Auto is its own stronger ordered stage, never mixed into a random pool; direct
+# DeepSeek is the preset's lowest-capability final fallback. A high DeepSeek share
+# under conservation is economic load shedding, not a capability preference.
+# ark-deepseek stays out of automatic routing (manual only).
 DEFAULT_ROUTING_POLICY = {
     'fast': [
         [{'profile': 'ark-auto', 'weight': 1}],

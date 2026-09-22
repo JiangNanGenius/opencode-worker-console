@@ -98,6 +98,8 @@ python3 scripts/install.py --preset ark-agent-plan
 
 该预设让快速任务先用 Ark Auto；普通任务按 Kimi K2.8 : 方舟 Seed Evolving = 1:1；
 深度任务按原厂 Kimi K3 : 方舟 K3 = 2:1；之后依次回退到 Ark Auto 与 DeepSeek 直连。
+Ark Auto 的能力高于 DeepSeek；DeepSeek 直连是能力最低的最终兜底，即使极端降载时暂时承担
+更多流量，也不会改变这个排序。
 每个成对任务池都有独立的连续负载曲线：实时额度续航在配置的比例控制点之间插值，既不改写
 保存的基准策略，也不会越过经济性边界。Fast、一级降载和二级降载也分别使用自己的曲线。
 当 Kimi 健康而方舟仍严重紧张时，普通档可接近 Kimi 70% / 方舟 15% / DeepSeek 15%；
