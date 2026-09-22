@@ -102,4 +102,4 @@ class ControlsTests(unittest.TestCase):
         with patch.object(bootstrap.shutil,'which',side_effect=lambda x:'/fake/npm' if x=='npm' else None),patch.object(bootstrap.subprocess,'run',side_effect=run) as called:
             binary=bootstrap.ensure_opencode()
         self.assertTrue(Path(binary).exists());args=called.call_args.args[0]
-        self.assertIn('opencode-ai@1.18.30',args);self.assertIn('--registry=https://registry.npmjs.org',args)
+        self.assertIn('opencode-ai@'+bootstrap.VERSION,args);self.assertIn('--registry=https://registry.npmjs.org',args)

@@ -191,7 +191,7 @@ def collect_changes(t, edited_paths=None):
     write_json(art / 'after.json', after)
     return {'changed_files': changed, 'outside_scope_tool_edits': sorted(set(outside)),
             'patch': str(art / 'changes.patch'), 'after_status': git_status(root),
-            'attribution': 'Scoped before/after delta; concurrent external edits still require Astra review'}
+            'attribution': 'Scoped before/after delta; concurrent external edits still require upstream harness review'}
 
 
 def integrate(t, apply=False):
@@ -211,7 +211,7 @@ def integrate(t, apply=False):
     if apply:
         run(['git', 'apply', '--binary', '-p2', '-'], root, data=patch)
     return {'applied': apply, 'changed_files': changed, 'check': 'passed',
-            'note': 'Astra must inspect the diff before --apply and validate the integrated result afterwards'}
+            'note': 'The upstream harness must inspect the diff before --apply and validate the integrated result afterwards'}
 
 
 def isolated_release_status(t):

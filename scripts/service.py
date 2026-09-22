@@ -23,6 +23,9 @@ def start():
         from bootstrap import ensure_opencode
         from common import CONFIG
         c = config()
+        if c.get('memory', {}).get('enabled') is True:
+            import memory_manager
+            memory_manager.configure()
         binary = ensure_opencode(c.get('opencode_binary'))
         if binary != c.get('opencode_binary'):
             c['opencode_binary'] = binary
@@ -39,7 +42,7 @@ def start():
             if logpath.exists() and logpath.stat().st_size > 5 * 1024 * 1024:
                 logpath.replace(logpath.with_suffix('.previous.log'))
             with logpath.open('ab') as log:
-                # A persistent console is not owned by the Codex conversation that
+                # A persistent console is not owned by the upstream-harness conversation that
                 # happened to start it. CLI submissions retain their caller's owner;
                 # manual console submissions use their group/workspace fallback.
                 service_env = dict(os.environ)

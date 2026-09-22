@@ -57,7 +57,7 @@ The included **Codex skill** supplies delegation guidance. Claude Code and other
 
 ### Guided installation
 
-Requires **Python 3.9+, Git, and macOS or Linux**. Native Windows is unsupported. Existing OpenCode is reused; otherwise the installer provisions the pinned official release (integration-tested: **1.18.30**). No Node build, database service or Python packages are needed for the bridge runtime.
+Requires **Python 3.9+, Git, and macOS or Linux**. Native Windows is unsupported. Existing OpenCode is reused; otherwise the installer provisions the pinned official release (integration-tested: **1.18.32**). No Node build, database service or Python packages are needed for the bridge runtime.
 
 Run in your own terminal:
 
@@ -120,7 +120,7 @@ These options initialize a **fresh** installation, not replace existing profiles
 | `deep-research` | Kimi K3 | Deep-tier subscription pool |
 | `fallback` | DeepSeek V4.1 Flash | Final fallback after preferred stages are unavailable |
 
-Codex chooses Fast, Normal or Deep only from task uncertainty and submits with `profile=auto`; the bridge privately owns the profile, provider, allowance balance, conservation and fallback. Ordinary task results do not disclose automatic model or route changes, while the operator console retains the full audit trail. The profile table above is an operator configuration view, not an agent role list. The preset uses `max` reasoning; other models need a variant their provider actually supports. Only a user-required named model or controlled comparison should pin a profile. [Routing and plan efficiency](references/routing.md).
+The upstream harness chooses Fast, Normal or Deep only from task uncertainty and submits with `profile=auto`; the bridge privately owns the profile, provider, allowance balance, conservation and fallback. Ordinary task results do not disclose automatic model or route changes, while the operator console retains the full audit trail. The profile table above is an operator configuration view, not an agent role list. The preset uses `max` reasoning; other models need a variant their provider actually supports. Only a user-required named model or controlled comparison should pin a profile. [Routing and plan efficiency](references/routing.md).
 
 Fast can complete bounded, well-specified features, known fixes, tests, documentation and routine
 deployment; it is not a mechanical-work bucket. Normal is for a concrete outcome whose execution
@@ -133,7 +133,7 @@ Deep work has no separate task-count limit.
 
 ### Delegate complete outcomes
 
-Workers can own investigation, implementation, test repair, writing, SSH operations and routine deployment instead of receiving tiny code fragments. Each task carries an objective, acceptance criteria, workspace, and file or remote-resource scope. The default is four concurrent workers per owning Codex conversation; separate conversations have independent capacity.
+Workers can own investigation, implementation, test repair, writing, SSH operations and routine deployment instead of receiving tiny code fragments. Each task carries an objective, acceptance criteria, workspace, and file or remote-resource scope. The default is four concurrent workers per owning upstream-harness conversation; separate conversations have independent capacity.
 
 ### Route by capability
 
@@ -149,6 +149,8 @@ There is no artificial model-step, tool-call or total-runtime cap. `wait` blocks
 
 - Expand a task in place to inspect reverse-chronological activity, full redacted messages, input/output/reasoning/cache Tokens, and steer a running model.
 - Search, create, rename, fork, archive, bind, delete and open native OpenCode sessions.
+- Search, add, edit and delete durable project memory through the bridge or console. The optional `opencode-mem` integration keeps its vector database local and can use an OpenAI-compatible embedding endpoint.
+- Long builds, deployments and GitHub Actions runs can publish truthful phase, percentage and ETA data; jobs without measurable totals remain visibly indeterminate.
 - Statistics reuse one usage snapshot every three seconds for the last hour, 24 hours and 30 days. Charts carry real Token scales plus model, tier, status and profile breakdowns.
 - Task scheduling reports CPU, memory, disk, load and worker counts. Cleaned-task Token, cost and route summaries remain in an expandable **History ledger**.
 
@@ -198,7 +200,7 @@ Auto Approve defaults to on for the dedicated Worker service. Workers have the l
 
 Provider login, console login and the internal server password are separate. Keep real secrets out of prompts, guidance and Git. Native gateway bodies and arbitrary process/tool output are not universally redacted.
 
-Services run in the background and start on demand after reboot; there is no login daemon and no promise of execution through logout/sleep. Model changes require idle workers and native sessions. Compatible code-only live updates retain OpenCode; see the installation guide.
+Services run in the background and start on demand after reboot; there is no login daemon and no promise of execution through logout/sleep. Model changes require idle workers and native sessions. Worker Desk checks stable OpenCode releases on a configurable schedule, applies an update only while tasks and native sessions are idle, verifies the restarted version and restores the previous binary on failure. Compatible code-only live updates retain OpenCode; see the installation guide.
 
 Kimi hidden monthly exhaustion differs from endpoint-confirmed zero allowance. Confirmed quota, window and model-origin 429 stops can continue on the next route in the same OpenCode session, preserving context and partial work without replaying the original task. [Recovery](references/operations.md#quota-and-routing).
 

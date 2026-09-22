@@ -5,12 +5,12 @@ description: Delegate complete authorized outcomes to general-purpose OpenCode a
 
 # Delegate OpenCode work
 
-OpenCode is a general-purpose execution layer for Codex. Every authorized outcome is eligible for
+OpenCode is a general-purpose execution layer for an upstream harness. Every authorized outcome is eligible for
 delegation by default; name, domain, importance and whether code changes never decide it. When the
 worker has the needed tools, delegate the whole workflow — investigation, implementation, repair
 and verification — instead of keeping an unlisted category or handing out low-level fragments.
-Codex supplies context and authority, reviews evidence and owns final acceptance. Keep only a step
-that truly requires Codex Computer Use, nuanced visual judgment, or a user-only login, MFA, legal
+The harness supplies context and authority, reviews evidence and owns final acceptance. Keep only a step
+that truly requires the harness's Computer Use, nuanced visual judgment, or a user-only login, MFA, legal
 acceptance or approval; let the worker finish every other supported step and report the exact
 remaining handoff with evidence. Workers can implement interface code and run terminal or headless
 verification; do not duplicate their repository reading locally.
@@ -124,6 +124,12 @@ A nonterminal response with `continue_waiting: true` means call `wait` again **i
 Keep the turn active until terminal or genuine coordinator input; never end with a progress message
 asking the user to "continue".
 
+For a build, test, deployment, migration or CI run expected to exceed three minutes, ask the worker
+to publish phase changes with `delegate-opencode progress report TASK_ID ...`. A real item count or
+GitHub Actions step count may produce a percentage and ETA; otherwise the console deliberately shows
+indeterminate progress. Do not invent a percentage. `progress status TASK_ID` reads the durable last
+report, while `wait` remains the event-driven completion path.
+
 Quiet output, unchanged status, no visible diff, a long investigation, high token use or the
 coordinator's desire to take over are not stalls and never cancellation reasons; after an accepted
 `steer`, let the guidance execute and keep waiting. `cancel JOB_ID --reason` is reserved for
@@ -154,6 +160,16 @@ different facts; report CLI/API results, headless/UI checks and physical observa
 and request original detail only where needed. For isolated work review the patch, run `integrate
 JOB_ID` then `integrate JOB_ID --apply`, and verify afterward; integration never commits or deploys.
 An `uncertain` task keeps its ownership — recover and inspect it before any replacement.
+
+## Use durable project memory
+
+When project memory is enabled, search it before repeating broad repository discovery:
+`memory search --directory "$PWD" 'topic'`. The upstream harness may add, edit or permanently delete
+project memories through the CLI or console. Store durable, verified decisions, commands, constraints
+and outcomes; never store passwords, tokens, private keys or speculative conclusions. OpenCode's
+memory plugin performs retrieval during worker sessions, while the bridge remains the management and
+audit boundary. Use `memory status`, `memory list --directory "$PWD"`, `memory add 'verified fact'
+--directory "$PWD"`, and `memory delete ID --yes` as needed.
 
 ## Notify the user at meaningful milestones
 

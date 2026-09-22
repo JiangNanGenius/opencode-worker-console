@@ -4,7 +4,7 @@ Exposes a small JSON-ready surface for the local console. Every upstream call
 uses common.api, which is pinned to the authenticated loopback OpenCode server,
 so no caller-supplied URL is ever contacted. Provider options, environment
 variables, credentials and other provider/agent internals are never returned.
-Concurrency is capped per owning Codex conversation (owner_thread_id) via
+Concurrency is capped per owning upstream-harness conversation (owner_thread_id) via
 max_parallel_per_owner (default 4); there is no global or provider-wide cap.
 """
 from concurrent.futures import ThreadPoolExecutor
@@ -184,6 +184,10 @@ def settings():
     out['cleanup'] = cleanup.policy()
     import notifications
     out['notifications'] = notifications.normalize(c.get('notifications'))
+    import opencode_update
+    out['opencode_updates'] = opencode_update.settings(c.get('opencode_updates'))
+    import memory_manager
+    out['memory'] = memory_manager.settings(c.get('memory'))
     return out
 
 
@@ -265,6 +269,12 @@ def _validate_settings(body):
         if not isinstance(body['auto_approve'], bool):
             raise ValueError('auto_approve must be boolean')
         result['auto_approve'] = body['auto_approve']
+    if 'opencode_updates' in body:
+        import opencode_update
+        result['opencode_updates'] = opencode_update.validate(body['opencode_updates'])
+    if 'memory' in body:
+        import memory_manager
+        result['memory'] = memory_manager.validate(body['memory'])
     if 'kimi_monthly_reset' in body:
         import quota
         # Strict validation with zoneinfo: unknown zones, malformed times and out-of-range

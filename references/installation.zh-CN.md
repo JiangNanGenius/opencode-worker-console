@@ -23,7 +23,7 @@ https://github.com/JiangNanGenius/opencode-worker-console
 - macOS 或 Linux/POSIX、Python 3.9+、Git。
 - OpenCode 支持的供应商账号。可以先安装桥接层，再登录；执行任务需要可用额度。
 - 缺少 OpenCode 时需要下载网络。优先通过 npm 安装，否则下载并校验官方发布包；npm 不是桥接层运行依赖。
-- 当前集成验证 OpenCode 1.18.30。已有可执行文件会复用，不会偷偷降级。
+- 当前集成验证 OpenCode 1.18.32。已有可执行文件会复用，不会偷偷降级。
 
 ```sh
 python3 --version
@@ -164,6 +164,10 @@ python3 scripts/install.py
 ```
 
 保留本地修改，不用重置覆盖分歧。普通升级拒绝活跃 Worker；等待任务完成，也检查原生会话。不要自动取消其他对话的任务。
+
+安装后也由 Worker Desk 管理 OpenCode 稳定版更新：检查官方 npm 版本，等待桥接任务和原生会话都空闲，再并排安装精确版本、重启执行层并核对版本；核验失败会恢复原可执行文件。可用 `delegate-opencode opencode version`、`opencode check` 和 `opencode update --yes` 查看或主动执行一次空闲升级。
+
+项目记忆可在“模型与调度”中启用。桥接层让 OpenCode 安装 `opencode-mem`，API 只监听本机回环地址，并提供完整记忆管理且不返回嵌入 Key。默认方舟配置使用 `doubao-embedding-vision`；预留比例提供可调的下限与上限，用于给嵌入留出少量容量，不把最初估算的 2–3% 写死。
 
 运行中只更新兼容的**纯代码**：
 

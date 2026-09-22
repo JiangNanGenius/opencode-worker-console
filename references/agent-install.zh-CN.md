@@ -88,7 +88,7 @@ python3 scripts/install.py --model YOUR_PROVIDER/YOUR_MODEL
 
 Claude Code 等协调者可阅读安装后的 [SKILL.md](../SKILL.md)，调用同一 CLI/JSON 协议。没有自动安装到所有 Agent 技能目录，也不会自动共享 Codex 专属工具。
 
-调用方没有 Codex 会话身份时，为该对话传入稳定的 `--group-id` 和可读的
+调用方没有上游 Harness 会话身份时，为该对话传入稳定的 `--group-id` 和可读的
 `--group-title`，续接继续用同一个 ID。它是调度归属的后备标识，不能用来绕过并发或资源协调。
 
 全局提示只保留简短入口，细节链接到操作文档。给 Worker 完整目标，不把 profile 名称当作能力白名单。

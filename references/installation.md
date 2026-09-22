@@ -23,7 +23,7 @@ Prefer to install it yourself? Follow the manual steps below.
 - macOS or Linux/POSIX, Python 3.9 or later, and Git.
 - A provider account supported by OpenCode. You may install the bridge before signing in, but model work needs a usable account.
 - Network access to obtain OpenCode if it is missing. The bootstrap uses npm when available; otherwise it downloads a checksum-verified official release. npm is optional, not a bridge runtime dependency.
-- OpenCode 1.18.30 is integration-tested. An existing binary is reused, not silently downgraded.
+- OpenCode 1.18.32 is integration-tested. An existing binary is reused, not silently downgraded.
 
 ```sh
 python3 --version
@@ -167,6 +167,18 @@ python3 scripts/install.py
 ```
 
 Preserve local changes; resolve divergence without resetting them. Ordinary updates refuse active workers. Wait for owned tasks to finish, and check native sessions too. Do not automatically cancel another conversation's work.
+
+Worker Desk also manages stable OpenCode updates after installation. It checks the official npm
+release, waits until bridge tasks and native sessions are idle, installs the exact version side by
+side, restarts the execution runtime and verifies it. A failed verification restores the previous
+binary. Use `delegate-opencode opencode version`, `opencode check` and `opencode update --yes` for
+inspection or an explicit idle update.
+
+Optional project memory can be enabled in **Models and routing**. The bridge installs `opencode-mem`
+through OpenCode, keeps its API on loopback and exposes memory management without returning the
+embedding key. The default Ark setup uses `doubao-embedding-vision`; its reserve floor and ceiling
+are configurable and leave a small amount of plan capacity for embeddings rather than assuming a
+fixed 2–3 percent.
 
 For a compatible **code-only** update while sessions run:
 

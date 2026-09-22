@@ -23,6 +23,9 @@ def runtime_overlay(c):
                'permission': 'allow' if auto else 'ask',
                'share': 'disabled', 'autoupdate': False, 'snapshot': False,
                'formatter': False}
+    if c.get('memory', {}).get('enabled') is True:
+        # v1 plugin entry; OpenCode installs the published package into its own cache.
+        overlay['plugin'] = ['opencode-mem']
     # Keep the original preset/auth ID stable when the upstream catalog renames it
     # to kimi-code-plan-cn/global. This uses the same existing kimi.com endpoint
     # and stored credential; no key migration or extra destination is involved.
@@ -52,11 +55,15 @@ def main():
     env['OPENCODE_SERVER_PASSWORD'] = (STATE / 'server-password').read_text().strip()
     env['OPENCODE_CONFIG_CONTENT'] = json.dumps(overlay)
     env['OPENCODE_DISABLE_AUTOUPDATE'] = '1'
-    # Avoid external plugins in delegated execution; project instructions still apply.
+    # Pure mode prevents arbitrary project plugins from entering delegated execution.
+    # opencode-mem is an explicitly managed runtime plugin, so memory-enabled installs
+    # start without --pure and keep the plugin list pinned in our private overlay.
     port = c['server_url'].rsplit(':', 1)[1]
     os.chdir(STATE)
-    os.execve(c['opencode_binary'], [c['opencode_binary'], 'serve', '--hostname', '127.0.0.1',
-                                   '--port', port, '--pure'], env)
+    argv = [c['opencode_binary'], 'serve', '--hostname', '127.0.0.1', '--port', port]
+    if c.get('memory', {}).get('enabled') is not True:
+        argv.append('--pure')
+    os.execve(c['opencode_binary'], argv, env)
 
 
 if __name__ == '__main__':

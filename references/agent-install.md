@@ -89,7 +89,7 @@ For Codex, the default install includes `delegate-opencode/SKILL.md` in the user
 
 For Claude Code or another coordinator, provide the installed [SKILL.md](../SKILL.md) as delegation guidance and use the same CLI/task JSON contract. There is no automatic installation into every agent's skill directory, and no automatic sharing of Codex-only tools.
 
-When the caller has no Codex conversation identity, supply a stable `--group-id`
+When the caller has no upstream-harness conversation identity, supply a stable `--group-id`
 for that conversation and a readable `--group-title` on submissions. Keep the ID
 for continuations; it is the fallback scheduling owner, not a way to bypass
 concurrency or resource coordination.

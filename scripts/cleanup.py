@@ -107,7 +107,7 @@ def eligible_tasks(pol=None, now=None):
     """Return reclaimable terminal tasks.
 
     Needs-attention evidence becomes reclaimable after 24 idle hours, or as soon
-    as the same Codex owner has produced a newer task. Its original status stays
+    as the same upstream-harness owner has produced a newer task. Its original status stays
     intact for the usage ledger. Other terminal work keeps the configured age and
     recent-task retention policy.
     """

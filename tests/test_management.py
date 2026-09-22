@@ -383,7 +383,7 @@ class ManagementTests(unittest.TestCase):
                                               'auto_reroute_on_quota_exhaustion',
                                               'proactive_long_task_reroute',
                                               'proactive_reroute_after_seconds',
-                                              'notifications'})
+                                              'notifications', 'opencode_updates', 'memory'})
         self.assertEqual(result['economics']['afp_cny_per_unit'], 0.002)
         self.assertEqual(result['economics']['kimi_plan_cny'], 699.0)
         self.assertFalse(result['deepseek_holiday_calendar']['enabled'])

@@ -94,6 +94,8 @@ def state():
         # Global refresh never fetches sessions and never scans history.
         p['usage'] = task_activity.usage_for_task(t)
         p['recent_activity'] = task_activity.recent_activity_for_task(t)
+        import progress
+        p['progress'] = progress.snapshot(t['id'], refresh_github=False)
         entries.append(p)
     health = service_health()
     c = config()
@@ -403,15 +405,23 @@ class Handler(BaseHTTPRequestHandler):
     def console_get(self, path):
         if path in ('/console-api/models', '/console-api/settings', '/console-api/sessions',
                     '/console-api/workspaces', '/console-api/cleanup', '/console-api/usage-history',
-                    '/console-api/credentials', '/console-api/stats'):
+                    '/console-api/credentials', '/console-api/stats', '/console-api/opencode-version',
+                    '/console-api/memory/status', '/console-api/memory/projects',
+                    '/console-api/memory/profile', '/console-api/memory/stats'):
             try:
+                memory = __import__('memory_manager')
                 fn = {'/console-api/models': management.catalog, '/console-api/settings': management.settings,
                       '/console-api/sessions': management.sessions, '/console-api/workspaces': management.workspaces,
                       '/console-api/cleanup': __import__('cleanup').preview,
                       '/console-api/usage-history':
                           lambda: __import__('usage_ledger').summary(include_entries=True),
                       '/console-api/credentials': quota_credential_refs,
-                      '/console-api/stats': lambda: __import__('analytics').summary()}[path]
+                      '/console-api/stats': lambda: __import__('analytics').summary(),
+                      '/console-api/opencode-version': lambda: __import__('opencode_update').status(),
+                      '/console-api/memory/status': memory.status,
+                      '/console-api/memory/projects': memory.projects,
+                      '/console-api/memory/profile': memory.profile,
+                      '/console-api/memory/stats': memory.stats}[path]
                 self.reply(200, redact(fn()))
             except (ValueError, HttpFailure, credentials.CredentialError) as e:
                 self.reply(503, {'error': str(e)})
@@ -437,6 +447,8 @@ class Handler(BaseHTTPRequestHandler):
                 # Live activity/usage for in-flight tasks; retained evidence
                 # (never the network) for closed or completed jobs.
                 payload.update(task_activity.snapshot(t))
+                import progress
+                payload['progress'] = progress.snapshot(t['id'])
                 self.reply(200, redact(payload))
             except ValueError:
                 self.reply(404, {'error': 'Task not found'})
@@ -479,6 +491,29 @@ class Handler(BaseHTTPRequestHandler):
             body = self.read_body()
             if path == '/console-api/quota':
                 result = quota.refresh()
+            elif path == '/console-api/opencode-version':
+                action = body.get('action')
+                if action not in ('check', 'update'):
+                    raise ValueError('Unknown OpenCode version action')
+                updater = __import__('opencode_update')
+                result = updater.run(check_only=action == 'check')
+            elif path == '/console-api/memory':
+                memory = __import__('memory_manager')
+                action = body.get('action')
+                if action == 'list':
+                    result = memory.list_memories(body.get('directory'), body.get('page', 1), body.get('limit', 50))
+                elif action == 'search':
+                    result = memory.search(body.get('query'), body.get('directory'), body.get('page', 1), body.get('limit', 20))
+                elif action == 'add':
+                    result = memory.add(body.get('content'), body.get('directory'), body.get('tags'), body.get('type'))
+                elif action == 'update':
+                    result = memory.update(body.get('id'), body.get('content'))
+                elif action == 'delete':
+                    result = memory.delete(body.get('id'))
+                elif action == 'bulk_delete':
+                    result = memory.bulk_delete(body.get('ids') or [])
+                else:
+                    raise ValueError('Unknown memory action')
             elif path == '/console-api/settings':
                 with locked('configuration'):
                     with locked():

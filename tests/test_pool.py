@@ -1220,7 +1220,7 @@ class PoolTests(unittest.TestCase):
         def finish(_seconds):
             common.update(t['id'], status='completed', finished_at=time.time())
 
-        with patch.object(delegate.time, 'sleep', side_effect=finish) as pause:
+        with patch.object(delegate, 'wait_pause', side_effect=finish) as pause:
             result = delegate.wait_for_task(t['id'])
         pause.assert_called_once_with(delegate.WAIT_POLL_SECONDS)
         self.assertTrue(result['terminal'])
@@ -1230,7 +1230,7 @@ class PoolTests(unittest.TestCase):
     def test_wait_on_already_finished_task_never_sleeps(self):
         t = self.new(mode='read', scopes=[], tier='normal')
         common.update(t['id'], status='completed', finished_at=time.time())
-        with patch.object(delegate.time, 'sleep') as pause:
+        with patch.object(delegate, 'wait_pause') as pause:
             result = delegate.wait_for_task(t['id'])
         pause.assert_not_called()
         self.assertTrue(result['terminal'])

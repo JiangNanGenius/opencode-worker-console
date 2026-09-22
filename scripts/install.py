@@ -107,7 +107,7 @@ DEFAULT_DEEPSEEK_HOLIDAY_CALENDAR = {
     ],
     'refresh_hours': 24,
 }
-# Concurrency is capped per owning Codex conversation (owner_thread_id), never
+# Concurrency is capped per owning upstream-harness conversation (owner_thread_id), never
 # globally or per provider; the scheduler reads max_parallel_per_owner (default 4).
 # The low-weekly guard is independent from ordinary weighted routing. Once the
 # authoritative Kimi weekly/overall allowance reaches the threshold, normal work
@@ -123,6 +123,8 @@ TOP_LEVEL_DEFAULTS = {
     'proactive_long_task_reroute': True,
     'proactive_reroute_after_seconds': 900,
     'auto_approve': True,
+    'opencode_updates': {'enabled': True, 'check_interval_hours': 6},
+    'memory': {'enabled': False},
 }
 ACTIVE_STATUSES = {'queued', 'starting', 'running', 'stopping', 'uncertain'}
 ENV_VARS = ('DELEGATE_INSTALL', 'DELEGATE_STATE', 'DELEGATE_CONFIG', 'DELEGATE_BIN_DIR')

@@ -28,8 +28,13 @@ WAIT_MIN_SECONDS = 60
 WAIT_POLL_SECONDS = 0.5
 
 
+def wait_pause(seconds):
+    """One injectable task-wait pause without monkey-patching process-wide time.sleep."""
+    time.sleep(seconds)
+
+
 def owner_key(t):
-    """Immutable scheduling owner: the Codex conversation, with legacy fallbacks."""
+    """Immutable scheduling owner: the upstream-harness conversation, with legacy fallbacks."""
     return t.get('owner_thread_id') or t.get('group_id') or t.get('source_dir')
 
 
@@ -114,7 +119,7 @@ def wait_for_task(task_id, requested_seconds=None):
         remaining = end - time.time()
         if remaining <= 0:
             break
-        time.sleep(min(WAIT_POLL_SECONDS, remaining))
+        wait_pause(min(WAIT_POLL_SECONDS, remaining))
         current = task(task_id)
     current = task(task_id)  # Include a state change racing the observation-window boundary.
     result = wait_result(current, time.time() - began)
@@ -285,7 +290,7 @@ def submit(spec):
 def choose_ready(all_tasks, c, q, admissions=None):
     """Select dispatchable queued tasks.
 
-    No global or per-provider concurrency caps: independent Codex conversations run
+    No global or per-provider concurrency caps: independent upstream-harness conversations run
     freely. Only the per-owner cap, true quota/billing blocks, and scope/resource
     overlap locks constrain dispatch. Profiles are pinned; billing/quota blockages are
     reported, never silently re-routed.
@@ -314,7 +319,7 @@ def choose_ready(all_tasks, c, q, admissions=None):
         explicit = (t.get('requested_profile') or 'auto') != 'auto'
         # At the configured low-weekly threshold, normal work leaves Kimi and
         # native K3 deep work has one global slot by default. Other concurrency
-        # remains per owning Codex conversation.
+        # remains per owning upstream-harness conversation.
         route_task, guard = quota.apply_kimi_low_weekly_guard(t, c, q, active)
         profile, why = quota.route(route_task, c, q, admissions)
         if guard:
@@ -356,6 +361,7 @@ def daemon():
     threads = {}
     cleanup_thread = None
     holiday_thread = None
+    update_launch_checked = 0
     last_holiday_refresh = 0
     last_refresh = 0
     last_cleanup = 0
@@ -363,6 +369,13 @@ def daemon():
     while not stop.is_set():
         try:
             c = config()
+            if time.time() - update_launch_checked >= 60:
+                update_launch_checked = time.time()
+                try:
+                    import opencode_update
+                    opencode_update.launch_if_due()
+                except Exception:
+                    pass
             import holiday_calendar
             holiday_cfg = holiday_calendar.settings(c.get('deepseek_holiday_calendar'))
             holiday_interval = holiday_cfg['refresh_hours'] * 3600
@@ -590,6 +603,22 @@ def main():
     for name in ('doctor', 'daemon', 'stats'):
         sub.add_parser(name)
     s = sub.add_parser('service'); s.add_argument('action', choices=['start', 'stop'])
+    s = sub.add_parser('opencode', help='Inspect or update the managed OpenCode runtime')
+    s.add_argument('action', choices=['version', 'check', 'update'])
+    s.add_argument('--yes', action='store_true')
+    s = sub.add_parser('memory', help='Manage persistent OpenCode project memory')
+    msub = s.add_subparsers(dest='action', required=True)
+    for action in ('status', 'projects', 'profile', 'stats'):
+        msub.add_parser(action)
+    ml = msub.add_parser('list'); ml.add_argument('--directory'); ml.add_argument('--page', type=int, default=1); ml.add_argument('--limit', type=int, default=50)
+    ms = msub.add_parser('search'); ms.add_argument('query'); ms.add_argument('--directory'); ms.add_argument('--page', type=int, default=1); ms.add_argument('--limit', type=int, default=20)
+    ma = msub.add_parser('add'); ma.add_argument('content'); ma.add_argument('--directory', required=True); ma.add_argument('--tag', action='append', default=[]); ma.add_argument('--type')
+    mu = msub.add_parser('update'); mu.add_argument('id'); mu.add_argument('content')
+    md = msub.add_parser('delete'); md.add_argument('ids', nargs='+'); md.add_argument('--yes', action='store_true')
+    s = sub.add_parser('progress', help='Report or inspect a long-running operation')
+    psub = s.add_subparsers(dest='action', required=True)
+    pr = psub.add_parser('report'); pr.add_argument('id'); pr.add_argument('--phase', required=True); pr.add_argument('--message', default=''); pr.add_argument('--current', type=float); pr.add_argument('--total', type=float); pr.add_argument('--percent', type=float); pr.add_argument('--eta-seconds', type=float); pr.add_argument('--status', choices=['running','queued','completed','failed','cancelled'], default='running'); pr.add_argument('--github-run')
+    ps = psub.add_parser('status'); ps.add_argument('id')
     s = sub.add_parser('setup', help='Interactive bilingual setup wizard for this installation (terminal only)')
     s.add_argument('--lang', choices=['en', 'zh-CN'], help='Wizard language (default: auto-detect from locale)')
     s = sub.add_parser('console'); s.add_argument('--open', action='store_true')
@@ -717,6 +746,34 @@ def main():
     elif args.cmd == 'service':
         import service
         result = service.start() if args.action == 'start' else service.stop()
+    elif args.cmd == 'opencode':
+        import opencode_update
+        if args.action == 'version':
+            result = opencode_update.status()
+        elif args.action == 'check':
+            result = opencode_update.run(check_only=True)
+        else:
+            if not args.yes:
+                raise ValueError('Use --yes to install and activate an available OpenCode update')
+            result = opencode_update.run(check_only=False)
+    elif args.cmd == 'memory':
+        import memory_manager
+        if args.action == 'status': result = memory_manager.status()
+        elif args.action == 'projects': result = memory_manager.projects()
+        elif args.action == 'profile': result = memory_manager.profile()
+        elif args.action == 'stats': result = memory_manager.stats()
+        elif args.action == 'list': result = memory_manager.list_memories(args.directory, args.page, args.limit)
+        elif args.action == 'search': result = memory_manager.search(args.query, args.directory, args.page, args.limit)
+        elif args.action == 'add': result = memory_manager.add(args.content, args.directory, args.tag, args.type)
+        elif args.action == 'update': result = memory_manager.update(args.id, args.content)
+        else:
+            if not args.yes: raise ValueError('Use --yes for permanent memory deletion')
+            result = memory_manager.delete(args.ids[0]) if len(args.ids) == 1 else memory_manager.bulk_delete(args.ids)
+    elif args.cmd == 'progress':
+        import progress
+        result = progress.snapshot(args.id) if args.action == 'status' else progress.report(
+            args.id, args.phase, args.message, args.current, args.total, args.percent,
+            args.eta_seconds, args.status, args.github_run)
     elif args.cmd == 'console':
         url = config()['console_url'] + '/console'
         if args.open:

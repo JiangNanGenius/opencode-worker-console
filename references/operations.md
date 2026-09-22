@@ -52,7 +52,7 @@ Do not put API keys or other secrets in tasks. With Auto Approve enabled (the de
 all native tools, including web fetching, run without prompts. In restricted mode,
 `web: true` explicitly allows the `webfetch` tool and, as in Auto Approve mode, never
 expands scope, authority or any other capability.
-Use `group_title` for a readable main-task name, `group_id` to override the current Codex
+Use `group_title` for a readable main-task name, `group_id` to override the current upstream-harness
 task ID, and `parent_task_id` for a child of an existing delegated task in the same group.
 
 Prefer one coherent assignment that owns an outcome, such as investigation, bounded
@@ -92,9 +92,9 @@ Routine UI work is eligible for delegation. Workers may implement a specified in
 verify source/DOM structure, localization coverage, build/lint output and an existing headless
 browser test command. OpenCode does not have Computer Use; do not ask it to improvise macOS
 GUI control with AppleScript, screenshot utilities or similar terminal workarounds. Prefer
-Astra for complex real interface operation, visual direction and subtle aesthetic judgment;
+the upstream harness for complex real interface operation, visual direction and subtle aesthetic judgment;
 workers can contribute proposals and analysis. This allocation reflects available tools and
-strengths, not a category ban. Astra owns final acceptance; worker static evidence alone is
+strengths, not a category ban. The upstream harness owns final acceptance; worker static evidence alone is
 not final UI proof.
 
 ## Operational targets and remote systems
@@ -124,7 +124,7 @@ operational targets. The console's New task form exposes the same targets and re
 
 Workers choose suitable methods themselves: `ssh`, `scp` and `rsync`, plus existing
 project scripts, CI workflows and runbooks for routine deployment; established
-authenticated tools are reused instead of asking Astra to spell out commands. Connection
+authenticated tools are reused instead of asking the upstream harness to spell out commands. Connection
 setup comes from the user's existing `~/.ssh/config` and `ssh-agent` identities; only a
 genuinely new login or consent belongs to the user. When a new secret is unavoidable,
 register a metadata-only `credential` reference and run the command through
@@ -151,15 +151,15 @@ values. It defaults to loopback; optional LAN or HTTPS reverse-proxy access is d
 in the backend. Native response bodies and process logs are not universally redacted;
 credential handling and its limits are described in [credential references](credentials.md). The gateway
 supports OpenCode streaming and WebSocket traffic. A direct manual continuation inside
-OpenCode is outside the pool's task ledger: submit follow-up work through Astra when file
+OpenCode is outside the pool's task ledger: submit follow-up work through the upstream harness when file
 ownership and state tracking must remain coordinated.
 
 Global settings: `~/.config/opencode/delegate-pool.json`. This is separate from the
 user's interactive OpenCode configuration. The default is four running workers per owning
-Codex conversation (`max_parallel_per_owner`). There is no per-task step or time cap:
+upstream-harness conversation (`max_parallel_per_owner`). There is no per-task step or time cap:
 a worker iterates until its model stops or the task is cancelled. Different conversations
 have independent slots: there is no shared
-global or provider concurrency ceiling. Child tasks count against the same owner. Non-Codex
+global or provider concurrency ceiling. Child tasks count against the same owner. Other
 callers fall back to their group/workspace identity. Scope/resource conflicts still queue.
 Model/variant changes saved in the console restart idle execution services; owner limits
 are read at runtime. Legacy global/provider concurrency and per-task step/time settings no
@@ -168,7 +168,7 @@ longer govern dispatch.
 ## Quota and routing
 
 The adapter reads existing OpenCode API credentials in-process and calls only the fixed
-official HTTPS endpoints, without redirects. No credentials are returned to Astra.
+official HTTPS endpoints, without redirects. No credentials are returned to the upstream harness.
 DeepSeek currency balances remain separate. Kimi duration, remaining and reset fields are
 preserved; Kimi profiles share one account pool. Supplemental `used_ratio` units and booster
 wallet payment behavior are not guessed or changed. Unknown values remain unknown.
@@ -278,7 +278,7 @@ attributed as an exact task charge. `stats` reports observed mixed task latency,
 State: `~/.local/state/delegate-opencode` (owner-only). Each task has baseline metadata,
 scoped before/after snapshots, a binary-capable `changes.patch`, redacted messages,
 actual model IDs, tool execution evidence and a structured report. Results are untrusted
-worker output until Astra reviews them. Source files in artifacts can contain private code.
+worker output until the upstream harness reviews them. Source files in artifacts can contain private code.
 
 Auto Approve defaults to on for this Worker service, allowing all tools without prompts.
 Task scope and read-only intent are cooperative instructions, verified through collected changes.
@@ -290,7 +290,7 @@ An accepted prompt's identity is saved before sending. Recovery observes that se
 it never blindly sends the prompt again. Cancellation retains ownership until abort is
 confirmed. `uncertain` means the service cannot confirm state; restore service connectivity.
 The queue reports tool failures without a repeated-failure or iteration cutoff; test failures
-inside otherwise successful shell commands are additionally the worker's and Astra's
+inside otherwise successful shell commands are additionally the worker's and upstream harness's
 responsibility.
 
 For isolated integration, the source must still match the task's original baseline for every
@@ -299,7 +299,7 @@ changed file. `integrate JOB_ID` performs both hash checks and `git apply --chec
 After integration, run the appropriate tests and preserve evidence before manually removing
 the exact completed worktree with ordinary `git worktree remove`.
 
-OpenCode 1.18.30 accepted a JSON-schema `format` request but returned HTTP 400 when reading
+OpenCode 1.18.32 accepted a JSON-schema `format` request but returned HTTP 400 when reading
 that saved message. This integration therefore requests a plain final JSON report in the
 prompt and validates it itself. Missing or invalid reports become `needs_attention`.
 
@@ -311,7 +311,7 @@ writable scopes or operational targets; use the same `--resource` for jobs deplo
 the same target, with stable `ssh:<host>:<service>` names rather than per-model locks. Let it discover routine
 commands from project scripts, CI workflows and runbooks. Provide a method for special processes
 only when needed. The worker owns build, deployment, routine troubleshooting and verification
-of the running version and health, and returns concise evidence for Astra's final review.
+of the running version and health, and returns concise evidence for the upstream harness's final review.
 Existing authenticated tooling can be used without reading or exposing credential values.
 
 `python3 scripts/install.py` installs or updates the global skill, launcher and three local
@@ -335,7 +335,7 @@ running session can use the absolute CLI path immediately; reload the skill list
 
 The CLI starts missing processes before task submission, steering and native session operations.
 If the configured OpenCode binary is missing, it discovers an existing installation or installs
-`opencode-ai@1.18.30` under the private runtime via the official npm registry. Without npm,
+`opencode-ai@1.18.32` under the private runtime via the official npm registry. Without npm,
 it downloads the matching official GitHub release and verifies the release API's SHA-256 digest.
 No sudo or global package replacement is used. Provider login remains with OpenCode.
 
@@ -353,7 +353,7 @@ delegate-opencode cleanup --apply
 Steering persists intent before sending `prompt_async`, keeps the same model/permissions,
 and delays normal task completion until a reply to the latest guidance is observed. HTTP
 acceptance is not proof that the model followed the instruction. Unknown delivery is retained
-and not automatically replayed. OpenCode 1.18.30 picks up the new user message in its running
+and not automatically replayed. OpenCode 1.18.32 picks up the new user message in its running
 session loop; it does not expose a separate delivery-mode field in its local OpenAPI schema.
 
 Workspace binding uses `/experimental/control-plane/move-session`, with `moveChanges: false`.
@@ -379,7 +379,7 @@ for review and recent tasks remain. A parent archive with any ineligible descend
 Removed file byte totals are estimates, not exact disk-space attribution. Cleanup produces a
 private `cleanup-last.json`.
 
-Existing sessions can switch between worktrees of the same Git project. OpenCode 1.18.30 rejects cross-project migration; create a new session bound to the target project instead.
+Existing sessions can switch between worktrees of the same Git project. OpenCode 1.18.32 rejects cross-project migration; create a new session bound to the target project instead.
 
 
 ## Error bridge
@@ -397,7 +397,7 @@ capacity stop eligible for same-session routing continuation. Historical compact
 Errors from earlier failed tool attempts can coexist with a successfully completed report.
 A transport error after dispatch means the prompt may have been accepted: observe the
 existing session, never blindly resubmit. The bridge reports information when queried;
-Codex should use bounded `wait` calls while awaiting a delegated result.
+The upstream harness should use bounded `wait` calls while awaiting a delegated result.
 
 With no `--seconds`, `wait` observes Fast tasks for up to 5 minutes, Normal tasks for 30 minutes
 and Deep tasks for 60 minutes. An explicit value has a one-minute minimum and may be longer.
