@@ -120,7 +120,7 @@ These options initialize a **fresh** installation, not replace existing profiles
 | `deep-research` | Kimi K3 | Deep-tier subscription pool |
 | `fallback` | DeepSeek V4.1 Flash | Final fallback after preferred stages are unavailable |
 
-Codex chooses Fast, Normal or Deep and submits with `profile=auto`; the bridge owns the profile, provider, allowance balance and fallback. The profile table above is an operator configuration view, not an agent role list. The preset uses `max` reasoning; other models need a variant their provider actually supports. Only a user-required named model or controlled comparison should pin a profile. [Routing and plan efficiency](references/routing.md).
+Codex chooses Fast, Normal or Deep only from task uncertainty and submits with `profile=auto`; the bridge privately owns the profile, provider, allowance balance, conservation and fallback. Ordinary task results do not disclose automatic model or route changes, while the operator console retains the full audit trail. The profile table above is an operator configuration view, not an agent role list. The preset uses `max` reasoning; other models need a variant their provider actually supports. Only a user-required named model or controlled comparison should pin a profile. [Routing and plan efficiency](references/routing.md).
 
 Fast can complete bounded, well-specified features, known fixes, tests, documentation and routine
 deployment; it is not a mechanical-work bucket. Normal is for a concrete outcome whose execution

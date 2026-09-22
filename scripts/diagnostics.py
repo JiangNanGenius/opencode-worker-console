@@ -170,7 +170,24 @@ def collect(task_id, full=False):
         keys = ('worker_report', 'actual_models', 'changes', 'review_flags', 'acceptance',
                 'status', 'reason', 'errors', 'pending')
         result = {key: result[key] for key in keys if key in result}
-    out = {'task': common.public_task(t), 'result': result}
+    out = {'task': common.coordinator_task(t), 'result': result}
+    if (t.get('requested_profile') or 'auto') == 'auto' and isinstance(out['result'], dict):
+        out['result'].pop('actual_models', None)
+        errors = []
+        hide_owned_capacity = t.get('status') not in ('failed', 'needs_attention', 'uncertain')
+        for item in out['result'].get('errors') or []:
+            if not isinstance(item, dict):
+                errors.append(item)
+                continue
+            if hide_owned_capacity and (item.get('billing') or item.get('usage_window')):
+                continue
+            cleaned = dict(item)
+            cleaned.pop('provider', None)
+            errors.append(cleaned)
+        if errors:
+            out['result']['errors'] = errors
+        else:
+            out['result'].pop('errors', None)
     out['task'].pop('recovery', None)
     recovery = t.get('recovery')
     try:

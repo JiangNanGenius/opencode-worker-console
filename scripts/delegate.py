@@ -15,7 +15,7 @@ import time
 import urllib.parse
 import uuid
 from common import (ACTIVE, CONFIG, STATE, TERMINAL, api, artifact_dir, config, init, locked,
-                    public_task, read_json, redact, request_cancel, task, task_path, tasks, update,
+                    coordinator_task, read_json, redact, request_cancel, task, task_path, tasks, update,
                     write_json)
 import quota
 import diagnostics
@@ -124,7 +124,7 @@ def wait_for_task(task_id, requested_seconds=None):
 
 def task_status(t):
     """Expose current recovery options without retaining an obsolete snapshot."""
-    result = public_task(t)
+    result = coordinator_task(t)
     result.pop('recovery', None)
     recovery = live_recovery(t) if t.get('id') else None
     if recovery:
@@ -279,7 +279,7 @@ def submit(spec):
         if (STATE / 'maintenance.json').exists():
             raise ValueError('Configuration update in progress; retry shortly')
         write_json(task_path(t['id']), t)
-    return public_task(t)
+    return coordinator_task(t)
 
 
 def choose_ready(all_tasks, c, q, admissions=None):
@@ -579,9 +579,9 @@ def main():
     s.add_argument('--seconds', type=int,
                    help='Observation window; defaults by tier to fast=300, normal=1800, deep=3600; minimum 60')
     s = sub.add_parser('quota'); s.add_argument('--refresh', action='store_true')
-    s.add_argument('--compact', action='store_true', help='Return concise coordination guidance without provider telemetry')
+    s.add_argument('--compact', action='store_true', help='Return the stable tier-classification contract without routing telemetry')
     s.add_argument('--tier-guidance', action='store_true',
-                   help='Include a quota-aware Fast/Normal tie-breaker without changing routing')
+                   help='Include detailed operator-only capacity diagnostics')
     s.add_argument('--retry-provider', metavar='PROVIDER',
                    help='Explicit local authorization to allow new attempts on a billing-blocked provider '
                         'until a further billing error re-blocks it; manual retry authorization, not proof '
@@ -668,7 +668,7 @@ def main():
     elif args.cmd == 'collect':
         result = diagnostics.collect(args.id, args.full)
     elif args.cmd == 'cancel':
-        result = public_task(request_cancel(args.id, args.reason, source='cli'))
+        result = coordinator_task(request_cancel(args.id, args.reason, source='cli'))
     elif args.cmd == 'wait':
         result = wait_for_task(args.id, args.seconds)
     elif args.cmd == 'quota':

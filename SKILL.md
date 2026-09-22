@@ -1,6 +1,6 @@
 ---
 name: delegate-opencode
-description: Delegate complete authorized outcomes to general-purpose OpenCode agents. Every task category is eligible. Classify Fast/Normal/Deep from the uncertainty the worker must resolve, keep profile=auto, and let fresh quota_posture break a genuine Fast/Normal tie. The bridge selects provider and model, including allowance-aware fallback.
+description: Delegate complete authorized outcomes to general-purpose OpenCode agents. Every task category is eligible. Classify Fast/Normal/Deep only from the uncertainty the worker must resolve and keep profile=auto. The bridge privately selects providers and models, including conservation and fallback.
 ---
 
 # Delegate OpenCode work
@@ -98,17 +98,12 @@ or materially uncertain Normal investigation justifies a Deep continuation; neve
 outcome to avoid Deep, and give one complete outcome instead of many tiny lookups. Do not restart
 productive work only to change tier; apply the new tier to the next handoff.
 
-Before the first handoff in a coherent batch, call `quota --tier-guidance --compact` once or reuse a
-fresh result this turn; use verbose `quota` only when investigating provider state as an operator.
-Use the `quota_posture` label only as a tie-breaker when Fast and Normal both fully fit:
-`fast_preferred` leans Fast, `normal_flexible` (a healthy Normal-only plan) lets you choose by
-error/rework risk, urgency and size, and `neutral` means task needs alone decide. Never interpret raw
-percentages or downgrade work that needs the higher tier; quote `conservation_level` (`0`/`1`/`2`)
-when explaining capacity. Policy stages, fallback, conservation, prices, ratios, curves and plan
-presets are operator concerns documented authoritatively in [routing](references/routing.md) — do
-not imitate provider decisions in prompts. In the built-in Ark preset, Ark Auto is the stronger
-Fast route and direct DeepSeek is the lowest-capability final fallback. A larger DeepSeek share
-during severe conservation is an economic survival measure, never a quality preference.
+Choose the tier only from unresolved uncertainty. Do not read quotas, conservation state, provider
+health, prices or model identity before an ordinary handoff, and never change a tier to protect a
+plan. Keep `profile=auto`; policy stages, provider balancing, conservation, fallback and same-session
+model changes are private bridge decisions. Use `quota --tier-guidance` only for explicit operator
+troubleshooting. The console retains full route telemetry for auditing, but ordinary submit, status,
+wait and collect results deliberately omit automatic provider/model choices and route changes.
 
 Optional: set `capability_floor` to `fast`/`normal`/`deep` only for a deliberate requirement that
 conservation or fallback must never serve the task below that tier. It cannot exceed the requested
@@ -143,13 +138,13 @@ monthly-plan exhaustion is a confirmed capacity stop. With automatic rerouting, 
 attempt, excludes the provider and sends an in-session continuation on the next route — same OpenCode
 session and workspace — explicitly told to inspect prior work and never repeat completed edits,
 deployments, messages, payments or other external side effects. Keep waiting on the same job;
-`route_history` and `queued_boundary_switch` entries are progress, not cancellation signals. If
-rerouting is disabled, no route remains, or acknowledgement is uncertain, inspect `recovery`, keep
+Route changes are progress, not cancellation signals. If rerouting is disabled, no route remains,
+or acknowledgement is uncertain, inspect `recovery`, keep
 the tier, and submit a deliberate `profile=auto` continuation with `--parent-task-id` after reading
 existing state. Authentication, transport and ordinary model errors do not trigger rerouting; a
 transport error after dispatch may still mean the prompt was accepted — observe the session, never
-blindly resubmit, and never replay a prompt whose acceptance is uncertain. Tell the user once when
-`fallback_used: true`; stay silent about ordinary model choices.
+blindly resubmit, and never replay a prompt whose acceptance is uncertain. Automatic route changes
+stay silent; surface capacity only when no usable route remains and coordinator action is required.
 
 ## Review evidence and manage sessions
 

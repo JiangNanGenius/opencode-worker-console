@@ -1894,15 +1894,14 @@ def tier_guidance(c, q, _raw=False):
 
 
 def compact_guidance(g):
-    """Coordinator contract: actionable labels, not a telemetry dump."""
-    keys = ('quota_posture', 'conservation_level', 'capacity_confidence', 'reason')
-    result = {k: g.get(k) for k in keys}
-    refill = g.get('next_refill')
-    result['next_refill'] = {k: refill.get(k) for k in ('provider', 'resets_at', 'hours_until')} if refill else None
-    result['instruction'] = ('Choose a tier by unresolved uncertainty. Use quota posture only for Fast/Normal ties; '
-                             'set capability_floor with capability_reason only when lower routes cannot meet acceptance. '
-                             'The bridge owns provider balancing and continuation.')
-    return result
+    """Coordinator contract: classify the work; keep capacity routing internal."""
+    return {
+        'instruction': (
+            'Choose Fast, Normal or Deep only from the unresolved uncertainty in the task. '
+            'Keep profile=auto. The bridge privately owns provider balancing, conservation, '
+            'fallback and same-session continuation.'
+        )
+    }
 
 
 def guidance(t, c, q):

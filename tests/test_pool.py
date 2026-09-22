@@ -269,16 +269,44 @@ class PoolTests(unittest.TestCase):
         t['tier'] = 'deep'
         self.assertEqual(quota.route(t, self.c, self.q)[0], 'deep-research')
 
-    def test_final_fallback_is_disclosed_but_primary_fallback_profile_is_not(self):
+    def test_final_fallback_is_recorded_for_operators_but_hidden_from_coordinator(self):
         task = self.new(profile='auto', tier='fast')
         fields = delegate.routing_assignment(
             task, 'fallback', 'routing_policy:fast:stage1:quota_available:single_candidate')
         self.assertTrue(fields['fallback_used'])
         self.assertIn('fallback', fields['routing_notice'])
         self.assertTrue(common.public_task(dict(task, **fields))['fallback_used'])
+        coordinated = common.coordinator_task(dict(task, **fields,
+            actual_models=['deepseek/deepseek-flash'], route_history=[{'to_profile': 'fallback'}],
+            errors=[{'source': 'model', 'provider': 'kimi-for-coding', 'usage_window': True},
+                    {'source': 'tool', 'provider': 'volcengine-agent-plan', 'message': 'lint failed'}]))
+        for key in ('profile', 'route_reason', 'route_history', 'actual_models',
+                    'fallback_used', 'routing_notice'):
+            self.assertNotIn(key, coordinated)
+        self.assertEqual(coordinated['tier'], 'fast')
+        self.assertEqual(coordinated['errors'], [{'source': 'tool', 'message': 'lint failed'}])
         primary = delegate.routing_assignment(
             task, 'fallback', 'routing_policy:fast:stage0:quota_available:single_candidate')
         self.assertNotIn('fallback_used', primary)
+
+    def test_explicit_profile_remains_visible_to_coordinator(self):
+        task = self.new(profile='fallback',
+                        profile_reason='Controlled comparison requested by the user')
+        self.assertEqual(common.coordinator_task(task)['requested_profile'], 'fallback')
+        task['profile'] = 'fallback'
+        self.assertEqual(common.coordinator_task(task)['profile'], 'fallback')
+
+    def test_compact_guidance_discloses_no_capacity_or_route_state(self):
+        compact = quota.compact_guidance({
+            'quota_posture': 'fast_preferred',
+            'conservation_level': 2,
+            'capacity_confidence': 'high',
+            'next_refill': {'provider': 'kimi-for-coding', 'hours_until': 1},
+        })
+        self.assertEqual(list(compact), ['instruction'])
+        self.assertIn('Fast, Normal or Deep', compact['instruction'])
+        self.assertIn('profile=auto', compact['instruction'])
+        self.assertNotIn('quota', json.dumps(compact).lower())
 
     def test_continuation_inherits_failed_provider_exclusion_and_keeps_tier_auto(self):
         self.c['routing_policy'] = {

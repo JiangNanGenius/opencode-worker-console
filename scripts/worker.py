@@ -522,8 +522,7 @@ def proactive_reroute_if_needed(t, native_status):
                 'selected_profile': profile, 'selected_provider': next_provider,
                 'safe_boundary': 'queued_after_current_turn'})}]})
         # Ordinary bridge-owned model changes stay transparent to the coordinator.
-        # Route history remains available for diagnostics; only final fallback and
-        # real attention states create a user-facing routing notice.
+        # Route history remains available for operator diagnostics.
         update(t['id'], dispatch_acknowledged=True)
         try:
             import notifications

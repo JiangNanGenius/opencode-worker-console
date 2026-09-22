@@ -208,6 +208,41 @@ def public_task(t):
     return {k: t[k] for k in keys if k in t}
 
 
+def coordinator_task(t):
+    """Task view for the coordinating model, with automatic routing kept internal.
+
+    The console and operator diagnostics retain provider/model history. For an
+    automatically routed task the coordinator only needs the requested tier,
+    lifecycle, evidence and recovery action; exposing the selected model or
+    conservation hop invites it to second-guess a bridge-owned decision.
+    Explicit user-requested profile pins remain visible.
+    """
+    out = public_task(t)
+    if (t.get('requested_profile') or 'auto') == 'auto':
+        for key in ('profile', 'route_reason', 'route_history', 'actual_models',
+                    'fallback_used', 'routing_notice', 'proactive_reroute_levels',
+                    'excluded_providers'):
+            out.pop(key, None)
+        errors = []
+        hide_owned_capacity = t.get('status') not in ('failed', 'needs_attention', 'uncertain')
+        for item in out.get('errors') or []:
+            if not isinstance(item, dict):
+                errors.append(item)
+                continue
+            # Capacity stops that the bridge owns are route telemetry. A true
+            # no-route condition is represented by the generic recovery action.
+            if hide_owned_capacity and (item.get('billing') or item.get('usage_window')):
+                continue
+            cleaned = dict(item)
+            cleaned.pop('provider', None)
+            errors.append(cleaned)
+        if errors:
+            out['errors'] = errors
+        else:
+            out.pop('errors', None)
+    return out
+
+
 def secret_representations(value):
     """Literal and common reversible encodings of a secret for shared redaction.
 

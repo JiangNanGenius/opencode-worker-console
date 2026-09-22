@@ -77,10 +77,10 @@ quota-aware ratios, fallbacks and configuration. A direct user requirement for a
 a controlled comparison may pin one model with an explicit profile and `--profile-reason`;
 ordinary coordination never chooses a profile.
 
-For ordinary coordinator routing, read `delegate-opencode quota --tier-guidance --compact`: it
-returns the `quota_posture` tie-breaker, `conservation_level`, confidence and next-refill labels
-without the full provider dump. Use the verbose `quota --tier-guidance` and `quota` views only
-for operator investigation.
+Ordinary coordinators choose Fast, Normal or Deep solely from task uncertainty and keep
+`profile=auto`; they do not inspect quota or provider state. `quota --tier-guidance --compact`
+returns only that stable contract. The verbose `quota --tier-guidance` and `quota` views are
+operator diagnostics for the console, configuration and incident investigation.
 
 Without a policy, `auto` uses the legacy single-profile mapping for the selected tier.
 It does not infer semantic properties from task text. Every tier is a general-purpose agent;
@@ -182,9 +182,9 @@ DeepSeek fallback in the Agent Plan preset, not a task tier or a small-task shor
 The optional Kimi deep-task reserve defaults to 0%, so ordinary
 tasks can use available plan allowance. If configured higher, it holds ordinary tasks below
 that percentage while allowing deep work. Before dispatch, an automatic task skips unavailable
-stages and the bridge chooses the next configured stage. It returns `fallback_used: true` and a
-routing notice only when every preferred stage was unavailable or exhausted and the final
-fallback was dispatched.
+stages and the bridge chooses the next configured stage. It records fallback use and route history
+for the operator console, statistics and incident diagnosis. Ordinary submit, status, wait and
+collect results omit these internal choices for automatically routed tasks.
 
 The separate low-weekly guard defaults to 5% and one native-K3 slot. It uses a fresh valid Kimi
 `overall` aggregate, falling back only to an exact seven-day window; the five-hour window is not

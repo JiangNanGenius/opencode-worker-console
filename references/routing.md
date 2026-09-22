@@ -47,10 +47,10 @@ completion evidence are known before dispatch. Difficult planning performed earl
 make the remaining implementation Normal. Fast may discover local details; use Normal when the
 execution still needs open investigation or significant interdependent judgments.
 
-Quota may break a genuine Fast/Normal tie, never redefine capability. Read
-`delegate-opencode quota --tier-guidance --compact` once before a coherent batch; it returns
-posture, conservation level, confidence and next-refill labels without the full provider dump
-(use verbose `quota --tier-guidance` for operator investigation). The primary runway signal is
+Quota never participates in coordinator tier selection. The coordinator chooses Fast, Normal or
+Deep solely from unresolved uncertainty and submits `profile=auto`; the bridge applies quota and
+provider policy afterward. `delegate-opencode quota --tier-guidance --compact` returns only this
+stable contract. Use verbose `quota --tier-guidance` for operator investigation. The primary runway signal is
 observed working pace: each window's remaining allowance percent is divided by its fitted active
 burn rate to give remaining working hours, then compared with wall-clock time to the window
 reset. The legacy `remaining fraction / time-fraction-left` ratio survives only as the cold-start
@@ -65,13 +65,10 @@ separate, stricter condition: the refill arrives within two hours and every curr
 provider reaches it on its own observed-burn forecast — simultaneous wall-clock runtimes are
 never summed.
 When the Fast and Normal routes use the same constrained plan and no healthier Normal-plan peer
-is available, direction-fixed work should lean Fast. When Ark is constrained but Kimi still has
-healthy runway, retain eligible Normal work so it can use Kimi instead of putting more load on
-the Ark-only Fast stage. The bridge exposes a `quota_posture` label: `fast_preferred` when
-constrained combined runway should break a tie toward Fast, `normal_flexible` when a healthy
-Normal-only plan allows either tier, and `neutral` when quota has no preference. Under
-`normal_flexible`, weigh error and rework risk, urgency and task size; Normal is available but
-not mandatory.
+is available, the bridge can shift more direction-fixed work onto its Fast route. When Ark is
+constrained but Kimi still has healthy runway, it retains the Normal route on Kimi instead of
+putting more load on the Ark-only Fast route. Operator diagnostics expose `quota_posture` as a
+summary of that internal decision; coordinators do not consume it or change the requested tier.
 
 An optional `quota_spillover` rule fills the gap between healthy weighted routing and total
 fallback. Level 1 adds a later pay-as-you-go profile to the first Fast or Normal stage at a
@@ -237,8 +234,9 @@ one native K3 job while other jobs select Ark K3 or later stages. The bridge pre
 the threshold and slot count are editable under **Models & routing**.
 
 If automatic routing reaches the configured `fallback` after skipping at least one preferred
-stage, task status exposes `fallback_used: true` and a routing notice. Ordinary model choices are
-silent; coordinators tell the user only when this final fallback is actually used.
+stage, the operator console and retained ledger record `fallback_used` and route history. Ordinary
+coordinator results omit both model choices and fallback transitions for automatic tasks. Capacity
+is surfaced only when no usable route remains and action is required.
 
 The baseline favors native Kimi because buying the same Kimi model through Ark is usually a poor
 economic trade. Each pool has its own continuous, reset-aware curve:
