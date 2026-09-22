@@ -157,13 +157,28 @@ class CapacityTests(unittest.TestCase):
         self.assertEqual(quota.route(task,c,q)[0],'f')
 
     def test_active_rate_excludes_idle_intervals(self):
-        w=win(p=80,hours=20,reset=100)
+        w=win(p=80,hours=20,reset=4,duration=300)
         samples=[]
-        for minutes,p in [(60,90),(55,88),(50,86),(45,84),(40,82),(35,80),(30,80),(20,80),(10,80)]:
+        for minutes,p in [(90,98),(80,94),(70,90),(60,86),(50,82),(40,80),
+                          (30,80),(20,80),(10,80)]:
             samples.append({'time':NOW-minutes*60,'windows':{quota._window_key(w):{'remaining_percent':p,'resets_at':w['resets_at']}}})
         estimate=quota.consumption_estimate(w,samples,NOW)
         self.assertGreater(estimate['active_rate_percent_per_hour'],estimate['rate_percent_per_hour'])
-        self.assertAlmostEqual(estimate['hours'],80/24,places=2)
+        self.assertGreaterEqual(estimate['active_sample_hours'], .5)
+        self.assertLess(estimate['hours'], 5)
+
+    def test_new_parallel_burst_is_smoothed_until_short_window_has_enough_evidence(self):
+        w = {'name':'window_0','valid':True,'remaining_percent':90,'duration_minutes':300,
+             'resets_at':NOW + 4.75 * 3600}
+        key = quota._window_key(w)
+        samples = [{'time':NOW - 15 * 60,
+                    'windows':{key:{'remaining_percent':100,'resets_at':w['resets_at']}}}]
+        estimate = quota.consumption_estimate(w, samples, NOW)
+        self.assertIsNone(estimate['active_rate_percent_per_hour'])
+        self.assertEqual(estimate['active_min_sample_hours'], .5)
+        self.assertLess(estimate['rate_percent_per_hour'], 30)
+        forecast = capacity.window(dict(w, consumption_estimate=estimate), NOW)
+        self.assertGreater(forecast['runway'], .65)
 
     def test_model_analytics_preserve_mixed_segments_and_unattributed_tail(self):
         rows=analytics._models([{'model':'a/model','usage':{'total':100,'by_model':[{'model':'a/model','total':60},{'model':'b/model','total':30}]}}])
@@ -181,14 +196,50 @@ class CapacityTests(unittest.TestCase):
         self.assertEqual(load['prediction_samples'],1)
         self.assertGreater(load['expected_remaining_seconds'],0)
 
-    def test_demand_forecast_is_bounded_and_shared(self):
+    def test_parallel_task_count_does_not_precharge_real_quota_forecast(self):
         record=provider([win()], workload={'confidence':'calibrated','demand_multiplier':9})
         f=capacity.provider(record,NOW)
-        self.assertEqual(f['windows'][0]['demand_multiplier'],1.25)
-        self.assertEqual(f['hours'],16)
+        self.assertEqual(f['windows'][0]['demand_multiplier'],1)
+        self.assertEqual(f['hours'],20)
         self.assertEqual(routing._runway(record,NOW),f['runway'])
         record['workload']['confidence']='collecting'
         self.assertEqual(capacity.provider(record,NOW)['hours'],20)
+
+    def test_deep_balance_uses_durable_windows_not_shared_short_burst(self):
+        def plan(short_p, long_p, long_hours):
+            short = win('window_0', short_p, .1, 4, 300)
+            long = win('overall', long_p, long_hours, 160, 10080)
+            return provider([short, long])
+        c = {
+            'profiles': {
+                'deep-research': {'model':'kimi-for-coding/kimi-k3'},
+                'ark-k3': {'model':'volcengine-agent-plan/kimi-k3'},
+            },
+            'routing_policy': {'deep': [[
+                {'profile':'deep-research','weight':9},
+                {'profile':'ark-k3','weight':1},
+            ]]},
+            'routing_dynamics': {'deep': {'0': {
+                'ladder': [[9,1],[4,1],[1,1]],
+            }}},
+        }
+        q = {
+            'kimi-for-coding': plan(5, 80, 160),
+            'volcengine-agent-plan': plan(100, 80, 160),
+        }
+        q['volcengine-agent-plan']['windows'][1]['name'] = 'AFPWeekly'
+        with patch.object(quota.time, 'time', return_value=NOW):
+            members = quota.routing_status(c, q)['deep'][0]['members']
+        self.assertEqual(members['deep-research']['share'], .9)
+        self.assertEqual(members['ark-k3']['share'], .1)
+
+        # A durable weekly imbalance still moves Deep traffic toward Ark.
+        q['kimi-for-coding']['windows'][1]['consumption_estimate'].update(
+            hours=16, rate_percent_per_hour=5)
+        with patch.object(quota.time, 'time', return_value=NOW):
+            pressured = quota.routing_status(c, q)['deep'][0]['members']
+        self.assertLess(pressured['deep-research']['share'], .9)
+        self.assertGreater(pressured['ark-k3']['share'], .1)
 
     def test_work_pool_does_not_add_simultaneous_hours_twice(self):
         c={'profiles':{'a':{'model':'custom-a/model'},'b':{'model':'custom-b/model'}}}

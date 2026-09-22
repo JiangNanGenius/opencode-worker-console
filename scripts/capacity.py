@@ -60,15 +60,12 @@ def window(value, now):
 def provider(record, now):
     record = record if isinstance(record, dict) else {}
     windows = [f for v in record.get('windows', []) if (f := window(v, now)) is not None]
-    load = record.get('workload') or {}
-    demand = number(load.get('demand_multiplier')) or 1
-    demand = min(1.25, max(1, demand)) if load.get('confidence') == 'calibrated' else 1
+    # Running-task count is useful scheduling telemetry, but it is not quota
+    # consumption. Pre-charging the forecast when several tasks start together
+    # makes the pool meter jump before a provider counter has moved. The window
+    # estimator already observes real burn, so only that evidence drives runway.
+    demand = 1.0
     for w in windows:
-        if w['source'] == 'observed_burn':
-            w['hours'] /= demand
-            w['capacity_hours'] /= demand
-            w['rate_percent_per_hour'] *= demand
-            w['runway'] = max(0.0, min(4.0, w['hours'] / w['reset_hours'])) if w['reset_hours'] else w['runway']
         w['demand_multiplier'] = demand
 
     fresh = not record.get('stale', True) and record.get('state') == 'ok' and not any(w['expired'] for w in windows)

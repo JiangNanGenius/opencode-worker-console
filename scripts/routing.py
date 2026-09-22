@@ -399,7 +399,8 @@ def _runway(provider_view, now):
     return forecast['runway']
 
 
-def dynamics(entries, provider_by_profile, quota_view=None, now=None, adaptive=None):
+def dynamics(entries, provider_by_profile, quota_view=None, now=None, adaptive=None,
+             runway_override=None):
     """Effective admission weights and a safe reason for one available stage.
 
     entries are the stage's already-admissible candidates in policy order with
@@ -445,7 +446,9 @@ def dynamics(entries, provider_by_profile, quota_view=None, now=None, adaptive=N
         for name in base:
             info[name]['runway'] = runway
         return list(entries), 'single_provider', info
-    runway_by_provider = {provider: _runway(quota_view.get(provider), now) for provider in providers}
+    runway_by_provider = ({provider: runway_override.get(provider) for provider in providers}
+                          if isinstance(runway_override, dict) else
+                          {provider: _runway(quota_view.get(provider), now) for provider in providers})
     for name in base:
         info[name]['runway'] = runway_by_provider.get(info[name]['provider'])
     if any(runway is None for runway in runway_by_provider.values()):

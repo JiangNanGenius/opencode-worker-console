@@ -489,8 +489,10 @@ def consumption_estimate(value, samples, now=None):
     if remaining is None or remaining < 0:
         return None
     cycle_rate = None
+    cycle_elapsed_hours = None
     if duration and duration > 0 and reset:
         elapsed_hours = max(0.0, (duration * 60 - max(0.0, reset - now)) / 3600)
+        cycle_elapsed_hours = elapsed_hours
         used = max(0.0, 100.0 - remaining)
         if elapsed_hours >= 1 / 12 and used >= .01:
             cycle_rate = used / elapsed_hours
@@ -522,6 +524,18 @@ def consumption_estimate(value, samples, now=None):
         recent_weight = min(.85, .35 + span_hours / 12)
         rate = recent_rate * recent_weight + cycle_rate * (1 - recent_weight)
         source = 'idle_adjusted' if recent_rate <= .001 else 'blended'
+    smoothing_confidence = 1.0
+    duration_hours = duration / 60.0 if duration and duration > 0 else None
+    if duration_hours and cycle_elapsed_hours is not None and rate is not None:
+        # A newly opened window often receives several tasks at once. Do not
+        # extrapolate that first burst across the whole rolling window. Blend
+        # toward the window's neutral full-cycle rate until enough wall-clock
+        # evidence has accumulated; actual remaining quota is never smoothed.
+        baseline_rate = 100.0 / duration_hours
+        horizon = min(6.0, max(1.0, duration_hours / 24.0))
+        smoothing_confidence = max(0.0, min(1.0, cycle_elapsed_hours / horizon))
+        if rate > baseline_rate and smoothing_confidence < 1.0:
+            rate = baseline_rate + (rate - baseline_rate) * smoothing_confidence
     if remaining == 0:
         return {'hours': 0.0,
                 'rate_percent_per_hour': round(rate, 4) if rate is not None else None,
@@ -537,13 +551,36 @@ def consumption_estimate(value, samples, now=None):
         if 0 < dt <= .5 and drop >= .01:
             active_spend += drop
             active_hours += dt
-    active_rate = active_spend / active_hours if active_hours >= 1 / 6 else None
+    # Active-only rate is intentionally slower to enter than the five-minute
+    # wall-clock estimate. Short rolling windows need 30 minutes of evidence;
+    # daily-or-longer windows need two hours because their counters are coarse
+    # and a one-percent tick can otherwise swing the entire routing curve.
+    active_min_hours = .5 if not duration_hours or duration_hours <= 24 else 2.0
+    raw_active_rate = active_spend / active_hours if active_hours >= active_min_hours else None
+    # A short parallel burst must not take over the whole-window forecast at a
+    # threshold boundary. Let sustained active burn enter continuously: short
+    # windows settle over two hours, long windows over eight. The provider's
+    # actual remaining percentage still updates immediately and can block calls
+    # at zero, so this inertia affects projection only, never admission safety.
+    active_settle_hours = 2.0 if not duration_hours or duration_hours <= 24 else 8.0
+    active_confidence = 0.0
+    active_rate = None
+    if raw_active_rate is not None:
+        active_confidence = max(0.0, min(1.0,
+            (active_hours - active_min_hours) /
+            max(.000001, active_settle_hours - active_min_hours)))
+        active_rate = (rate or 0) + max(0.0, raw_active_rate - (rate or 0)) * active_confidence
     forecast_rate = max(rate or 0, active_rate or 0)
     hours = remaining / forecast_rate if forecast_rate > .001 else None
     return {'hours': round(min(hours, 24 * 365), 2) if hours is not None else None,
             'rate_percent_per_hour': round(rate, 4) if rate is not None else None,
             'active_rate_percent_per_hour': round(active_rate, 4) if active_rate is not None else None,
+            'raw_active_rate_percent_per_hour': round(raw_active_rate, 4) if raw_active_rate is not None else None,
             'active_sample_hours': round(active_hours, 3),
+            'active_min_sample_hours': active_min_hours,
+            'active_settle_hours': active_settle_hours,
+            'active_confidence': round(active_confidence, 3),
+            'smoothing_confidence': round(smoothing_confidence, 3),
             'source': source, 'idle': idle, 'sample_span_hours': round(span_hours, 2)}
 
 
@@ -1207,6 +1244,28 @@ def _level2_spillover_cap(c, q, spill_config, target_provider, runway=None, now=
     return int(round(base + (high - base) * progress))
 
 
+def _dynamic_runway_override(tier, provider_by_profile, q, now=None):
+    """Use durable plan pressure for Deep without weakening immediate admission.
+
+    Kimi's short and weekly counters are shared by K2.8 and K3. A Normal burst
+    can therefore tighten the five-hour counter even when K3 caused little of
+    it. Deep balancing follows the provider's durable weekly/monthly fit; a
+    genuinely exhausted short window is still filtered by ``allowed`` before
+    this function runs.
+    """
+    if tier != 'deep':
+        return None
+    import economics
+    now = time.time() if now is None else now
+    providers = set(provider_by_profile.values())
+    values = {}
+    for provider in providers:
+        fitted = economics._window_fit(provider, q.get(provider) or {}, now)
+        runway = number(fitted.get('runway')) if fitted.get('status') == 'ok' else None
+        values[provider] = runway if runway is not None and runway >= 0 else None
+    return values
+
+
 def _policy_route(t, c, q, stages, batch=None):
     """First stage with an admissible candidate, then a weighted choice within it.
 
@@ -1254,8 +1313,11 @@ def _policy_route(t, c, q, stages, batch=None):
             adaptive = routing.dynamic_stage(
                 c, 'fast' if level2 else tier,
                 fast_stage_index if level2 else index, policy)
+            effective_tier = 'fast' if level2 else tier
             entries, dynamic_reason, _ = routing.dynamics(
-                base_entries, provider_by_profile, q, adaptive=adaptive)
+                base_entries, provider_by_profile, q, adaptive=adaptive,
+                runway_override=_dynamic_runway_override(
+                    effective_tier, provider_by_profile, q))
             if level2:
                 dynamic_reason = 'quota_conservation_level2:' + dynamic_reason
             # A later fallback may absorb a bounded share before subscriptions hit
@@ -1565,8 +1627,11 @@ def routing_status(c, q):
             adaptive = routing.dynamic_stage(
                 c, 'fast' if level2 else tier,
                 fast_stage_index if level2 else index, policy)
+            effective_tier = 'fast' if level2 else tier
             effective, reason, info = routing.dynamics(
-                candidates, provider_by_profile, q, adaptive=adaptive)
+                candidates, provider_by_profile, q, adaptive=adaptive,
+                runway_override=_dynamic_runway_override(
+                    effective_tier, provider_by_profile, q))
             if level2:
                 reason = 'quota_conservation_level2:' + reason
             source_providers = set(provider_by_profile.values())
