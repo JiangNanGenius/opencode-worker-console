@@ -526,7 +526,7 @@ class RoutePolicyTests(unittest.TestCase):
         self.assertFalse(guidance['conservation_refill_safe'])
         self.assertEqual(guidance['conservation_level'], 2)
 
-    def test_kimi_recovery_keeps_kimi_primary_and_replaces_only_tight_ark_share(self):
+    def test_kimi_recovery_keeps_traffic_on_plans_while_durable_pool_is_healthy(self):
         now = 1_800_000_000
         c = json.loads(json.dumps(self.c))
         c['kimi_reserve_percent'] = 0
@@ -562,11 +562,11 @@ class RoutePolicyTests(unittest.TestCase):
             status = quota.routing_status(c, q)
         self.assertEqual(guidance['quota_posture'], 'normal_flexible')
         self.assertEqual(guidance['conservation_level'], 0)
-        self.assertGreater(status['fast'][0]['members']['fallback']['share'], 0)
+        self.assertNotIn('fallback', status['fast'][0]['members'])
         members = status['background'][0]['members']
         self.assertEqual(members['senior-code']['share'], .70)
-        self.assertNotIn('ark-k3', members)
-        self.assertEqual(members['fallback']['share'], .30)
+        self.assertEqual(members['ark-k3']['share'], .30)
+        self.assertNotIn('fallback', members)
 
         # The same ten working hours become sustainable when Ark's reset moves
         # close enough. Its paid-plan share then widens and DeepSeek withdraws.
@@ -576,6 +576,42 @@ class RoutePolicyTests(unittest.TestCase):
             recovered = quota.routing_status(c, q)['background'][0]['members']
         self.assertNotIn('fallback', recovered)
         self.assertGreater(recovered['ark-k3']['share'], 0)
+
+    def test_short_window_burst_never_triggers_cash_fallback_when_durable_pool_is_healthy(self):
+        now = 1_800_000_000
+        c = json.loads(json.dumps(self.c))
+        c['profiles']['ark-auto']['model'] = 'volcengine-agent-plan/ark-code-latest'
+        c['profiles']['ark-k3']['model'] = 'volcengine-agent-plan/kimi-k3'
+        c['routing_policy'] = {
+            'fast': [[{'profile': 'ark-auto', 'weight': 1}],
+                     [{'profile': 'fallback', 'weight': 1}]],
+            'background': [[{'profile': 'senior-code', 'weight': 1},
+                            {'profile': 'ark-k3', 'weight': 1}],
+                           [{'profile': 'fallback', 'weight': 1}]],
+        }
+        c['quota_spillover'] = {'enabled': True, 'profile': 'fallback',
+                                 'tiers': ['fast', 'background'], 'max_share_percent': 30,
+                                 'level2_runway_percent': 25}
+
+        def provider(short_percent, weekly_percent):
+            return {'state': 'ok', 'available': True, 'stale': False, 'windows': [
+                {'name': 'window_0', 'valid': True, 'remaining_percent': short_percent,
+                 'duration_minutes': 300, 'resets_at': now + 4 * 3600,
+                 'consumption_estimate': {'rate_percent_per_hour': 30}},
+                {'name': 'overall', 'valid': True, 'remaining_percent': weekly_percent,
+                 'duration_minutes': 10080, 'resets_at': now + 160 * 3600,
+                 'consumption_estimate': {'rate_percent_per_hour': .4}}]}
+
+        q = {'kimi-for-coding': provider(10, 95),
+             'volcengine-agent-plan': provider(10, 95),
+             'deepseek': {'state': 'ok', 'available': True, 'stale': False, 'windows': []}}
+        with patch.object(quota.time, 'time', return_value=now):
+            guidance = quota.tier_guidance(c, q, _raw=True)
+            status = quota.routing_status(c, q)
+        self.assertEqual(guidance['conservation_level'], 0)
+        self.assertGreater(guidance['capacity_pressure_percent'], 100)
+        self.assertNotIn('fallback', status['fast'][0]['members'])
+        self.assertNotIn('fallback', status['background'][0]['members'])
 
     def test_level2_normal_inherits_the_fast_pools_continuous_curve(self):
         c = json.loads(json.dumps(self.c))

@@ -1270,7 +1270,8 @@ def _policy_route(t, c, q, stages, batch=None):
                     spill_guidance = spill_guidance or tier_guidance(c, q)
                     source_specific, runway_view, replacement_provider, source_runway = \
                         _spillover_source(spill_guidance, source_providers, tier, level2)
-                    if source_specific or spill_guidance.get('quota_posture') == 'fast_preferred':
+                    if int(spill_guidance.get('conservation_level') or 0) > 0 and \
+                            (source_specific or spill_guidance.get('quota_posture') == 'fast_preferred'):
                         provider_by_profile[target] = target_provider
                         level2_active = level2 or (
                             tier == 'fast' and
@@ -1572,6 +1573,7 @@ def routing_status(c, q):
             source_specific, runway_view, replacement_provider, source_runway = \
                 _spillover_source(spill_guidance, source_providers, tier, level2)
             if spill_config and index == 0 and tier in spill_config['tiers'] and \
+                    int(spill_guidance.get('conservation_level') or 0) > 0 and \
                     (source_specific or spill_guidance.get('quota_posture') == 'fast_preferred'):
                 target = spill_config['profile']
                 target_profile = c.get('profiles', {}).get(target) or {}
@@ -1611,7 +1613,7 @@ def _control_policy(c):
     # Bump when the meaning of the persisted conservation level changes. Version 2
     # separates renewable short-window pressure from durable plan capacity, so an
     # old level derived from the former mixed signal must not remain latched.
-    payload = {'controller_schema': 3, **{k: c.get(k) for k in fields}}
+    payload = {'controller_schema': 4, **{k: c.get(k) for k in fields}}
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
@@ -1866,7 +1868,7 @@ def tier_guidance(c, q, _raw=False):
                'normal_flexible' if reason == 'healthier_normal_plan_available' else 'neutral')
     level2_low = False
     if spill_config and spill_config.get('enabled') and 'background' in spill_config.get('tiers', ()) and \
-            not refill_safe and posture == 'fast_preferred' and level2_threshold > 0:
+            combined_low and posture == 'fast_preferred' and level2_threshold > 0:
         if pressure_percent is not None:
             level2_low = pressure_percent <= level2_threshold
         else:
@@ -1877,7 +1879,7 @@ def tier_guidance(c, q, _raw=False):
                 max(float(value) for value in values) <= level2_threshold / 100.0
     conservation_level = (2 if level2_low else
                           1 if spill_config and spill_config.get('enabled') and
-                          posture == 'fast_preferred' else 0)
+                          posture == 'fast_preferred' and combined_low else 0)
     raw_level = conservation_level
     if not _raw:
         control = read_json(STATE / 'load-control.json', {})
