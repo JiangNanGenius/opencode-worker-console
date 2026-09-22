@@ -23,7 +23,9 @@ class ErrorBridgeTests(unittest.TestCase):
         message = {'info': {'id': 'late-error', 'role': 'assistant',
                            'time': {'created': (now - 600) * 1000, 'completed': now * 1000},
                            'error': {'name': 'APIError', 'data': {'statusCode': 402}}}}
-        self.assertAlmostEqual(diagnostics.from_messages([message])[0]['occurred_at'], now)
+        # Millisecond serialization cannot preserve a host's sub-microsecond
+        # float tail consistently across Python/platform combinations.
+        self.assertAlmostEqual(diagnostics.from_messages([message])[0]['occurred_at'], now, places=6)
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
