@@ -324,3 +324,48 @@ def discard_cancelled_isolated(t):
     if expected.exists():
         raise RuntimeError('Git did not discard the cancelled worktree')
     return {'released': True, 'reason': 'cancelled_discarded', 'bytes': total}
+
+
+def discard_terminal_isolated(t):
+    """Permanently remove one explicitly confirmed terminal managed worktree.
+
+    This is only called from the user-confirmed task deletion path. Unlike normal
+    cleanup it may discard unintegrated changes, but it still derives the path
+    from the private state root, refuses symlinks and never follows task paths.
+    """
+    if not isinstance(t, dict) or t.get('status') not in TERMINAL or \
+            t.get('workspace') != 'isolated':
+        return {'released': False, 'reason': 'not_terminal_isolated', 'bytes': 0}
+    task_id = t.get('id')
+    expected = STATE / 'worktrees' / str(task_id)
+    if expected.is_symlink():
+        return {'released': False, 'reason': 'unsafe_worktree_path', 'bytes': 0}
+    if not expected.exists():
+        return {'released': False, 'reason': 'worktree_missing', 'bytes': 0}
+    try:
+        if expected.resolve().parent != (STATE / 'worktrees').resolve():
+            return {'released': False, 'reason': 'unsafe_worktree_path', 'bytes': 0}
+    except OSError:
+        return {'released': False, 'reason': 'unsafe_worktree_path', 'bytes': 0}
+    total = 0
+    for base, _, files in os.walk(str(expected), followlinks=False):
+        for name in files:
+            path = Path(base) / name
+            try:
+                if not path.is_symlink():
+                    total += path.stat().st_size
+            except OSError:
+                pass
+    source = Path(t.get('source_dir') or '')
+    root = git_root(source) if source.is_dir() else None
+    if root is not None:
+        result = run(['git', 'worktree', 'remove', '--force', str(expected)], root, check=False)
+        run(['git', 'worktree', 'prune'], root, check=False)
+        if result.returncode and expected.exists():
+            shutil.rmtree(str(expected))
+            run(['git', 'worktree', 'prune'], root, check=False)
+    else:
+        shutil.rmtree(str(expected))
+    if expected.exists():
+        raise RuntimeError('Git did not discard the terminal worktree')
+    return {'released': True, 'reason': 'user_confirmed_discard', 'bytes': total}

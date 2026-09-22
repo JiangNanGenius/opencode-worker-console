@@ -480,12 +480,12 @@ def save_settings(body):
 
 
 def delete_tasks(body):
-    """Reclaim one or more terminal tasks and their linked OpenCode data.
+    """Reclaim selected tasks and their linked OpenCode data.
 
     The compact usage ledger is written first. Linked OpenCode sessions are then
-    deleted through the native API, disposable evidence is removed, and isolated
-    worktrees are released only when already integrated or proven unchanged. A task
-    with unintegrated code remains visible for review instead of losing work.
+    deleted through the native API and disposable evidence is removed. Conservative
+    callers retain unintegrated isolated worktrees; an explicit user-confirmed
+    deletion may close an uncertain task and discard its managed worktree.
     """
     if not isinstance(body, dict):
         raise ValueError('JSON object required')
@@ -495,6 +495,12 @@ def delete_tasks(body):
     discard_cancelled = body.get('discard_cancelled_worktrees', False)
     if not isinstance(discard_cancelled, bool):
         raise ValueError('discard_cancelled_worktrees must be boolean')
+    discard_unintegrated = body.get('discard_unintegrated_worktrees', False)
+    close_uncertain = body.get('close_uncertain', False)
+    if not isinstance(discard_unintegrated, bool):
+        raise ValueError('discard_unintegrated_worktrees must be boolean')
+    if not isinstance(close_uncertain, bool):
+        raise ValueError('close_uncertain must be boolean')
     with common.locked():
         current = common.tasks()
         by_id = {item['id']: item for item in current}
@@ -512,9 +518,25 @@ def delete_tasks(body):
             if missing:
                 raise ValueError('Unknown task ID')
             selected = [by_id[item] for item in ids]
-        blocked = [item['id'] for item in selected if item.get('status') not in common.TERMINAL]
+        blocked = [item['id'] for item in selected
+                   if item.get('status') not in common.TERMINAL and
+                   not (close_uncertain and item.get('status') == 'uncertain')]
         if blocked:
-            raise ValueError('Only terminal tasks can be deleted')
+            raise ValueError('Only terminal tasks, or explicitly confirmed uncertain tasks, can be deleted')
+        if any(item.get('status') == 'uncertain' for item in selected):
+            now = time.time()
+            for item in selected:
+                if item.get('status') != 'uncertain':
+                    continue
+                item = dict(item)
+                item.update(status='cancelled', reason='user_confirmed_finished',
+                            finished_at=item.get('finished_at') or now,
+                            cancellation={'reason': 'user_confirmed_finished',
+                                          'source': 'console', 'requested_at': now},
+                            updated_at=now)
+                common.write_json(common.task_path(item['id']), item)
+                by_id[item['id']] = item
+            selected = [by_id[item['id']] for item in selected]
         import cleanup
         import usage_ledger
         retention_days = cleanup.policy()['usage_retention_days']
@@ -558,9 +580,11 @@ def delete_tasks(body):
 
         try:
             release = workspace.release_isolated(item)
-            if (not release.get('released') and discard_cancelled and
-                    item.get('status') == 'cancelled' and
-                    release.get('reason') == 'unintegrated_changes'):
+            if not release.get('released') and discard_unintegrated:
+                release = workspace.discard_terminal_isolated(item)
+            elif (not release.get('released') and discard_cancelled and
+                  item.get('status') == 'cancelled' and
+                  release.get('reason') == 'unintegrated_changes'):
                 release = workspace.discard_cancelled_isolated(item)
         except (OSError, RuntimeError, ValueError) as error:
             release = {'released': False, 'reason': 'worktree_release_failed', 'bytes': 0}

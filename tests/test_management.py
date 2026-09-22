@@ -149,6 +149,27 @@ class ManagementTests(unittest.TestCase):
         self.assertTrue(common.task_path('job-done').exists())
         self.assertTrue(common.task_path('job-running').exists())
 
+    def test_user_confirmed_uncertain_task_can_be_closed_and_deleted(self):
+        task = self.add_task('job-uncertain', 'uncertain')
+        common.update(task['id'], workspace='isolated')
+        with self.assertRaisesRegex(ValueError, 'terminal'):
+            management.delete_tasks({'action': 'delete', 'ids': [task['id']]})
+        with patch.object(workspace, 'release_isolated',
+                          return_value={'released': False, 'reason': 'task_active', 'bytes': 0}), \
+                patch.object(workspace, 'discard_terminal_isolated',
+                             return_value={'released': True, 'reason': 'user_confirmed_discard',
+                                           'bytes': 1024}) as discard:
+            result = management.delete_tasks({
+                'action': 'delete', 'ids': [task['id']], 'close_uncertain': True,
+                'discard_unintegrated_worktrees': True})
+        discard.assert_called_once()
+        self.assertEqual(result['deleted'], 1)
+        self.assertEqual(result['worktrees_released'], 1)
+        self.assertFalse(common.task_path(task['id']).exists())
+        entry = next(item for item in usage_ledger.summary(include_entries=True)['entries']
+                     if item['task_id'] == task['id'])
+        self.assertEqual(entry['status'], 'cancelled')
+
     def test_task_management_retains_unintegrated_isolated_work(self):
         task = self.add_task('job-review', 'completed', 'ses_review')
         worktree = self.state / 'worktrees' / task['id']
@@ -215,7 +236,10 @@ class ManagementTests(unittest.TestCase):
                         {'action': 'delete', 'ids': ['job-done', 'job-done']},
                         {'action': 'delete', 'ids': ['job-missing']},
                         {'action': 'delete', 'ids': ['job-done'],
-                         'discard_cancelled_worktrees': 'true'}]
+                         'discard_cancelled_worktrees': 'true'},
+                        {'action': 'delete', 'ids': ['job-done'],
+                         'discard_unintegrated_worktrees': 'true'},
+                        {'action': 'delete', 'ids': ['job-done'], 'close_uncertain': 'true'}]
         for body in bad_requests:
             with self.subTest(body=body), self.assertRaises(ValueError):
                 management.delete_tasks(body)

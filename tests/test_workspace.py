@@ -146,6 +146,35 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(refused['reason'], 'not_cancelled_isolated')
         self.assertTrue(completed_path.exists())
 
+    def test_user_confirmed_discard_removes_terminal_unintegrated_worktree(self):
+        task = self.isolated_task('job-isolated-confirmed')
+        path = Path(workspace.prepare(task))
+        (path / 'a.txt').write_text('confirmed obsolete change\n')
+        result = workspace.discard_terminal_isolated(task)
+        self.assertTrue(result['released'])
+        self.assertEqual(result['reason'], 'user_confirmed_discard')
+        self.assertGreater(result['bytes'], 0)
+        self.assertFalse(path.exists())
+
+    def test_user_confirmed_discard_handles_missing_source_and_refuses_symlink(self):
+        task = self.isolated_task('job-isolated-missing-source')
+        path = Path(workspace.prepare(task))
+        task['source_dir'] = str(self.root / 'missing-source')
+        result = workspace.discard_terminal_isolated(task)
+        self.assertTrue(result['released'])
+        self.assertFalse(path.exists())
+
+        outside = self.root / 'outside'
+        outside.mkdir()
+        link_task = dict(task, id='job-isolated-link',
+                         directory=str(self.state / 'worktrees' / 'job-isolated-link'))
+        link = self.state / 'worktrees' / link_task['id']
+        link.symlink_to(outside, target_is_directory=True)
+        refused = workspace.discard_terminal_isolated(link_task)
+        self.assertFalse(refused['released'])
+        self.assertEqual(refused['reason'], 'unsafe_worktree_path')
+        self.assertTrue(outside.exists())
+
     def test_release_integrated_worktree(self):
         task = self.isolated_task('job-isolated-integrated')
         path = Path(workspace.prepare(task))
