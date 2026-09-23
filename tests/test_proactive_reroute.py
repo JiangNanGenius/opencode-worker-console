@@ -72,6 +72,22 @@ class ProactiveRerouteTests(unittest.TestCase):
         self.assertEqual(call.call_args.args[1], '/prompt_async')
         self.assertIn('Do not repeat completed', call.call_args.args[3]['parts'][0]['text'])
 
+    def test_conservation_never_promotes_cash_to_subscription(self):
+        common.update('job-long', profile='fallback')
+        with patch.object(quota, 'tier_guidance', return_value={'conservation_level': 2}), \
+             patch.object(quota, 'route', return_value=('ark-auto', 'weighted')) as route:
+            self.assertFalse(worker.proactive_reroute_if_needed(common.task('job-long'), {'type': 'busy'}))
+            route.assert_not_called()
+
+    def test_same_level_rechecks_disallowed_existing_model(self):
+        common.update('job-long', profile='ark-auto', proactive_reroute_levels=[2])
+        with patch.object(quota, 'tier_guidance', return_value={'conservation_level': 2}), \
+             patch.object(quota, '_allowed_profile', return_value=('ark', False, 'provider_reserved_for_fast')), \
+             patch.object(quota, 'route', return_value=('fallback', 'protected')), \
+             patch.object(worker, 'call', return_value={}):
+            self.assertTrue(worker.proactive_reroute_if_needed(common.task('job-long'), {'type': 'busy'}))
+        self.assertEqual(common.task('job-long')['profile'], 'fallback')
+
     def test_switch_is_active_only_after_requested_model_assistant_turn(self):
         common.update('job-long', profile='ark-auto', message_id='msg_switch', route_history=[{
             'from_profile': 'senior-code', 'to_profile': 'ark-auto',

@@ -469,8 +469,18 @@ def proactive_reroute_if_needed(t, native_status):
     q = quota.view(read_json(STATE / 'quota.json', {}))
     guidance = quota.tier_guidance(c, q)
     level = int(guidance.get('conservation_level') or 0)
-    if level <= 0 or level in (t.get('proactive_reroute_levels') or []):
+    if level <= 0:
         return False
+    policy = routing.configured(c)
+    spill = routing.configured_spillover(c, policy)
+    # Conservation may shed more work, never promote a cash fallback back into
+    # a constrained subscription merely because weighted preview picked it.
+    if spill and t.get('profile') == spill.get('profile'):
+        return False
+    if level in (t.get('proactive_reroute_levels') or []):
+        _, admitted, _ = quota._allowed_profile(t.get('profile'), t, c, q)
+        if admitted:
+            return False
     try:
         profile, reason = quota.route(dict(t, requested_profile='auto'), c, q)
     except Exception:
