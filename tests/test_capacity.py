@@ -74,6 +74,7 @@ class CapacityTests(unittest.TestCase):
         self.assertAlmostEqual(fit['capacity'], 100 / .9, places=3)
         self.assertAlmostEqual(fit['amount'], 97 / .9, places=3)
         self.assertGreater(fit['runway'], .6)
+        self.assertLess(fit['pressure_runway'], .05)
         self.assertLess(fit['immediate_runway'], .05)
 
     def test_short_window_reset_cannot_restore_exhausted_month(self):

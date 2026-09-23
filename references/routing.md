@@ -252,8 +252,10 @@ is its bottleneck; conservation pressure across subscription providers is the MA
 bottleneck runways when all configured subscription signals are reliable; otherwise combined
 pressure is unknown. The console shows a separate descriptive combined-pool fit. The old `remaining fraction / time fraction
 left` ratio is only the cold-start prior before burn samples exist. Stale, missing or
-unauthenticated telemetry is excluded from the combined signal and keeps the baseline ratio. A 2x runway difference produces an intermediate ratio; a 4x
-difference reaches the configured outer bound. The Fast tier's fallback share, level 1
+unauthenticated telemetry is excluded from the combined signal and keeps the baseline ratio.
+Ordinary nonzero ladders use a gentle curve whose 4x runway difference reaches the configured
+outer bound. A ladder that explicitly declares a 0% endpoint reaches real exclusion at a 2x
+advantage, avoiding cosmetic 99:1 allocations. The Fast tier's fallback share, level 1
 conservation and level 2 conservation use separate curves. When level 2 reuses a
 multi-provider Fast pool, it also inherits that pool's own curve. Ark Auto, Evolving and K3
 share one runway, so heavy Auto use naturally reduces later Ark share. Endpoint-confirmed zero

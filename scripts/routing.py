@@ -47,9 +47,13 @@ MAX_LEVEL2_SPILLOVER_SHARE = 100
 # ratios are curve control points: the stored policy ratio is the neutral anchor,
 # while the first and last points are the economic bounds. A fourfold runway
 # advantage reaches a bound; smaller differences interpolate smoothly between
-# adjacent control points. Whole-percent output keeps the scheduler stable
-# without turning the curve back into a few fixed steps.
+# adjacent control points. A ladder that explicitly opts into a zero endpoint
+# reaches it at a twofold runway advantage so it never leaves a cosmetic 1-5%
+# allocation; ordinary nonzero ladders keep the gentler fourfold envelope.
+# Whole-percent output keeps the scheduler stable without turning the curve
+# back into a few fixed steps.
 RUNWAY_MAX = 4.0
+ZERO_ENDPOINT_RUNWAY_MAX = 2.0
 EFFECTIVE_WEIGHT_TOTAL = 100
 
 def _ratio(value, field='routing_dynamics ladder'):
@@ -476,7 +480,9 @@ def dynamics(entries, provider_by_profile, quota_view=None, now=None, adaptive=N
     # Ordered by policy, left is the first provider and right is the second.
     # A log runway ratio treats 2x and 1/2x symmetrically. Smoothstep makes the
     # response gentle around the neutral anchor while still reaching the
-    # configured bound at a fourfold advantage (or when one side is empty).
+    # configured bound at a fourfold advantage for ordinary ladders. A ladder
+    # with an explicit zero endpoint opts into a twofold bound so the bridge can
+    # actually remove a severely constrained provider instead of showing 99:1.
     try:
         ladder = [_ratio(value) for value in adaptive.get('ladder', [])]
         baseline = _ratio((group_base[left], group_base[right]))
@@ -485,13 +491,17 @@ def dynamics(entries, provider_by_profile, quota_view=None, now=None, adaptive=N
         # Runtime is fail-closed: malformed optional dynamics never change the
         # ordinary stored weights.
         return list(entries), 'adaptive_invalid', info
+    runway_max = (ZERO_ENDPOINT_RUNWAY_MAX
+                  if any(left_weight == 0 or right_weight == 0
+                         for left_weight, right_weight in ladder)
+                  else RUNWAY_MAX)
     if left_runway <= 0:
         pressure = 1.0
     elif right_runway <= 0:
         pressure = -1.0
     else:
         pressure = max(-1.0, min(1.0,
-            math.log(right_runway / left_runway) / math.log(RUNWAY_MAX)))
+            math.log(right_runway / left_runway) / math.log(runway_max)))
     direction = 1 if pressure > 0 else -1
     magnitude = abs(pressure)
     magnitude = magnitude * magnitude * (3.0 - 2.0 * magnitude)
@@ -604,11 +614,11 @@ def spillover(entries, provider_by_profile, target_profile, runway_by_provider,
     if level2_active:
         # Continue smoothly from the Level 1 curve at the Level 2 boundary,
         # then ramp faster to the Level 2 cap. The cap is reached when fitted
-        # runway falls to 72 percent of the Level 2 threshold, not only at zero.
+        # runway falls to 90 percent of the Level 2 threshold, not only at zero.
         # This gives a genuinely empty constrained-plan endpoint instead of
         # leaving a token 1 percent allocation under severe provider pressure.
         entry_share = maximum * (1.0 - level2_threshold / threshold)
-        full_share_runway = level2_threshold * 0.72
+        full_share_runway = level2_threshold * 0.90
         progress = min(1.0, max(0.0, (level2_threshold - best) /
                                 max(0.000001, level2_threshold - full_share_runway)))
         share = entry_share + (level2_maximum - entry_share) * progress

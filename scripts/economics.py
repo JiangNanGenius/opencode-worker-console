@@ -385,6 +385,11 @@ def _window_fit(provider, record, now=None):
     durable_window['consumption_estimate'] = durable_estimate
     rates = [_non_negative(estimate.get('rate_percent_per_hour'))]
     fitted_window = capacity_model.window(durable_window, now)
+    # Routing pressure uses the same selected durable plan window, but at the
+    # proven active working rate. The UI keeps the idle-inclusive fit below so a
+    # paused machine does not create false endurance anxiety. Short renewable
+    # windows are not selected here and therefore cannot collapse the plan.
+    pressure_window = capacity_model.window(window, now)
     rate = fitted_window['rate_percent_per_hour'] if fitted_window else max((r for r in rates if r is not None), default=None)
     duration = _non_negative(window.get('duration_minutes'))
     # The live burn rate is authoritative. A full-window duration is only the
@@ -427,6 +432,7 @@ def _window_fit(provider, record, now=None):
             'status': state, 'stale': stale, 'resets_at': window.get('resets_at'),
             'window': selected_name,
             'runway': fitted_window.get('runway') if fitted_window else None,
+            'pressure_runway': pressure_window.get('runway') if pressure_window else None,
             'available_now': record.get('available'),
             'temporarily_blocked': short_window_block,
             'immediate_window': immediate_window,

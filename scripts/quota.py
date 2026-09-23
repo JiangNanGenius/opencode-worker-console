@@ -1286,7 +1286,7 @@ def _dynamic_runway_override(tier, provider_by_profile, q, guidance=None, now=No
         runway = guidance_runways.get(provider) if isinstance(guidance_runways, dict) else None
         if isinstance(runway, bool) or not isinstance(runway, (int, float)) or not math.isfinite(runway):
             fitted = economics._window_fit(provider, q.get(provider) or {}, now)
-            runway = number(fitted.get('runway')) if fitted.get('status') == 'ok' else None
+            runway = number(fitted.get('pressure_runway')) if fitted.get('status') == 'ok' else None
         values[provider] = runway if runway is not None and runway >= 0 else None
     threshold = (guidance or {}).get('runway_threshold_percent') if isinstance(guidance, dict) else None
     if isinstance(threshold, (int, float)) and not isinstance(threshold, bool) and \
@@ -1956,14 +1956,24 @@ def tier_guidance(c, q, _raw=False):
         provider: (fit.get('runway') if fit.get('status') == 'ok' and not fit.get('stale') else None)
         for provider, fit in durable_fits.items()
     }
+    # Per-provider shedding must use the proven working-rate runway of the
+    # selected weekly/monthly plan window. The combined pool meter deliberately
+    # keeps the smoother idle-inclusive fit above; provider conservation and UI
+    # endurance are different decisions.
+    pressure_signals = {
+        provider: (fit.get('pressure_runway') if fit.get('status') == 'ok' and
+                   not fit.get('stale') else None)
+        for provider, fit in durable_fits.items()
+    }
     # Fresh authoritative zero is a valid capacity observation despite unavailability.
     for p in plan_provider_ids:
         record = q.get(p) or {}
         if not record.get('stale', True) and record.get('state') == 'ok' and record.get('available') is False:
             plan_signals[p] = 0.0
+            pressure_signals[p] = 0.0
     reliable = bool(plan_signals) and all(v is not None for v in plan_signals.values())
     provider_runways = {
-        provider: plan_signals.get(provider, runways.get(provider))
+        provider: pressure_signals.get(provider, runways.get(provider))
         for provider in configured_providers
     }
     provider_levels = {

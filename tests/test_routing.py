@@ -638,6 +638,58 @@ class RoutePolicyTests(unittest.TestCase):
         self.assertEqual(status['deep'][0]['members']['deep-research']['share'], 1.0)
         self.assertEqual(status['deep'][0]['members']['ark-k3']['share'], 0.0)
 
+    def test_provider_shedding_uses_active_weekly_rate_but_global_pool_stays_smoothed(self):
+        now = 1_800_000_000
+        c = json.loads(json.dumps(self.c))
+        c['profiles']['ark-auto']['model'] = 'volcengine-agent-plan/ark-code-latest'
+        c['profiles']['ark-k3']['model'] = 'volcengine-agent-plan/kimi-k3'
+        c['routing_policy'] = {
+            'fast': [[{'profile': 'ark-auto', 'weight': 1}],
+                     [{'profile': 'fallback', 'weight': 1}]],
+            'background': [[{'profile': 'senior-code', 'weight': 1},
+                            {'profile': 'ark-k3', 'weight': 1}],
+                           [{'profile': 'fallback', 'weight': 1}]],
+        }
+        c['routing_dynamics'] = {
+            'background': {'0': {'ladder': [[1, 0], [1, 1]]}},
+        }
+        c['quota_spillover'] = {'enabled': True, 'profile': 'fallback',
+                                 'tiers': ['fast', 'background'], 'max_share_percent': 33,
+                                 'level2_runway_percent': 25,
+                                 'level2_offpeak_share_percent': 100,
+                                 'level2_min_balance_cny': 30.0}
+
+        def plan(provider_name, remaining, wall_rate, active_rate, reset_hours):
+            return {'state': 'ok', 'available': True, 'stale': False, 'windows': [{
+                'name': 'overall' if provider_name == 'kimi' else 'AFPWeekly',
+                'valid': True, 'remaining_percent': remaining, 'duration_minutes': 10080,
+                'resets_at': now + reset_hours * 3600,
+                'consumption_estimate': {
+                    'rate_percent_per_hour': wall_rate,
+                    'active_rate_percent_per_hour': active_rate,
+                    'active_sample_hours': 6,
+                }}]}
+
+        q = {
+            'kimi-for-coding': plan('kimi', 77, .5, .5, 148),
+            # Idle-inclusive runway is healthy (~43%), while active working
+            # runway is Level 2 (~22%) and must drive provider shedding.
+            'volcengine-agent-plan': plan('ark', 21, .44, .86, 112),
+            'deepseek': {'state': 'ok', 'available': True, 'stale': False,
+                         'balances': [{'currency': 'CNY', 'remaining': 100}]},
+        }
+        with patch.object(quota.time, 'time', return_value=now), \
+             patch('economics.deepseek_peak', return_value=False):
+            guidance = quota.tier_guidance(c, q, _raw=True)
+            status = quota.routing_status(c, q)
+        self.assertEqual(guidance['conservation_level'], 0)
+        self.assertGreater(guidance['capacity_pressure_percent'], 38)
+        self.assertLess(guidance['provider_runway']['volcengine-agent-plan'], .25)
+        self.assertEqual(guidance['provider_conservation_level']['volcengine-agent-plan'], 2)
+        self.assertGreater(status['fast'][0]['members']['fallback']['share'], .5)
+        self.assertEqual(status['background'][0]['members']['senior-code']['share'], 1.0)
+        self.assertEqual(status['background'][0]['members']['ark-k3']['share'], 0.0)
+
     def test_short_window_burst_never_triggers_cash_fallback_when_durable_pool_is_healthy(self):
         now = 1_800_000_000
         c = json.loads(json.dumps(self.c))
@@ -1456,6 +1508,17 @@ class DynamicRunwayTests(unittest.TestCase):
         self.assertAlmostEqual(deep_info['ark']['share'], .42)
         self.assertAlmostEqual(mid_info['ark']['share'], .58)
 
+    def test_explicit_zero_endpoint_reaches_real_exclusion_at_twofold_runway(self):
+        q = {'kimi-for-coding': self.sample(100),
+             'volcengine-agent-plan': self.sample(49)}
+        effective, reason, info = routing.dynamics(
+            [{'profile': 'native', 'weight': 9}, {'profile': 'ark', 'weight': 1}],
+            {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}, q,
+            now=1, adaptive={'ladder': [[1, 0], [9, 1], [1, 1]]})
+        self.assertEqual(effective, [{'profile': 'native', 'weight': 100}])
+        self.assertEqual(reason, 'runway_curve_left_100_0')
+        self.assertEqual(info['ark']['share'], 0)
+
     def test_curve_uses_relative_runway_even_when_both_are_above_on_track(self):
         q = {
             'kimi-for-coding': {'state': 'ok', 'available': True, 'stale': False,
@@ -1565,12 +1628,12 @@ class DynamicRunwayTests(unittest.TestCase):
         effective, reason, info = routing.spillover(
             entries, providers, 'fallback', {'ark-plan': .20}, 38, 33,
             level2_threshold_percent=25, level2_max_share_percent=50)
-        self.assertEqual(reason, 'quota_spillover_level2_39pct')
+        self.assertEqual(reason, 'quota_spillover_level2_50pct')
         self.assertEqual(effective, [
-            {'profile': 'ark', 'weight': 61},
-            {'profile': 'fallback', 'weight': 39},
+            {'profile': 'ark', 'weight': 50},
+            {'profile': 'fallback', 'weight': 50},
         ])
-        self.assertAlmostEqual(info['fallback']['share'], .39)
+        self.assertAlmostEqual(info['fallback']['share'], .50)
         capped, reason, _ = routing.spillover(
             entries, providers, 'fallback', {'ark-plan': .15}, 38, 33,
             level2_threshold_percent=25, level2_max_share_percent=75)
