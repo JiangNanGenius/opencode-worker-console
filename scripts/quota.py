@@ -1784,7 +1784,7 @@ def _control_policy(c):
     # Bump when the meaning of the persisted conservation level changes. Version 2
     # separates renewable short-window pressure from durable plan capacity, so an
     # old level derived from the former mixed signal must not remain latched.
-    payload = {'controller_schema': 5, **{k: c.get(k) for k in fields}}
+    payload = {'controller_schema': 6, **{k: c.get(k) for k in fields}}
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
@@ -2007,25 +2007,21 @@ def tier_guidance(c, q, _raw=False):
                for provider, item in signals.items()}
     combined_remaining = pool_fit.get('remaining_percent') if pool_fit else None
     combined_complete = bool(pool_fit)
-    plan_signals = {
-        provider: (fit.get('runway') if fit.get('status') == 'ok' and not fit.get('stale') else None)
-        for provider, fit in durable_fits.items()
-    }
-    # Per-provider shedding must use the proven working-rate runway of the
-    # selected weekly/monthly plan window. The combined pool meter deliberately
-    # keeps the smoother idle-inclusive fit above; provider conservation and UI
-    # endurance are different decisions.
+    # Control uses working-rate durable runway; idle-inclusive runway is UI-only.
+    # Short-window availability must not zero or restore the weekly/monthly pool.
     pressure_signals = {
         provider: (fit.get('pressure_runway') if fit.get('status') == 'ok' and
                    not fit.get('stale') else None)
         for provider, fit in durable_fits.items()
     }
-    # Fresh authoritative zero is a valid capacity observation despite unavailability.
-    for p in plan_provider_ids:
-        record = q.get(p) or {}
-        if not record.get('stale', True) and record.get('state') == 'ok' and record.get('available') is False:
-            plan_signals[p] = 0.0
-            pressure_signals[p] = 0.0
+    for provider, fit in durable_fits.items():
+        record = q.get(provider) or {}
+        if record.get('state') == 'ok' and not record.get('stale', True) and not fit.get('stale'):
+            # A measured zero in the selected plan window is authoritative even
+            # when its forecast is marked unavailable rather than ok.
+            if fit.get('source_amount') == 0:
+                pressure_signals[provider] = 0.0
+    plan_signals = pressure_signals
     reliable = bool(plan_signals) and all(v is not None for v in plan_signals.values())
     provider_runways = {
         provider: pressure_signals.get(provider, runways.get(provider))
@@ -2047,8 +2043,8 @@ def tier_guidance(c, q, _raw=False):
     alternates_low = bool(alternate) and all(signals.get(provider, {}).get('low') is True
                                              for provider in alternate)
     combined_low = not refill_safe and pressure_percent is not None and pressure_percent <= threshold_percent
-    fast_bias = threshold > 0 and bool(overlap) and not alternates_healthy and \
-        (fast_low or alternates_low or combined_low)
+    fast_bias = threshold > 0 and (combined_low or (bool(overlap) and not alternates_healthy and
+        (fast_low or alternates_low)))
     if fast_bias and lost_normal and fast_low:
         reason = 'normal_pool_provider_unavailable'
     elif fast_bias and alternates_low:

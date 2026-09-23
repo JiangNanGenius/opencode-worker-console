@@ -526,6 +526,32 @@ class RoutePolicyTests(unittest.TestCase):
         self.assertFalse(guidance['conservation_refill_safe'])
         self.assertEqual(guidance['conservation_level'], 2)
 
+    def test_global_pressure_uses_durable_working_rate_after_short_refill(self):
+        c = json.loads(json.dumps(self.c))
+        c['fast_bias_runway_percent'] = 38
+        c['profiles']['ark-auto']['model'] = 'volcengine-agent-plan/ark-code-latest'
+        c['routing_policy'] = {
+            'fast': [[{'profile': 'ark-auto', 'weight': 1}], [{'profile': 'fallback', 'weight': 1}]],
+            'background': [[{'profile': 'senior-code', 'weight': 1},
+                            {'profile': 'ark-auto', 'weight': 1}], [{'profile': 'fallback', 'weight': 1}]]}
+        c['quota_spillover'] = {'enabled': True, 'profile': 'fallback',
+            'tiers': ['fast', 'background'], 'max_share_percent': 33,
+            'level2_runway_percent': 25}
+        def record():
+            return {'state': 'ok', 'stale': False, 'available': True, 'windows': [
+                {'valid': True, 'duration_minutes': 300, 'remaining_percent': 100},
+                {'valid': True, 'duration_minutes': 10080, 'remaining_percent': 15}]}
+        q = {'kimi-for-coding': record(), 'volcengine-agent-plan': record()}
+        with patch('economics.work_pool', return_value={}), \
+             patch('economics._window_fit', return_value={
+                 'status': 'ok', 'stale': False, 'runway': .6,
+                 'pressure_runway': .17, 'source_amount': 15}):
+            for available in (False, True):
+                q['kimi-for-coding']['available'] = available
+                g = quota.tier_guidance(c, q, _raw=True)
+                self.assertEqual(g['conservation_level'], 2)
+                self.assertAlmostEqual(g['capacity_pressure_percent'], 17)
+
     def test_provider_conservation_is_independent_from_healthy_combined_pool(self):
         now = 1_800_000_000
         c = json.loads(json.dumps(self.c))
