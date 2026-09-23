@@ -1346,6 +1346,30 @@ def _dynamic_runway_override(tier, provider_by_profile, q, guidance=None, now=No
     return values
 
 
+def _conserved_deep_stage(c, q, stage, guidance):
+    """Use each provider's configured Normal model as its conserved Deep slot.
+
+    Provider identity and weights survive; admission and task capability floors
+    are checked by the caller. Explicit profile pins never enter this policy.
+    """
+    if int((guidance or {}).get('conservation_level') or 0) < 2:
+        return stage
+    policy = routing.configured(c) or {}
+    normal = (policy.get('background') or [[]])[0]
+    replacements = {}
+    for entry in normal:
+        profile = c.get('profiles', {}).get(entry['profile']) or {}
+        provider = str(profile.get('model', '')).split('/', 1)[0]
+        if profile.get('enabled') is not False:
+            replacements.setdefault(provider, entry['profile'])
+    result = []
+    for entry in stage:
+        profile = c.get('profiles', {}).get(entry['profile']) or {}
+        provider = str(profile.get('model', '')).split('/', 1)[0]
+        result.append({**entry, 'profile': replacements.get(provider, entry['profile'])})
+    return result
+
+
 def _policy_route(t, c, q, stages, batch=None):
     """First stage with an admissible candidate, then a weighted choice within it.
 
@@ -1366,6 +1390,9 @@ def _policy_route(t, c, q, stages, batch=None):
     spill_config = routing.configured_spillover(c, policy)
     spill_guidance = None
     for index, stage in enumerate(stages):
+        if tier == 'deep' and index == 0:
+            spill_guidance = spill_guidance or tier_guidance(c, q)
+            stage = _conserved_deep_stage(c, q, stage, spill_guidance)
         candidates = []
         for entry in stage:
             _, ok, why = _allowed_profile(entry['profile'], t, c, q)
@@ -1694,6 +1721,9 @@ def routing_status(c, q):
             continue
         stage_views = []
         for index, stage in enumerate(stages):
+            if tier == 'deep' and index == 0:
+                spill_guidance = spill_guidance or tier_guidance(c, q)
+                stage = _conserved_deep_stage(c, q, stage, spill_guidance)
             candidates = []
             denied = {}
             for entry in stage:

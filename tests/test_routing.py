@@ -526,6 +526,23 @@ class RoutePolicyTests(unittest.TestCase):
         self.assertFalse(guidance['conservation_refill_safe'])
         self.assertEqual(guidance['conservation_level'], 2)
 
+    def test_level2_keeps_task_tier_but_uses_normal_model_for_deep(self):
+        c = json.loads(json.dumps(self.c))
+        c['routing_policy'] = {'deep': DEEP_POLICY, 'background': BACKGROUND_POLICY}
+        q = {'kimi-for-coding': {'state': 'ok', 'available': True, 'stale': False,
+             'windows': [{'valid': True, 'remaining_percent': 80}]}}
+        t = self.task(complexity='deep')
+        with patch.object(quota, 'tier_guidance', return_value={'conservation_level': 2}):
+            selected, _ = quota.route(t, c, q)
+            self.assertEqual(selected, 'senior-code')
+            self.assertEqual(t['complexity'], 'deep')
+            status = quota.routing_status(c, q)
+            self.assertIn('senior-code', status['deep'][0]['members'])
+            pinned = dict(t, requested_profile='deep-research')
+            self.assertEqual(quota.route(pinned, c, q)[0], 'deep-research')
+        with patch.object(quota, 'tier_guidance', return_value={'conservation_level': 1}):
+            self.assertEqual(quota.route(t, c, q)[0], 'deep-research')
+
     def test_global_pressure_uses_durable_working_rate_after_short_refill(self):
         c = json.loads(json.dumps(self.c))
         c['fast_bias_runway_percent'] = 38
