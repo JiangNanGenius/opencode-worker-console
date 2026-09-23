@@ -32,7 +32,7 @@ MAX_WEIGHT = 100
 MAX_CREDIT = MAX_WEIGHT * MAX_STAGE_ENTRIES
 MAX_LADDER_STEPS = 7
 MAX_SPILLOVER_SHARE = 50
-MAX_LEVEL2_SPILLOVER_SHARE = 75
+MAX_LEVEL2_SPILLOVER_SHARE = 100
 
 # Quota-aware dynamic admission weights inside one same-capability stage.
 # Stored policy weights stay the baseline preference; only the in-memory advance
@@ -56,9 +56,11 @@ def _ratio(value, field='routing_dynamics ladder'):
     if not isinstance(value, (list, tuple)) or len(value) != 2:
         raise ValueError(field + ' entries must be [left, right]')
     left, right = value
-    if any(isinstance(x, bool) or not isinstance(x, int) or not 1 <= x <= MAX_WEIGHT
+    if any(isinstance(x, bool) or not isinstance(x, int) or not 0 <= x <= MAX_WEIGHT
            for x in (left, right)):
-        raise ValueError(field + ' weights must be integers between 1 and ' + str(MAX_WEIGHT))
+        raise ValueError(field + ' weights must be integers between 0 and ' + str(MAX_WEIGHT))
+    if left == 0 and right == 0:
+        raise ValueError(field + ' entries cannot both be zero')
     divisor = math.gcd(left, right)
     return (left // divisor, right // divisor)
 
@@ -501,16 +503,25 @@ def dynamics(entries, provider_by_profile, quota_view=None, now=None, adaptive=N
     shares = [pair[0] / (pair[0] + pair[1]) for pair in ladder]
     left_share = shares[lower] if lower == upper else \
         shares[lower] + (shares[upper] - shares[lower]) * fraction
-    left_weight = max(1, min(EFFECTIVE_WEIGHT_TOTAL - 1,
+    left_weight = max(0, min(EFFECTIVE_WEIGHT_TOTAL,
                              int(round(left_share * EFFECTIVE_WEIGHT_TOTAL))))
     group_effective = {left: left_weight, right: EFFECTIVE_WEIGHT_TOTAL - left_weight}
+    # Reset every displayed candidate before rebuilding the effective stage.
+    # Candidates at a real 0% endpoint are deliberately omitted from ``out``;
+    # leaving their baseline metadata behind would make the console report a
+    # phantom share even though dispatch can no longer choose them.
+    for name in info:
+        info[name]['effective_weight'] = 0
+        info[name]['share'] = 0.0
     out = []
     for entry in entries:
         provider = provider_by_profile.get(entry['profile'])
         members = [e for e in entries if provider_by_profile.get(e['profile']) == provider]
         member_base = sum(e['weight'] for e in members) or 1
         share = group_effective[provider] * entry['weight'] / member_base
-        out.append(dict(entry, weight=max(1, int(round(share)))))
+        weight = max(0, int(round(share)))
+        if weight > 0:
+            out.append(dict(entry, weight=weight))
     total_effective = sum(e['weight'] for e in out) or 1
     for entry in out:
         info[entry['profile']]['effective_weight'] = entry['weight']
@@ -593,9 +604,11 @@ def spillover(entries, provider_by_profile, target_profile, runway_by_provider,
     if level2_active:
         # Continue smoothly from the Level 1 curve at the Level 2 boundary,
         # then ramp faster to the Level 2 cap. The cap is reached when fitted
-        # runway falls to two thirds of the Level 2 threshold, not only at zero.
+        # runway falls to 72 percent of the Level 2 threshold, not only at zero.
+        # This gives a genuinely empty constrained-plan endpoint instead of
+        # leaving a token 1 percent allocation under severe provider pressure.
         entry_share = maximum * (1.0 - level2_threshold / threshold)
-        full_share_runway = level2_threshold * (2.0 / 3.0)
+        full_share_runway = level2_threshold * 0.72
         progress = min(1.0, max(0.0, (level2_threshold - best) /
                                 max(0.000001, level2_threshold - full_share_runway)))
         share = entry_share + (level2_maximum - entry_share) * progress
@@ -634,10 +647,13 @@ def spillover(entries, provider_by_profile, target_profile, runway_by_provider,
                 out.append(dict(entry, weight=weight))
     else:
         source_budget = 100 - share
-        scaled = _scaled_entry_weights(original, source_budget)
-        if not scaled:
-            return original, 'spillover_invalid_weights', None
-        out = [dict(entry, weight=scaled[index]) for index, entry in enumerate(original)]
+        if source_budget == 0:
+            out = []
+        else:
+            scaled = _scaled_entry_weights(original, source_budget)
+            if not scaled:
+                return original, 'spillover_invalid_weights', None
+            out = [dict(entry, weight=scaled[index]) for index, entry in enumerate(original)]
     out.append({'profile': target_profile, 'weight': share})
     info = {entry['profile']: {'effective_weight': entry['weight'],
                                'share': entry['weight'] / 100.0,

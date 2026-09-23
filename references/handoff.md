@@ -63,6 +63,13 @@ The task stays one coherent outcome. A large implementation with a clear directi
 Fast; handoff size and runtime do not determine tier. Split only when deliverables and writable
 scopes are genuinely independent.
 
+The ordinary workspace is the already bound shared/main checkout. Do not request or create a Git
+worktree merely because a task is large, important, long-running, or changes code. Use an isolated
+workspace only for a user-requested checkout, unavoidable concurrent conflicting writes, or a
+destructive experiment. Prefer scope/resource serialization because a second checkout can duplicate
+dependencies and build products. If isolation is necessary, state why and make integration plus safe
+worktree release part of completion; preserve unintegrated work for review.
+
 ## Continuation template
 
 For recovery, fallback, or a deliberate follow-up linked by `parent_task_id`, use:

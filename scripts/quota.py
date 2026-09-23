@@ -1160,7 +1160,7 @@ def _spillover_runway_view(guidance, providers, source_specific=False):
     healthy Kimi plan must not hide an exhausted Ark Auto allowance.
     """
     if source_specific:
-        runways = guidance.get('runway') or {}
+        runways = guidance.get('provider_runway') or guidance.get('runway') or {}
         return {provider: runways.get(provider) for provider in providers}
     combined = guidance.get('capacity_pressure_percent', guidance.get('combined_remaining_percent'))
     if (guidance.get('capacity_pressure_percent') is not None or guidance.get('combined_remaining_complete')) and isinstance(combined, (int, float)) and \
@@ -1179,7 +1179,7 @@ def _spillover_source(guidance, providers, tier, level2):
     """
     guidance = guidance if isinstance(guidance, dict) else {}
     providers = set(providers)
-    source_specific = tier == 'fast' or level2
+    source_specific = tier == 'fast' or level2 or len(providers) == 1
     view = _spillover_runway_view(guidance, providers, source_specific)
     replacement = None
     if not source_specific and len(providers) > 1:
@@ -1199,6 +1199,21 @@ def _spillover_source(guidance, providers, tier, level2):
                   if isinstance(value, (int, float)) and not isinstance(value, bool) and
                   math.isfinite(value)), default=None)
     return source_specific, view, replacement, runway
+
+
+def _provider_conservation_level(guidance, source_specific, runway):
+    """Return one provider pool's load-shedding level, independent of global capacity."""
+    if not source_specific or isinstance(runway, bool) or not isinstance(runway, (int, float)) or \
+            not math.isfinite(runway):
+        return 0
+    threshold = guidance.get('runway_threshold_percent', 0) if isinstance(guidance, dict) else 0
+    level2 = guidance.get('level2_runway_percent', 0) if isinstance(guidance, dict) else 0
+    if any(isinstance(value, bool) or not isinstance(value, (int, float)) or
+           not math.isfinite(value) for value in (threshold, level2)):
+        return 0
+    if level2 > 0 and float(runway) <= float(level2) / 100.0:
+        return 2
+    return 1 if threshold > 0 and float(runway) < float(threshold) / 100.0 else 0
 
 
 def _level2_spillover_cap(c, q, spill_config, target_provider, runway=None, now=None):
@@ -1244,25 +1259,45 @@ def _level2_spillover_cap(c, q, spill_config, target_provider, runway=None, now=
     return int(round(base + (high - base) * progress))
 
 
-def _dynamic_runway_override(tier, provider_by_profile, q, now=None):
-    """Use durable plan pressure for Deep without weakening immediate admission.
+def _dynamic_runway_override(tier, provider_by_profile, q, guidance=None, now=None):
+    """Use durable per-pool pressure for adaptive Normal and Deep balancing.
 
     Kimi's short and weekly counters are shared by K2.8 and K3. A Normal burst
     can therefore tighten the five-hour counter even when K3 caused little of
-    it. Deep balancing follows the provider's durable weekly/monthly fit; a
-    genuinely exhausted short window is still filtered by ``allowed`` before
-    this function runs.
+    it. Balancing follows each provider's durable weekly/monthly fit; immediate
+    exhausted windows are still filtered by ``allowed`` before this function.
+
+    A smooth local-pressure penalty is applied below the ordinary runway
+    threshold. This lets a healthy peer absorb nearly all same-tier work when
+    one subscription pool is severely constrained, without falsely declaring
+    the combined high-capability pool degraded. When both providers have the
+    same pressure their ratio stays unchanged and global conservation remains
+    responsible for lower-tier spillover.
     """
-    if tier != 'deep':
+    if tier not in ('background', 'deep'):
         return None
     import economics
     now = time.time() if now is None else now
     providers = set(provider_by_profile.values())
+    guidance_runways = ((guidance or {}).get('provider_runway') or
+                        (guidance or {}).get('runway')) if isinstance(guidance, dict) else None
     values = {}
     for provider in providers:
-        fitted = economics._window_fit(provider, q.get(provider) or {}, now)
-        runway = number(fitted.get('runway')) if fitted.get('status') == 'ok' else None
+        runway = guidance_runways.get(provider) if isinstance(guidance_runways, dict) else None
+        if isinstance(runway, bool) or not isinstance(runway, (int, float)) or not math.isfinite(runway):
+            fitted = economics._window_fit(provider, q.get(provider) or {}, now)
+            runway = number(fitted.get('runway')) if fitted.get('status') == 'ok' else None
         values[provider] = runway if runway is not None and runway >= 0 else None
+    threshold = (guidance or {}).get('runway_threshold_percent') if isinstance(guidance, dict) else None
+    if isinstance(threshold, (int, float)) and not isinstance(threshold, bool) and \
+            math.isfinite(threshold) and threshold > 0:
+        threshold = float(threshold) / 100.0
+        for provider, runway in values.items():
+            if runway is None or runway >= threshold:
+                continue
+            ratio = max(0.0, min(1.0, runway / threshold))
+            smooth = ratio * ratio * (3.0 - 2.0 * ratio)
+            values[provider] = runway * smooth
     return values
 
 
@@ -1313,11 +1348,13 @@ def _policy_route(t, c, q, stages, batch=None):
             adaptive = routing.dynamic_stage(
                 c, 'fast' if level2 else tier,
                 fast_stage_index if level2 else index, policy)
+            if adaptive and spill_guidance is None:
+                spill_guidance = tier_guidance(c, q)
             effective_tier = 'fast' if level2 else tier
             entries, dynamic_reason, _ = routing.dynamics(
                 base_entries, provider_by_profile, q, adaptive=adaptive,
                 runway_override=_dynamic_runway_override(
-                    effective_tier, provider_by_profile, q))
+                    effective_tier, provider_by_profile, q, spill_guidance))
             if level2:
                 dynamic_reason = 'quota_conservation_level2:' + dynamic_reason
             # A later fallback may absorb a bounded share before subscriptions hit
@@ -1332,12 +1369,20 @@ def _policy_route(t, c, q, stages, batch=None):
                     spill_guidance = spill_guidance or tier_guidance(c, q)
                     source_specific, runway_view, replacement_provider, source_runway = \
                         _spillover_source(spill_guidance, source_providers, tier, level2)
-                    if int(spill_guidance.get('conservation_level') or 0) > 0 and \
+                    global_level = int(spill_guidance.get('conservation_level') or 0)
+                    # A mixed same-tier stage first moves work to its healthy
+                    # subscription peer. Cash fallback for only the constrained
+                    # member remains a global-conservation action; provider-local
+                    # spillover is reserved for a tier whose stage has no peer.
+                    source_level = (_provider_conservation_level(
+                        spill_guidance, source_specific, source_runway)
+                        if replacement_provider is None else 0)
+                    active_level = max(global_level, source_level)
+                    if active_level > 0 and \
                             (source_specific or spill_guidance.get('quota_posture') == 'fast_preferred'):
                         provider_by_profile[target] = target_provider
                         level2_active = level2 or (
-                            tier == 'fast' and
-                            int(spill_guidance.get('conservation_level') or 0) >= 2)
+                            source_specific and active_level >= 2)
                         entries, spill_reason, _ = routing.spillover(
                             entries, provider_by_profile, target,
                             runway_view,
@@ -1349,6 +1394,8 @@ def _policy_route(t, c, q, stages, batch=None):
                                 c, q, spill_config, target_provider, source_runway)
                                 if level2_active else None),
                             replace_provider=replacement_provider)
+                        if source_level > global_level:
+                            dynamic_reason += ':quota_source_level' + str(source_level)
                         dynamic_reason += ':' + spill_reason
                         if any(entry['profile'] == target for entry in entries):
                             candidates.append(({'profile': target, 'weight': 1}, target_reason))
@@ -1627,18 +1674,25 @@ def routing_status(c, q):
             adaptive = routing.dynamic_stage(
                 c, 'fast' if level2 else tier,
                 fast_stage_index if level2 else index, policy)
+            if adaptive and spill_guidance is None:
+                spill_guidance = tier_guidance(c, q)
             effective_tier = 'fast' if level2 else tier
             effective, reason, info = routing.dynamics(
                 candidates, provider_by_profile, q, adaptive=adaptive,
                 runway_override=_dynamic_runway_override(
-                    effective_tier, provider_by_profile, q))
+                    effective_tier, provider_by_profile, q, spill_guidance))
             if level2:
                 reason = 'quota_conservation_level2:' + reason
             source_providers = set(provider_by_profile.values())
             source_specific, runway_view, replacement_provider, source_runway = \
                 _spillover_source(spill_guidance, source_providers, tier, level2)
+            global_level = int((spill_guidance or {}).get('conservation_level') or 0)
+            source_level = (_provider_conservation_level(
+                spill_guidance, source_specific, source_runway)
+                if replacement_provider is None else 0)
+            active_level = max(global_level, source_level)
             if spill_config and index == 0 and tier in spill_config['tiers'] and \
-                    int(spill_guidance.get('conservation_level') or 0) > 0 and \
+                    active_level > 0 and \
                     (source_specific or spill_guidance.get('quota_posture') == 'fast_preferred'):
                 target = spill_config['profile']
                 target_profile = c.get('profiles', {}).get(target) or {}
@@ -1648,8 +1702,7 @@ def routing_status(c, q):
                 if target_ok and target_provider not in set(provider_by_profile.values()):
                     provider_by_profile[target] = target_provider
                     level2_active = level2 or (
-                        tier == 'fast' and
-                        int(spill_guidance.get('conservation_level') or 0) >= 2)
+                        source_specific and active_level >= 2)
                     effective, spill_reason, spill_info = routing.spillover(
                         effective, provider_by_profile, target,
                         runway_view,
@@ -1662,6 +1715,8 @@ def routing_status(c, q):
                             if level2_active else None),
                         replace_provider=replacement_provider)
                     if spill_info:
+                        if source_level > global_level:
+                            reason += ':quota_source_level' + str(source_level)
                         reason += ':' + spill_reason
                         info = spill_info
             if info:
@@ -1907,6 +1962,16 @@ def tier_guidance(c, q, _raw=False):
         if not record.get('stale', True) and record.get('state') == 'ok' and record.get('available') is False:
             plan_signals[p] = 0.0
     reliable = bool(plan_signals) and all(v is not None for v in plan_signals.values())
+    provider_runways = {
+        provider: plan_signals.get(provider, runways.get(provider))
+        for provider in configured_providers
+    }
+    provider_levels = {
+        provider: _provider_conservation_level(
+            {'runway_threshold_percent': threshold_percent,
+             'level2_runway_percent': level2_threshold}, True, runway)
+        for provider, runway in provider_runways.items()
+    }
     pressure_percent = max(plan_signals.values()) * 100 if reliable else None
     # Forecast refills are display-only. They must never release conservation
     # before the authoritative provider telemetry actually reports a top-up.
@@ -1970,6 +2035,8 @@ def tier_guidance(c, q, _raw=False):
             'conservation_refill_safe': refill_safe,
             'fast_stage': fast,
             'normal_stage': normal, 'remaining_percent': readings, 'runway': runways,
+            'provider_runway': provider_runways,
+            'provider_conservation_level': provider_levels,
             'combined_remaining_percent': combined_remaining,
             'combined_remaining_complete': combined_complete,
             'budget_signals': signals,

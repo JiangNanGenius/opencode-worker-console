@@ -84,10 +84,10 @@ DEFAULT_ROUTING_POLICY = {
 # in only for its two subscription pairs; every other install keeps fixed policy
 # weights unless the user explicitly enables a curve envelope in the console.
 DEFAULT_ROUTING_DYNAMICS = {
-    'background': {'0': {'ladder': [[7, 3], [1, 1], [1, 2]]}},
+    'background': {'0': {'ladder': [[1, 0], [7, 3], [1, 1], [1, 2]]}},
     'deep': {
-        '0': {'ladder': [[3, 1], [2, 1], [1, 1]]},
-        '1': {'ladder': [[2, 1], [1, 1], [1, 2]]},
+        '0': {'ladder': [[1, 0], [3, 1], [2, 1], [1, 1]]},
+        '1': {'ladder': [[1, 0], [2, 1], [1, 1], [1, 2]]},
     },
 }
 DEFAULT_QUOTA_SPILLOVER = {
@@ -96,7 +96,7 @@ DEFAULT_QUOTA_SPILLOVER = {
     'tiers': ['fast', 'background'],
     'max_share_percent': 33,
     'level2_runway_percent': 25,
-    'level2_offpeak_share_percent': 75,
+    'level2_offpeak_share_percent': 100,
     'level2_min_balance_cny': 30.0,
 }
 DEFAULT_DEEPSEEK_HOLIDAY_CALENDAR = {

@@ -1,6 +1,6 @@
 ---
 name: delegate-opencode
-description: Delegate complete authorized outcomes to general-purpose OpenCode agents. Every task category is eligible. Classify Fast/Normal/Deep only from the uncertainty the worker must resolve and keep profile=auto. The bridge privately selects providers and models, including conservation and fallback.
+description: Delegate complete authorized outcomes to general-purpose OpenCode agents. Every task category is eligible. Classify Fast/Normal/Deep only from the uncertainty the worker must resolve, keep profile=auto, and use the bound shared/main workspace unless isolation is genuinely required. The bridge privately selects providers and models, including conservation and fallback.
 ---
 
 # Delegate OpenCode work
@@ -23,11 +23,15 @@ verification; do not duplicate their repository reading locally.
   remote-only write needs a target, not a dummy local scope or repo; state environment and allowed
   effects in the objective. Targets convey authority, never credentials or access-control bypass.
 - `mode: read` is inspection only, including remote systems. `mode: write` needs scopes, targets,
-  or both. Shared/main workspace is the default even for broad repository edits; overlapping scopes
-  and resources are serialized by the bridge. Use explicit `--workspace isolated` only when the
-  user asks for isolation, conflicting work must proceed in parallel, or destructive experiments
-  need a disposable checkout. Give tasks acting on one deployment, service, database or device a
-  single stable `--resource` lock name (for example `ssh:host:service`), not per-model locks.
+  or both. Use the bound shared/main workspace by default and omit `workspace` or set it to
+  `shared`. This remains the default for large, important, long-running and broad repository edits;
+  none of those traits justifies a second checkout. Overlapping scopes and resources are serialized
+  by the bridge. Never ask the worker to create its own Git worktree. Use explicit `--workspace
+  isolated` only when the user requests isolation, conflicting writes truly must proceed at the
+  same time, or a destructive experiment needs a disposable checkout. Prefer locks or sequential
+  work when either can avoid duplicating dependencies and build products. Give tasks acting on one
+  deployment, service, database or device a single stable `--resource` lock name (for example
+  `ssh:host:service`), not per-model locks.
 - Auto Approve is on by default: ordinary tools and commands are allowed; supplied `commands` are
   suggested checks, not an exclusive allowlist, and no artificial iteration, tool-call or runtime
   limit applies. Task authority still applies.
@@ -176,7 +180,9 @@ passing test, a deployment command and an observed production/device or rendered
 different facts; report CLI/API results, headless/UI checks and physical observations separately,
 and request original detail only where needed. For isolated work review the patch, run `integrate
 JOB_ID` then `integrate JOB_ID --apply`, and verify afterward; integration never commits or deploys.
-An `uncertain` task keeps its ownership — recover and inspect it before any replacement.
+After integration, release the managed worktree once evidence is retained. Preserve and report any
+unintegrated changes instead of silently deleting them. An `uncertain` task keeps its ownership —
+recover and inspect it before any replacement.
 
 ## Use durable project memory
 

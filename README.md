@@ -105,10 +105,11 @@ tier has its own continuous load curve: live,
 reset-aware runway moves through configured ratio control points without rewriting the saved
 baseline or crossing its economic bounds. Fast fallback sharing has separate healthy, level 1
 and level 2 curves, so full capacity and constrained capacity do not collapse to one fixed value.
-When Kimi is healthy but Ark is still severely constrained, Normal may reach roughly
-70% Kimi / 0% Ark / 30% DeepSeek. The fallback continuously replaces only the constrained
-Ark slice, so Ark can focus on Fast work; Ark's Normal share widens again as its reset-aware
-runway improves.
+When Kimi is healthy but Ark is severely constrained, the same-capability Normal and Deep
+curves may reach 100% Kimi / 0% Ark. A zero endpoint removes Ark from actual dispatch rather
+than keeping a cosmetic 1% share. Fast has no same-tier subscription peer, so severe Ark
+pressure may instead move it continuously to 100% direct DeepSeek; Ark returns as its
+reset-aware runway improves.
 
 These options initialize a **fresh** installation, not replace existing profiles. `--no-start` installs without launching services. [Full installation guide](references/installation.md): provider login, managed binary path, passwords, verification, updates and recovery.
 
@@ -135,11 +136,17 @@ Deep work has no separate task-count limit.
 
 Workers can own investigation, implementation, test repair, writing, SSH operations and routine deployment instead of receiving tiny code fragments. Each task carries an objective, acceptance criteria, workspace, and file or remote-resource scope. The default is four concurrent workers per owning upstream-harness conversation; separate conversations have independent capacity.
 
+Write tasks use the bound shared/main checkout by default, including large and long-running work.
+An isolated worktree is reserved for an explicit isolation request, unavoidable concurrent
+conflicting writes, or a destructive experiment. This avoids duplicate dependencies and build
+products; managed worktrees are released after safe integration while unintegrated changes remain
+visible for review.
+
 ### Route by capability
 
 The coordinator classifies uncertainty only: **Fast** for complete work with a clear direction and acceptance boundary, **Normal** for a concrete goal that still needs open investigation, and **Deep** for abstract goals, system-wide causes and difficult trade-offs. The bridge then selects a provider through a single model, ordered fallback chain, fixed pool or quota-adaptive pool. One provider is enough; multiple plans are an enhancement.
 
-Capacity protection uses two continuous curves. Level 1 gradually gives a later pay-as-you-go model some Fast/Normal work as subscription runway falls. Fast follows the runway of its own configured source, so a freshly restored Normal/Deep subscription cannot hide a nearly exhausted Fast plan. Level 2 ramps faster and temporarily serves automatic Normal work from the Fast source pool. Deep and explicitly pinned models do not change. Its DeepSeek ceiling is 75% while the configured balance floor is intact: off-peak reaches that ceiling earlier, while peak traffic rises from the Level 1 ceiling only as subscription runway becomes severe. Weekends are always off-peak, while weekday public holidays come from a configurable, locally cached calendar subscription. See [routing and plan efficiency](references/routing.md).
+Capacity protection combines a global curve with a curve for each provider pool. A constrained provider can leave a same-capability pair entirely while its healthy peer takes 100%; the global pool can still remain healthy. Level 1 gradually gives a later pay-as-you-go model some Fast/Normal work as subscription runway falls. Fast follows the runway of its own configured source, so a freshly restored Normal/Deep subscription cannot hide a nearly exhausted Fast plan. Level 2 ramps faster and can move a provider-only Fast route fully to DeepSeek while the configured balance floor is intact. Deep and explicitly pinned models never fall to a lower-capability stage. Off-peak reaches the high-pressure ceiling earlier; peak traffic rises from the Level 1 ceiling only as subscription runway becomes severe. Weekends are always off-peak, while weekday public holidays come from a configurable, locally cached calendar subscription. See [routing and plan efficiency](references/routing.md).
 
 ### Keep long jobs running
 
@@ -149,7 +156,7 @@ There is no artificial model-step, tool-call or total-runtime cap. `wait` blocks
 
 - Expand a task in place to inspect reverse-chronological activity, full redacted messages, input/output/reasoning/cache Tokens, and steer a running model.
 - Search, create, rename, fork, archive, bind, delete and open native OpenCode sessions.
-- Search, add, edit and delete durable project memory through the bridge or console. The optional `opencode-mem` integration keeps its vector database local and can use an OpenAI-compatible embedding endpoint.
+- Search, add, edit and delete durable project memory through the bridge or console. The optional `opencode-mem` integration keeps its vector database local. Capacity-based rolling retention removes exact duplicates and then the oldest unpinned records only after the configured ceiling is crossed; deleting sessions or leaving the computer off does not age memory out.
 - Long builds, deployments and GitHub Actions runs can publish truthful phase, percentage and ETA data; jobs without measurable totals remain visibly indeterminate.
 - Statistics reuse one usage snapshot every three seconds for the last hour, 24 hours and 30 days. Charts carry real Token scales plus model, tier, status and profile breakdowns.
 - Task scheduling reports CPU, memory, disk, load and worker counts. Cleaned-task Token, cost and route summaries remain in an expandable **History ledger**.
@@ -191,6 +198,7 @@ sends one Bark alert only after that task completes successfully. Routine tasks 
 | Runtime and Codex skill | `~/.codex/skills/delegate-opencode` |
 | Configuration | `~/.config/opencode/delegate-pool.json` |
 | Private state, artifacts and worktrees | `~/.local/state/delegate-opencode` |
+| Project memory (default, configurable) | `~/.local/state/delegate-opencode/opencode-mem` |
 
 Archiving a coordinator conversation does not remove the installation. Keep source in a stable checkout for updates; runtime is copied out. Alternate paths: `DELEGATE_INSTALL`, `DELEGATE_CONFIG`, `DELEGATE_STATE`, `DELEGATE_BIN_DIR`.
 

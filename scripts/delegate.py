@@ -360,11 +360,13 @@ def daemon():
     # Per-job threads: no hidden executor cap across independent owners.
     threads = {}
     cleanup_thread = None
+    memory_thread = None
     holiday_thread = None
     update_launch_checked = 0
     last_holiday_refresh = 0
     last_refresh = 0
     last_cleanup = 0
+    last_memory_maintenance = 0
     q = quota.view(read_json(STATE / 'quota.json', {}))
     while not stop.is_set():
         try:
@@ -394,6 +396,17 @@ def daemon():
                 cleanup_thread = threading.Thread(target=cleanup.periodic,
                                                   daemon=True, name='cleanup')
                 cleanup_thread.start()
+            memory_cfg = c.get('memory') if isinstance(c.get('memory'), dict) else {}
+            rolling = memory_cfg.get('rolling') if isinstance(memory_cfg.get('rolling'), dict) else {}
+            memory_interval = int(rolling.get('check_interval_hours') or 24) * 3600
+            if memory_cfg.get('enabled') is True and rolling.get('enabled', True) is True and \
+                    time.time() - last_memory_maintenance >= max(3600, memory_interval) and \
+                    (memory_thread is None or not memory_thread.is_alive()):
+                last_memory_maintenance = time.time()
+                memory_thread = threading.Thread(
+                    target=lambda: __import__('memory_manager').maintain(),
+                    daemon=True, name='memory-maintenance')
+                memory_thread.start()
             all_tasks = tasks()
             just_finished = any(not th.is_alive() for th in threads.values())
             needs_poll = any(t['status'] in ACTIVE | {'queued'} for t in all_tasks)
@@ -608,7 +621,7 @@ def main():
     s.add_argument('--yes', action='store_true')
     s = sub.add_parser('memory', help='Manage persistent OpenCode project memory')
     msub = s.add_subparsers(dest='action', required=True)
-    for action in ('status', 'projects', 'profile', 'stats'):
+    for action in ('status', 'projects', 'profile', 'stats', 'maintain'):
         msub.add_parser(action)
     ml = msub.add_parser('list'); ml.add_argument('--directory'); ml.add_argument('--page', type=int, default=1); ml.add_argument('--limit', type=int, default=50)
     ms = msub.add_parser('search'); ms.add_argument('query'); ms.add_argument('--directory'); ms.add_argument('--page', type=int, default=1); ms.add_argument('--limit', type=int, default=20)
@@ -762,6 +775,7 @@ def main():
         elif args.action == 'projects': result = memory_manager.projects()
         elif args.action == 'profile': result = memory_manager.profile()
         elif args.action == 'stats': result = memory_manager.stats()
+        elif args.action == 'maintain': result = memory_manager.maintain(force=True)
         elif args.action == 'list': result = memory_manager.list_memories(args.directory, args.page, args.limit)
         elif args.action == 'search': result = memory_manager.search(args.query, args.directory, args.page, args.limit)
         elif args.action == 'add': result = memory_manager.add(args.content, args.directory, args.tag, args.type)

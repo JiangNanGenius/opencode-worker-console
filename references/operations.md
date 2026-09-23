@@ -43,7 +43,10 @@ specifications. Fields: `directory`, `objective`, `title`, `acceptance` (string 
 `workspace` (`auto`/`shared`/`isolated`), `large`, `web`, and `notify_on_complete` (boolean).
 `auto` uses the shared/main checkout, including broad repository writes; scope and resource locks
 serialize overlapping writers. `large` remains accepted for compatibility but does not create a
-worktree. Request `isolated` explicitly only when a separate checkout is intentional.
+worktree. Large, important, long-running and code-writing tasks still use this shared checkout.
+Neither the coordinator nor worker should run `git worktree add` as a convenience. Request
+`isolated` explicitly only for user-requested isolation, unavoidable concurrent conflicting writes,
+or a destructive experiment. Prefer serialization when it avoids another dependency/build tree.
 The CLI form is `--notify-on-complete`; use it only for a key user-facing milestone that merits
 one Bark event after successful completion. Each event is delivered independently to every
 configured client. For a verified milestone outside one worker task, use `notify --title ...
@@ -297,8 +300,9 @@ responsibility.
 For isolated integration, the source must still match the task's original baseline for every
 changed file. `integrate JOB_ID` performs both hash checks and `git apply --check`;
 `--apply` applies the reviewed task delta. It does not commit, push or deploy.
-After integration, run the appropriate tests and preserve evidence before manually removing
-the exact completed worktree with ordinary `git worktree remove`.
+After integration, run the appropriate tests and preserve evidence before releasing the exact
+completed worktree. Unintegrated changes stay for review; do not leave an integrated or unchanged
+managed worktree consuming disk indefinitely.
 
 OpenCode 1.18.32 accepted a JSON-schema `format` request but returned HTTP 400 when reading
 that saved message. This integration therefore requests a plain final JSON report in the
@@ -381,6 +385,28 @@ Removed file byte totals are estimates, not exact disk-space attribution. Cleanu
 private `cleanup-last.json`.
 
 Existing sessions can switch between worktrees of the same Git project. OpenCode 1.18.32 rejects cross-project migration; create a new session bound to the target project instead.
+
+## Durable project memory
+
+When enabled, `opencode-mem` stores its vector database under the bridge's internal state directory
+by default, even when a project checkout lives on an external volume. Set an absolute storage path
+in Worker Desk when another internal directory is preferred. Git worktrees share the repository's
+Git-common identity; non-Git projects use their stable path or an `.opencode-mem-project` marker, so
+memory remains attached to the project rather than one disposable checkout.
+
+Retention is capacity-based and independent from sessions. The default logical ceiling is 256 MB;
+only after crossing it does maintenance remove exact duplicate unpinned records, then the oldest
+unpinned records until usage is at or below 90%. Pinned records are never reclaimed. Session/task
+cleanup and time spent powered off do not delete durable memory. `max_memories` is a separate safety
+limit rather than the primary retention policy.
+
+```sh
+delegate-opencode memory status
+delegate-opencode memory search --directory "$PWD" 'topic'
+delegate-opencode memory list --directory "$PWD"
+delegate-opencode memory add --directory "$PWD" 'verified durable fact'
+delegate-opencode memory maintain
+```
 
 
 ## Error bridge

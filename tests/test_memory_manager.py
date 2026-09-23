@@ -28,8 +28,15 @@ class MemoryManagerTests(unittest.TestCase):
                         'headroom_multiplier': 1.5},
         })
         self.assertEqual(value['reserve']['minimum_percent'], .25)
+        self.assertEqual(value['rolling']['max_storage_mb'], 256)
         with self.assertRaises(ValueError):
             memory_manager.validate({**value, 'api_url': 'http://192.168.1.2:4747'})
+        with self.assertRaises(ValueError):
+            memory_manager.validate({**value, 'storage_path': 'relative/memory'})
+        with self.assertRaises(ValueError):
+            memory_manager.validate({**value, 'rolling': {'enabled': True,
+                'max_storage_mb': 63, 'max_memories': 100000,
+                'target_percent': 90, 'check_interval_hours': 24}})
 
     def test_project_tag_is_stable_without_git(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -84,8 +91,62 @@ class MemoryManagerTests(unittest.TestCase):
             secret = root / 'state/credentials/opencode-mem-ark-key'
             self.assertTrue(result['configured'])
             self.assertEqual(payload['embeddingApiKey'], 'file://' + str(secret))
+            self.assertEqual(payload['storagePath'], str(root / 'state/opencode-mem'))
+            self.assertFalse(payload['autoCleanupEnabled'])
             self.assertEqual(secret.stat().st_mode & 0o777, 0o600)
             self.assertNotIn('secret-not-returned', json.dumps(result))
+
+    def test_rolling_capacity_keeps_pins_deduplicates_and_removes_oldest(self):
+        rows = [
+            {'id': 'mem_pin', 'content': 'keep', 'projectPath': '/p',
+             'createdAt': '2026-01-01T00:00:00Z', 'isPinned': True},
+            {'id': 'mem_dup_old', 'content': 'same', 'projectPath': '/p',
+             'createdAt': '2026-01-02T00:00:00Z', 'isPinned': False},
+            {'id': 'mem_old', 'content': 'old', 'projectPath': '/p',
+             'createdAt': '2026-01-03T00:00:00Z', 'isPinned': False},
+            {'id': 'mem_new', 'content': 'new', 'projectPath': '/p',
+             'createdAt': '2026-01-04T00:00:00Z', 'isPinned': False},
+            {'id': 'mem_dup_new', 'content': 'same', 'projectPath': '/p',
+             'createdAt': '2026-01-05T00:00:00Z', 'isPinned': False},
+            {'id': 'mem_latest', 'content': 'latest', 'projectPath': '/p',
+             'createdAt': '2026-01-06T00:00:00Z', 'isPinned': False},
+        ]
+        removed = memory_manager._rolling_candidates(
+            rows, maximum_bytes=10**9, maximum_records=4,
+            target_percent=75, dimensions=1)
+        self.assertEqual(removed, ['mem_dup_old', 'mem_old', 'mem_new'])
+        self.assertNotIn('mem_pin', removed)
+
+    def test_rolling_capacity_does_not_deduplicate_below_ceiling(self):
+        rows = [
+            {'id': 'mem_old', 'content': 'same', 'projectPath': '/p',
+             'createdAt': '2026-01-01T00:00:00Z', 'isPinned': False},
+            {'id': 'mem_new', 'content': 'same', 'projectPath': '/p',
+             'createdAt': '2026-01-02T00:00:00Z', 'isPinned': False},
+        ]
+        self.assertEqual(memory_manager._rolling_candidates(
+            rows, maximum_bytes=10**9, maximum_records=100,
+            target_percent=90, dimensions=1), [])
+
+    def test_rolling_maintenance_is_capacity_based_not_age_based(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            config_path = root / 'config.json'
+            config_path.write_text(json.dumps({'memory': {'enabled': True, 'rolling': {
+                'enabled': True, 'max_storage_mb': 64, 'max_memories': 100,
+                'target_percent': 90,
+                'check_interval_hours': 24}}}))
+            old = {'id': 'mem_old', 'content': 'durable', 'projectPath': '/p',
+                   'createdAt': '2000-01-01T00:00:00Z', 'isPinned': False}
+            with patch.object(common, 'CONFIG', config_path), \
+                 patch.object(common, 'STATE', root / 'state'), \
+                 patch.object(memory_manager, 'list_memories', return_value={
+                     'items': [old], 'totalPages': 1}), \
+                 patch.object(memory_manager, 'bulk_delete') as remove:
+                result = memory_manager.maintain(force=True)
+            self.assertEqual(result['after'], 1)
+            self.assertEqual(result['deleted'], 0)
+            remove.assert_not_called()
 
     def test_api_token_is_created_owner_only_and_reused(self):
         with tempfile.TemporaryDirectory() as temp:

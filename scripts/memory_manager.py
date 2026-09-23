@@ -6,30 +6,42 @@ from pathlib import Path
 import secrets
 import shutil
 import subprocess
+import time
 import urllib.parse
 
 import common
 
 DEFAULTS = {
     'enabled': False,
+    'storage_path': None,
     'api_url': 'http://127.0.0.1:4747',
     'embedding_api_url': 'https://ark.cn-beijing.volces.com/api/plan/v3',
     'embedding_model': 'doubao-embedding-vision',
     'embedding_dimensions': 2048,
     'capture_profile': 'volcengine-agent-plan/doubao-seed-evolving',
     'reserve': {'minimum_percent': 0.25, 'maximum_percent': 3.0, 'headroom_multiplier': 1.5},
+    # Capacity-based rolling retention keeps durable memory independent from
+    # session age. Old unpinned records leave only after the configured ceiling
+    # is crossed; a lower target avoids deleting one record on every capture.
+    'rolling': {'enabled': True, 'max_storage_mb': 256, 'max_memories': 25000,
+                'target_percent': 90, 'check_interval_hours': 24},
 }
 
 
 def settings(value=None):
     raw = value if isinstance(value, dict) else {}
     out = dict(DEFAULTS)
-    out.update({k: raw[k] for k in ('enabled', 'api_url', 'embedding_api_url',
+    out.update({k: raw[k] for k in ('enabled', 'storage_path', 'api_url', 'embedding_api_url',
                                     'embedding_model', 'embedding_dimensions', 'capture_profile')
                 if k in raw})
+    if not out.get('storage_path'):
+        out['storage_path'] = str(common.STATE / 'opencode-mem')
     reserve = dict(DEFAULTS['reserve'])
     if isinstance(raw.get('reserve'), dict): reserve.update(raw['reserve'])
     out['reserve'] = reserve
+    rolling = dict(DEFAULTS['rolling'])
+    if isinstance(raw.get('rolling'), dict): rolling.update(raw['rolling'])
+    out['rolling'] = rolling
     return out
 
 
@@ -37,6 +49,12 @@ def validate(value):
     if not isinstance(value, dict) or not isinstance(value.get('enabled'), bool):
         raise ValueError('memory.enabled must be boolean')
     result = settings(value)
+    if not isinstance(result['storage_path'], str) or not result['storage_path'].strip():
+        raise ValueError('memory.storage_path must be a non-empty absolute path')
+    storage = Path(result['storage_path']).expanduser()
+    if not storage.is_absolute():
+        raise ValueError('memory.storage_path must be an absolute path')
+    result['storage_path'] = str(storage)
     for key in ('api_url', 'embedding_api_url', 'embedding_model', 'capture_profile'):
         if not isinstance(result[key], str) or not result[key].strip():
             raise ValueError('memory.' + key + ' must be non-empty text')
@@ -57,6 +75,17 @@ def validate(value):
             raise ValueError('memory.reserve.' + key + ' must be a non-negative number')
     if reserve['maximum_percent'] > 10 or reserve['minimum_percent'] > reserve['maximum_percent']:
         raise ValueError('memory reserve must be ordered and at most 10 percent')
+    rolling = result['rolling']
+    if not isinstance(rolling.get('enabled'), bool):
+        raise ValueError('memory.rolling.enabled must be boolean')
+    for key, low, high in (('max_storage_mb', 64, 10240),
+                           ('max_memories', 100, 100000),
+                           ('target_percent', 50, 99),
+                           ('check_interval_hours', 1, 168)):
+        number = rolling.get(key)
+        if isinstance(number, bool) or not isinstance(number, int) or not low <= number <= high:
+            raise ValueError('memory.rolling.' + key + ' must be an integer between ' +
+                             str(low) + ' and ' + str(high))
     return result
 
 
@@ -144,7 +173,7 @@ def configure():
     secret.chmod(0o600)
     provider, model = cfg['capture_profile'].split('/', 1)
     payload = {
-        'storagePath': str(common.STATE / 'opencode-mem'),
+        'storagePath': cfg['storage_path'],
         'embeddingApiUrl': cfg['embedding_api_url'].rstrip('/'),
         'embeddingApiKey': 'file://' + str(secret),
         'embeddingModel': cfg['embedding_model'],
@@ -159,6 +188,10 @@ def configure():
         'showAutoCaptureToasts': False,
         'showUserProfileToasts': False,
         'showErrorToasts': True,
+        # Worker Desk owns retention. Age alone must not delete project memory
+        # after a laptop has been powered off for a month.
+        'autoCleanupEnabled': False,
+        'deduplicationEnabled': True,
         'memory': {'defaultScope': 'project'},
         'chatMessage': {'enabled': True, 'maxMemories': 3,
                         'excludeCurrentSession': True, 'injectOn': 'first'},
@@ -189,7 +222,10 @@ def _request(path, method='GET', data=None, timeout=30):
 def status():
     cfg = settings(common.config().get('memory'))
     result = {'enabled': cfg['enabled'], 'url': cfg['api_url'],
-              'embedding_model': cfg['embedding_model'], 'reserve': cfg['reserve']}
+              'storage_path': cfg['storage_path'],
+              'embedding_model': cfg['embedding_model'], 'reserve': cfg['reserve'],
+              'rolling': {**cfg['rolling'],
+                          'last': common.read_json(common.STATE / 'memory-maintenance.json', {})}}
     if not cfg['enabled']: return result
     try:
         health = common.request(cfg['api_url'].rstrip('/') + '/api/health', timeout=3)
@@ -301,6 +337,107 @@ def delete(memory_id):
 def bulk_delete(ids):
     clean = [_id(value) for value in ids]
     return _request('/api/memories/bulk-delete', 'POST', {'ids': clean, 'cascade': True})
+
+
+def _memory_epoch(item):
+    value = item.get('updatedAt') or item.get('createdAt') or ''
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value) / (1000 if value > 1e11 else 1)
+    if isinstance(value, str):
+        try:
+            from datetime import datetime
+            return datetime.fromisoformat(value.replace('Z', '+00:00')).timestamp()
+        except ValueError:
+            pass
+    return 0.0
+
+
+def _estimated_memory_bytes(item, dimensions):
+    # Logical capacity is stable across SQLite page allocation and external
+    # volume availability: UTF-8 content + float32 vector + bounded row/index
+    # overhead. Physical database pages can be compacted independently.
+    content = len(str(item.get('content') or '').encode('utf-8'))
+    return content + int(dimensions) * 4 + 4096
+
+
+def _rolling_candidates(items, maximum_bytes, maximum_records, target_percent, dimensions=2048):
+    """Return unpinned IDs only after capacity is crossed: duplicates, then oldest."""
+    rows = [item for item in items if isinstance(item, dict) and item.get('type') != 'prompt' and
+            isinstance(item.get('id'), str)]
+    initial_bytes = sum(_estimated_memory_bytes(item, dimensions) for item in rows)
+    if initial_bytes <= maximum_bytes and len(rows) <= maximum_records:
+        return []
+    newest = sorted(rows, key=_memory_epoch, reverse=True)
+    seen = set()
+    remove = []
+    for item in newest:
+        # Pinned copies remain independent durable facts and are never reclaimed.
+        key = (item.get('projectPath') or item.get('displayName') or '', item.get('content') or '')
+        if key in seen and not item.get('isPinned'):
+            remove.append(item['id'])
+        else:
+            seen.add(key)
+    removed = set(remove)
+    remaining_rows = [item for item in rows if item['id'] not in removed]
+    remaining_bytes = sum(_estimated_memory_bytes(item, dimensions) for item in remaining_rows)
+    remaining_count = len(remaining_rows)
+    target_bytes = max(1, int(maximum_bytes * target_percent / 100))
+    target_records = max(1, int(maximum_records * target_percent / 100))
+    oldest = sorted((item for item in remaining_rows if not item.get('isPinned')),
+                    key=_memory_epoch)
+    for item in oldest:
+        if remaining_bytes <= target_bytes and remaining_count <= target_records:
+            break
+        remove.append(item['id'])
+        remaining_bytes -= _estimated_memory_bytes(item, dimensions)
+        remaining_count -= 1
+    return remove
+
+
+def maintain(force=False):
+    """Apply capacity-based rolling retention without coupling memory to sessions."""
+    cfg = settings(common.config().get('memory'))
+    policy = cfg['rolling']
+    state_path = common.STATE / 'memory-maintenance.json'
+    if not cfg['enabled'] or not policy['enabled']:
+        return {'enabled': False, 'reason': 'disabled'}
+    now = time.time()
+    with common.locked('memory-maintenance'):
+        previous = common.read_json(state_path, {})
+        if not force and now - float(previous.get('checked_at') or 0) < \
+                policy['check_interval_hours'] * 3600:
+            return {**previous, 'due': False}
+        try:
+            first = list_memories(page=1, page_size=200)
+            items = list(first.get('items') or [])
+            pages = min(1000, max(1, int(first.get('totalPages') or 1)))
+            for page in range(2, pages + 1):
+                items.extend((list_memories(page=page, page_size=200).get('items') or []))
+            before_bytes = sum(_estimated_memory_bytes(item, cfg['embedding_dimensions'])
+                               for item in items if isinstance(item, dict) and
+                               item.get('type') != 'prompt')
+            capacity_bytes = policy['max_storage_mb'] * 1024 * 1024
+            ids = _rolling_candidates(items, capacity_bytes, policy['max_memories'],
+                                      policy['target_percent'], cfg['embedding_dimensions'])
+            deleted = 0
+            for start in range(0, len(ids), 100):
+                bulk_delete(ids[start:start + 100])
+                deleted += len(ids[start:start + 100])
+            result = {'enabled': True, 'checked_at': now, 'before': len(items),
+                      'deleted': deleted, 'after': len(items) - deleted,
+                      'estimated_bytes_before': before_bytes,
+                      'estimated_bytes_after': max(0, before_bytes - sum(
+                          _estimated_memory_bytes(item, cfg['embedding_dimensions'])
+                          for item in items if isinstance(item, dict) and item.get('id') in set(ids))),
+                      'capacity_bytes': capacity_bytes,
+                      'capacity_mb': policy['max_storage_mb'],
+                      'record_safety_limit': policy['max_memories'],
+                      'target_percent': policy['target_percent'], 'due': True}
+        except Exception as error:
+            result = {'enabled': True, 'checked_at': now, 'deleted': 0,
+                      'error': common.redact(str(error)), 'due': True}
+        common.write_json(state_path, result)
+        return result
 
 
 def profile(): return _request('/api/user-profile')
