@@ -586,6 +586,28 @@ class RoutePolicyTests(unittest.TestCase):
         self.assertGreater(recovered['ark-k3']['share'], 0)
         self.assertNotIn('fallback', recovered_status['fast'][0]['members'])
 
+    def test_capacity_failover_cannot_reopen_reserved_expensive_pool(self):
+        c = json.loads(json.dumps(self.c))
+        c['profiles']['ark-auto']['model'] = 'volcengine-agent-plan/ark-code-latest'
+        c['profiles']['ark-k3']['model'] = 'volcengine-agent-plan/kimi-k3'
+        c['routing_policy'] = {
+            'fast': [[{'profile': 'ark-auto', 'weight': 1}], [{'profile': 'fallback', 'weight': 1}]],
+            'deep': [[{'profile': 'deep-research', 'weight': 9}, {'profile': 'ark-k3', 'weight': 1}],
+                     [{'profile': 'ark-auto', 'weight': 1}], [{'profile': 'fallback', 'weight': 1}]]}
+        c['quota_spillover'] = {'enabled': True, 'profile': 'fallback', 'tiers': ['fast'],
+            'max_share_percent': 33, 'level2_runway_percent': 25}
+        q = {'volcengine-agent-plan': {'state': 'ok', 'available': True, 'stale': False,
+             'windows': [{'name': 'AFPWeekly', 'valid': True, 'duration_minutes': 10080,
+                          'remaining_percent': 18}]},
+             'deepseek': {'state': 'ok', 'available': True, 'windows': [], 'balances': []}}
+        t = self.task(complexity='deep', excluded_providers=['kimi-for-coding'])
+        with patch('economics._window_fit', return_value={'status': 'ok', 'pressure_runway': .17}):
+            self.assertEqual(quota.route(t, c, q)[0], 'fallback')
+            self.assertFalse(quota._allowed_profile('ark-k3', t, c, q)[1])
+            self.assertFalse(quota._allowed_profile('ark-auto', t, c, q)[1])
+        with patch('economics._window_fit', return_value={'status': 'ok', 'pressure_runway': .8}):
+            self.assertEqual(quota.route(t, c, q)[0], 'ark-k3')
+
     def test_fast_source_stays_reserved_when_peer_also_has_burst_pressure(self):
         providers = {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}
         guidance = {

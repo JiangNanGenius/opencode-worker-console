@@ -1114,6 +1114,25 @@ def _allowed_profile(name, t, c, q):
         return provider, False, 'routing_guard_excluded_profile'
     if provider in (t.get('excluded_providers') or []):
         return provider, False, 'continuation_excluded_provider'
+    policy = routing.configured(c) or {}
+    spill = routing.configured_spillover(c, policy)
+    fast = (policy.get('fast') or [[]])[0]
+    fast_names = {entry['profile'] for entry in fast}
+    fast_providers = {str((c.get('profiles', {}).get(n) or {}).get('model', '')).split('/')[0]
+                      for n in fast_names}
+    # Admission protection must survive loss of the peer. Weight-only protection
+    # is bypassed when capacity failover leaves a single expensive candidate.
+    if (t.get('requested_profile') or 'auto') == 'auto' and spill and spill.get('enabled') and \
+            len(fast_providers) == 1 and provider in fast_providers and \
+            (name not in fast_names or tier_of(t) != 'fast'):
+        import economics
+        fit = economics._window_fit(provider, q.get(provider) or {})
+        runway = number(fit.get('pressure_runway'))
+        endpoint = float(spill.get('level2_runway_percent') or 0) / 100 * .9
+        window = economics._selected_window(provider, q.get(provider) or {}) or {}
+        durable = (number(window.get('duration_minutes')) or 0) > 1440
+        if durable and fit.get('status') == 'ok' and runway is not None and endpoint > 0 and runway <= endpoint:
+            return provider, False, 'provider_reserved_for_fast'
     ok, why = allowed(provider, q, t.get('complexity', 'normal'), c.get('kimi_reserve_percent', 0))
     return provider, ok, why
 
