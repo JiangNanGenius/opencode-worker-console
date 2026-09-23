@@ -72,17 +72,65 @@ class NotificationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'non-empty strings'):
             notifications.validate({'credentials': ['bark-phone', None]})
 
-    def test_quota_events_seed_then_notify_only_on_transition(self):
-        cfg = {'notifications': {'enabled': True, 'quota_transitions': True}}
-        snapshot = {'ark': {'available': True}}
-        with patch.object(notifications.quota, 'tier_guidance', side_effect=[
-                 {'conservation_level': 0},
-                 {'conservation_level': 2, 'combined_remaining_percent': 20},
-             ]), patch.object(notifications, 'send', return_value={'sent': True}) as send:
-            self.assertEqual(notifications.observe_quota(cfg, snapshot), [])
-            notifications.observe_quota(cfg, snapshot)
-        send.assert_called_once()
-        self.assertIn('二级降载', send.call_args.args[0])
+    def test_transparent_exhaustion_and_recovery_are_silent(self):
+        cfg = {'notifications': {'enabled': True}, 'profiles': {'test': {}}}
+        with patch.object(notifications.quota, 'route', return_value=('fallback', 'ok')), \
+             patch.object(notifications, 'send', return_value={'sent': True}) as send:
+            for available in (True, False, False, True):
+                notifications.observe_quota(cfg, {'kimi-for-coding': {
+                    'state': 'ok', 'stale': False, 'available': available,
+                    'windows': [{'valid': True, 'duration_minutes': 300,
+                                 'remaining_percent': 0}]}})
+        send.assert_not_called()
+
+    def test_route_outage_dedup_and_rearm(self):
+        cfg = {'notifications': {'enabled': True}, 'profiles': {'test': {}}}
+        with patch.object(notifications.quota, 'route', return_value=(None, 'exhausted')) as route, \
+             patch.object(notifications, 'send', return_value={'sent': True}) as send:
+            notifications.observe_quota(cfg, {})
+            notifications.observe_quota(cfg, {})
+            self.assertEqual(send.call_count, 1)
+            route.return_value = ('fallback', 'ok')
+            notifications.observe_quota(cfg, {})
+            self.assertEqual(send.call_count, 1)
+            route.return_value = (None, 'exhausted')
+            notifications.observe_quota(cfg, {})
+            self.assertEqual(send.call_count, 2)
+
+    def test_recharge_threshold_dedup_rearm_and_stale(self):
+        cfg = {'notifications': {'enabled': True}}
+        def snapshot(balance, stale=False):
+            return {'deepseek': {'state': 'ok', 'stale': stale,
+                'balances': [{'currency': 'CNY', 'remaining': balance}]}}
+        with patch.object(notifications.quota, 'tier_guidance', return_value={}), \
+             patch.object(notifications, 'send', return_value={'sent': True}) as send:
+            notifications.observe_quota(cfg, snapshot(40))
+            self.assertEqual(send.call_count, 0)
+            notifications.observe_quota(cfg, snapshot(39))
+            notifications.observe_quota(cfg, snapshot(30))
+            self.assertEqual(send.call_count, 1)
+            notifications.observe_quota(cfg, snapshot(80, True))
+            notifications.observe_quota(cfg, snapshot(30))
+            self.assertEqual(send.call_count, 1)
+            notifications.observe_quota(cfg, snapshot(80))
+            notifications.observe_quota(cfg, snapshot(39))
+            self.assertEqual(send.call_count, 2)
+
+    def test_balance_severity_and_kimi_window_exhaustion(self):
+        cfg = {'notifications': {'enabled': True}}
+        def sample(balance, percent):
+            return {'deepseek': {'state': 'ok', 'stale': False,
+                       'balances': [{'currency': 'CNY', 'remaining': balance}]},
+                    'kimi-for-coding': {'state': 'ok', 'stale': False, 'available': True,
+                       'windows': [{'valid': True, 'remaining_percent': percent, 'duration_minutes': 300}]}}
+        with patch.object(notifications.quota, 'tier_guidance', return_value={}), \
+             patch.object(notifications, 'send', return_value={'sent': True}) as send:
+            for balance in [39, 29, 0, 0]:
+                notifications.observe_quota(cfg, sample(balance, 0))
+            self.assertEqual(send.call_count, 3)  # cash edges only; Kimi exhaustion is silent
+            notifications.observe_quota(cfg, sample(50, 100))
+            notifications.observe_quota(cfg, sample(0, 0))
+            self.assertEqual(send.call_count, 4)
 
     def test_task_completion_is_explicit_opt_in(self):
         cfg = {'notifications': {'enabled': True}}

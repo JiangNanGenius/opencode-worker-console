@@ -570,8 +570,8 @@ class RoutePolicyTests(unittest.TestCase):
         self.assertEqual(guidance['provider_conservation_level']['kimi-for-coding'], 0)
         self.assertEqual(status['fast'][0]['members']['fallback']['share'], 1.0)
         members = status['background'][0]['members']
-        self.assertEqual(members['senior-code']['share'], .70)
-        self.assertEqual(members['ark-k3']['share'], .30)
+        self.assertEqual(members['senior-code']['share'], 1.0)
+        self.assertEqual(members['ark-k3']['share'], 0.0)
         self.assertNotIn('fallback', members)
 
         # The same ten working hours become sustainable when Ark's reset moves

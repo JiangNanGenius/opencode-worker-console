@@ -147,47 +147,70 @@ def _save(value):
     common.write_json(common.STATE / STATE_FILE, value)
 
 
+def _threshold_alert(settings, key, severity, title, body):
+    """Persist independent threshold edges; invalid telemetry never calls this."""
+    with common.locked('notifications'):
+        state = _state()
+        alert = state.get(key) or {}
+        sent_level = int(alert.get('severity') or 0)
+        if severity < sent_level:
+            alert = {'severity': severity}
+            state[key] = alert
+            _save(state)
+        if severity <= int(alert.get('severity') or 0):
+            return []
+        if alert.get('attempt_severity') == severity and time.time() - alert.get('attempted_at', 0) < 900:
+            return []
+        alert.update(attempted_at=time.time(), attempt_severity=severity)
+        state[key] = alert
+        _save(state)
+    result = send(title, body, level='timeSensitive', config=settings)
+    with common.locked('notifications'):
+        state = _state()
+        latest = state.get(key) or {}
+        if latest.get('attempted_at') == alert.get('attempted_at') and result.get('sent'):
+            latest['severity'] = severity
+            state[key] = latest
+            _save(state)
+    return [result]
+
+
+def _observe_balance_and_windows(settings, snapshot):
+    events = []
+    record = (snapshot or {}).get('deepseek') or {}
+    if record.get('state') == 'ok' and record.get('stale', True) is False:
+        amounts = [quota.number(row.get('remaining')) for row in record.get('balances') or []
+                   if isinstance(row, dict) and row.get('currency') == 'CNY']
+        if amounts and all(v is not None and v >= 0 for v in amounts):
+            balance = sum(amounts)
+            severity = 3 if balance == 0 else 2 if balance < 30 else 1 if balance < 40 else 0
+            label = '余额耗尽' if severity == 3 else '低于 ¥30' if severity == 2 else '低于 ¥40'
+            events += _threshold_alert(settings, 'deepseek_balance_threshold', severity,
+                'Worker Desk · DeepSeek ' + label,
+                'DeepSeek 当前余额 ¥%.2f，请及时充值以保持兜底任务可用。' % balance)
+    return events
+
+
 def observe_quota(config, snapshot):
-    """Notify only on meaningful state transitions; the first sample seeds state."""
+    """Cash needs action; transparent provider failovers do not need a push."""
     settings = normalize(config.get('notifications'))
     if not settings['enabled'] or not settings['quota_transitions']:
         return []
-    guidance = quota.tier_guidance(config, snapshot)
-    level = int(guidance.get('conservation_level') or 0)
-    providers = {}
-    for name, value in (snapshot or {}).items():
-        if not isinstance(value, dict):
-            continue
-        available = value.get('available')
-        providers[name] = available if isinstance(available, bool) else None
-    with common.locked('notifications'):
-        state = _state()
-        previous_level = state.get('conservation_level')
-        previous_providers = state.get('providers') if isinstance(state.get('providers'), dict) else {}
-        state.update(conservation_level=level, providers=providers, sampled_at=time.time())
-        _save(state)
-    if previous_level is None:
-        return []
-    events = []
-    if level != previous_level:
-        remaining = guidance.get('combined_remaining_percent')
-        suffix = ('，综合续航约 ' + str(round(float(remaining))) + '%') if isinstance(remaining, (int, float)) and math.isfinite(remaining) else ''
-        if level > previous_level:
-            title = 'Worker Desk · ' + ('二级降载' if level == 2 else '一级降载')
-            body = '套餐消耗进入保护区' + suffix + '。新任务与符合条件的长任务将按当前策略分流。'
-            alert = 'timeSensitive'
-        else:
-            title = 'Worker Desk · 额度恢复'
-            body = ('已退出降载' if level == 0 else '已回到一级降载') + suffix + '。后续任务恢复使用当前高质量路由。'
-            alert = 'active'
-        events.append(send(title, body, level=alert, config=settings))
-    for provider, available in providers.items():
-        old = previous_providers.get(provider)
-        if old is True and available is False:
-            events.append(send('Worker Desk · 额度终止', provider + ' 暂不可用，自动任务会选择同档或后续路由。',
-                               level='timeSensitive', config=settings))
-        elif old is False and available is True:
-            events.append(send('Worker Desk · 额度恢复', provider + ' 已恢复可用。', config=settings))
+    events = _observe_balance_and_windows(settings, snapshot)
+    # Probe the same admission path as dispatch, without advancing routing counters.
+    # Do not infer an outage from a single empty window or conservation level.
+    if not config.get('profiles'):
+        return events
+    blocked = []
+    for tier in ('fast', 'normal', 'deep'):
+        profile, _ = quota.route({'requested_profile': 'auto', 'tier': tier,
+            'complexity': 'deep' if tier == 'deep' else 'normal'}, config, snapshot)
+        if not profile:
+            blocked.append(tier)
+    events += _threshold_alert(settings, 'service_route_unavailable', int(bool(blocked)),
+        'Worker Desk · 任务路由暂不可用',
+        '以下任务档位暂无可用模型：' + '、'.join(blocked) +
+        '。请检查套餐额度或充值备用余额；已有任务状态请在控制台查看。')
     return events
 
 

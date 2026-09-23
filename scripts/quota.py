@@ -1695,15 +1695,20 @@ def routing_status(c, q):
         stage_views = []
         for index, stage in enumerate(stages):
             candidates = []
+            denied = {}
             for entry in stage:
                 profile = c.get('profiles', {}).get(entry['profile'])
                 if not isinstance(profile, dict) or profile.get('enabled') is False:
                     continue
                 provider = str(profile.get('model', '')).split('/', 1)[0]
                 complexity = 'deep' if tier == 'deep' else 'normal'
-                ok, _ = allowed(provider, q, complexity, c.get('kimi_reserve_percent', 0))
+                _, ok, admission_reason = _allowed_profile(
+                    entry['profile'], {'tier': tier, 'complexity': complexity, 'requested_profile': 'auto'}, c, q)
                 if ok:
                     candidates.append(entry)
+                elif admission_reason == 'provider_reserved_for_fast':
+                    denied[entry['profile']] = {'provider': provider, 'share': 0.0,
+                        'effective_weight': 0, 'reason': admission_reason}
             level2 = False
             if spill_config and spill_config['enabled'] and index == 0 and \
                     _level2_conservation_active(tier, spill_config, spill_guidance):
@@ -1764,6 +1769,7 @@ def routing_status(c, q):
                             reason += ':quota_source_level' + str(source_level)
                         reason += ':' + spill_reason
                         info = spill_info
+            info.update(denied)
             if info:
                 stage_views.append({'reason': reason, 'members': info})
         if stage_views:
@@ -1778,7 +1784,7 @@ def _control_policy(c):
     # Bump when the meaning of the persisted conservation level changes. Version 2
     # separates renewable short-window pressure from durable plan capacity, so an
     # old level derived from the former mixed signal must not remain latched.
-    payload = {'controller_schema': 4, **{k: c.get(k) for k in fields}}
+    payload = {'controller_schema': 5, **{k: c.get(k) for k in fields}}
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
