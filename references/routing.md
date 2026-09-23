@@ -301,3 +301,19 @@ Ark AFP = 333.33D + 125N + 50S
 general expression is `1000*rD*D + 250*rN*N + 50*S`, where `rD` is 1/4, 1/3 or 1/2 and `rN` is
 1/3, 1/2 or 2/3. These coefficients are estimates and promotion terms can change. The live Ark
 `Used` value is authoritative; the console shows it separately from estimates and nominal cost.
+
+### Stable telemetry and source-pool protection
+
+Active burn is measured across complete 30-minute observation blocks, including
+unchanged quota counters. Increasing polling frequency must not inflate the rate.
+Gaps over 30 minutes and counter increases break the block; partial blocks do not
+become a long-term forecast. Actual zero allowance still blocks admission immediately.
+When durable windows exist, only their observed replenishment releases global
+conservation; a five-hour reset does not replenish a weekly budget.
+
+For adaptive Normal/Deep stages with a usable peer, a sole Fast source has an
+additional smooth reservation curve. At severe pressure its expensive-tier share
+can reach zero even if its peer is also under pressure. Fast cash spillover retains
+the configured balance floor and ceiling; at peak prices it reaches that ceiling
+at 75% of the Level 2 runway threshold. A configured 100% ceiling permits temporary
+full cash takeover. Explicit model pins and single-provider setups remain supported.

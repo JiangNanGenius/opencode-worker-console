@@ -586,6 +586,25 @@ class RoutePolicyTests(unittest.TestCase):
         self.assertGreater(recovered['ark-k3']['share'], 0)
         self.assertNotIn('fallback', recovered_status['fast'][0]['members'])
 
+    def test_fast_source_stays_reserved_when_peer_also_has_burst_pressure(self):
+        providers = {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}
+        guidance = {
+            'provider_runway': {'kimi-for-coding': .201, 'volcengine-agent-plan': .179},
+            'runway_threshold_percent': 38, 'level2_runway_percent': 25,
+            'fast_stage': {'configured': ['volcengine-agent-plan']},
+        }
+        for tier in ('background', 'deep'):
+            values = quota._dynamic_runway_override(tier, providers, {}, guidance)
+            self.assertEqual(values['volcengine-agent-plan'], 0)
+            self.assertGreater(values['kimi-for-coding'], 0)
+        # Healthy pools retain their configured baseline; no blanket provider ban.
+        guidance['provider_runway'] = dict.fromkeys(providers.values(), .8)
+        values = quota._dynamic_runway_override('deep', providers, {}, guidance)
+        self.assertEqual(values, guidance['provider_runway'])
+        # An unavailable peer must never zero the only usable provider.
+        values = quota._dynamic_runway_override('deep', {'ark': providers['ark']}, {}, guidance)
+        self.assertGreater(values[providers['ark']], 0)
+
     def test_severe_provider_pressure_reserves_that_plan_for_fast(self):
         now = 1_800_000_000
         c = json.loads(json.dumps(self.c))
@@ -1654,7 +1673,7 @@ class DynamicRunwayTests(unittest.TestCase):
         record['deepseek']['balances'][0]['remaining'] = 53.5
         with patch('economics.deepseek_peak', return_value=True):
             self.assertEqual(quota._level2_spillover_cap(c, record, spill, 'deepseek', .25), 33)
-            self.assertEqual(quota._level2_spillover_cap(c, record, spill, 'deepseek', .20), 50)
+            self.assertEqual(quota._level2_spillover_cap(c, record, spill, 'deepseek', .20), 67)
             self.assertEqual(quota._level2_spillover_cap(c, record, spill, 'deepseek', .10), 75)
         with patch('economics.deepseek_peak', return_value=True):
             self.assertEqual(quota._level2_spillover_cap(c, record, spill, 'deepseek'), 33)

@@ -181,6 +181,29 @@ class CapacityTests(unittest.TestCase):
         forecast = capacity.window(dict(w, consumption_estimate=estimate), NOW)
         self.assertGreater(forecast['runway'], .65)
 
+    def test_integer_counter_rate_is_independent_of_poll_frequency(self):
+        w = win(p=84, reset=100)
+        estimates = []
+        for interval in (1, 5):
+            samples = []
+            for minute in range(0, 241, interval):
+                samples.append({'time': NOW - (240-minute)*60, 'windows': {
+                    quota._window_key(w): {'remaining_percent': 100-minute//15,
+                                         'resets_at': w['resets_at']}}})
+            estimates.append(quota.consumption_estimate(w, samples, NOW))
+        self.assertEqual(estimates[0]['raw_active_rate_percent_per_hour'], 4)
+        self.assertEqual(estimates[0]['raw_active_rate_percent_per_hour'],
+                         estimates[1]['raw_active_rate_percent_per_hour'])
+        self.assertEqual(estimates[0]['active_sample_hours'], 4)
+
+    def test_short_refill_does_not_release_weekly_conservation(self):
+        c = {'profiles': {'auto': {'model': 'ark/auto'}},
+             'routing_policy': {'fast': [[{'profile': 'auto', 'weight': 1}]]}}
+        before = {'ark': provider([win('five', p=0, duration=300), win('week', p=19)])}
+        after = {'ark': provider([win('five', p=100, duration=300), win('week', p=19)])}
+        self.assertFalse(quota._observed_replenishment(
+            quota._plan_window_observation(c, before), quota._plan_window_observation(c, after)))
+
     def test_model_analytics_preserve_mixed_segments_and_unattributed_tail(self):
         rows=analytics._models([{'model':'a/model','usage':{'total':100,'by_model':[{'model':'a/model','total':60},{'model':'b/model','total':30}]}}])
         self.assertEqual({r['name']:r['tokens'] for r in rows},{'a/model':60,'b/model':30,'mixed / unattributed':10})

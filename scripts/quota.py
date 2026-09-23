@@ -545,12 +545,22 @@ def consumption_estimate(value, samples, now=None):
     # Estimate working pace separately from wall-clock pace. Idle gaps must not
     # make the next batch appear cheaper. Tiny rounding deltas are not activity.
     active_spend = active_hours = 0.0
-    for (before_at, before), (after_at, after) in zip(points, points[1:] + [(now, remaining)]):
-        dt = (after_at - before_at) / 3600
-        drop = before - after
-        if 0 < dt <= .5 and drop >= .01:
-            active_spend += drop
-            active_hours += dt
+    # Integrate fixed-duration observation blocks, including flat counter ticks.
+    # Counting only downward samples makes integer counters appear faster when
+    # polled more frequently. Gaps over 30 minutes remain unknown, not activity.
+    block_start = block_before = last_at = last_value = None
+    for stamp, prior in points + [(now, remaining)]:
+        if last_at is not None and (stamp - last_at > 1800 or prior > last_value):
+            block_start = block_before = None
+        if block_start is None:
+            block_start, block_before = stamp, prior
+        elif stamp - block_start >= 1800:
+            drop = block_before - prior
+            if drop >= .01:
+                active_spend += drop
+                active_hours += (stamp - block_start) / 3600
+            block_start, block_before = stamp, prior
+        last_at, last_value = stamp, prior
     # Active-only rate is intentionally slower to enter than the five-minute
     # wall-clock estimate. Short rolling windows need 30 minutes of evidence;
     # daily-or-longer windows need two hours because their counters are coarse
@@ -1221,7 +1231,7 @@ def _level2_spillover_cap(c, q, spill_config, target_provider, runway=None, now=
 
     Off-peak may use the configured high cap throughout Level 2. At peak prices
     the cap starts at the Level 1 ceiling, then rises continuously to the same
-    high cap once source-plan runway falls below half the Level 2 threshold.
+    high cap once source-plan runway falls below three quarters of the Level 2 threshold.
     """
     base = int(spill_config.get('max_share_percent') or 0)
     if target_provider != 'deepseek':
@@ -1253,7 +1263,7 @@ def _level2_spillover_cap(c, q, spill_config, target_provider, runway=None, now=
     if isinstance(runway, bool) or not isinstance(runway, (int, float)) or \
             not math.isfinite(runway) or threshold <= 0:
         return base
-    critical = threshold * 0.5
+    critical = threshold * 0.75
     progress = min(1.0, max(0.0, (threshold - float(runway)) /
                             max(0.000001, threshold - critical)))
     return int(round(base + (high - base) * progress))
@@ -1298,6 +1308,22 @@ def _dynamic_runway_override(tier, provider_by_profile, q, guidance=None, now=No
             ratio = max(0.0, min(1.0, runway / threshold))
             smooth = ratio * ratio * (3.0 - 2.0 * ratio)
             values[provider] = runway * smooth
+    # Protect a sole Fast source independently of relative peer pressure.
+    # Otherwise two depleted pools converge to their baseline and re-admit
+    # expensive work to the pool that must also serve Fast. This continuous
+    # reservation reaches zero at the same critical endpoint as Fast spillover.
+    fast_sources = set(((guidance or {}).get('fast_stage') or {}).get('configured') or [])
+    critical = number((guidance or {}).get('level2_runway_percent'))
+    if len(fast_sources) == 1 and len(providers) > 1 and critical and threshold:
+        reserved = next(iter(fast_sources))
+        original = guidance_runways.get(reserved) if isinstance(guidance_runways, dict) else None
+        peers = [v for p, v in values.items() if p != reserved and v is not None and v > 0]
+        endpoint = critical / 100.0 * .90
+        if reserved in values and peers and number(original) is not None and threshold > endpoint:
+            fraction = max(0.0, min(1.0, (original - endpoint) / (threshold - endpoint)))
+            reserve_factor = fraction * fraction * (3.0 - 2.0 * fraction)
+            if values[reserved] is not None:
+                values[reserved] *= reserve_factor
     return values
 
 
@@ -1780,7 +1806,11 @@ def _plan_window_observation(c, q):
         record = q.get(provider) or {}
         if record.get('stale', True) or record.get('state') != 'ok':
             continue
-        for index, window in enumerate(record.get('windows') or []):
+        windows = record.get('windows') or []
+        durable = [w for w in windows if isinstance(w, dict) and
+                   w.get('valid', True) is True and
+                   (number(w.get('duration_minutes')) or 0) > 1440]
+        for index, window in enumerate(durable or windows):
             if not isinstance(window, dict) or window.get('valid', True) is not True:
                 continue
             value = window.get('remaining_percent')
