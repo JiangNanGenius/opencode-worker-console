@@ -132,6 +132,58 @@ class NotificationTests(unittest.TestCase):
             notifications.observe_quota(cfg, sample(0, 0))
             self.assertEqual(send.call_count, 4)
 
+    def test_durable_conservation_confirmation_dedup_and_recovery(self):
+        import economics
+        snapshot = {'volcengine-agent-plan': {'state': 'ok', 'stale': False}}
+        guidance = {'provider_conservation_level': {'volcengine-agent-plan': 2},
+                    'runway_threshold_percent': 38, 'level2_runway_percent': 25}
+        window = {'duration_minutes': 10080, 'resets_at': '2099-01-01T00:00:00Z'}
+        with patch.object(notifications.quota, 'tier_guidance', return_value=guidance), \
+             patch.object(economics, '_selected_window', return_value=window), \
+             patch.object(economics, '_window_fit', return_value={'status': 'ok', 'pressure_runway': .1}) as fit, \
+             patch.object(notifications.time, 'time', return_value=10000) as clock, \
+             patch.object(notifications, 'send', return_value={'sent': True}) as send:
+            observe = lambda: notifications._observe_long_conservation({}, {}, snapshot)
+            observe()
+            clock.return_value = 11799
+            observe()
+            send.assert_not_called()
+            clock.return_value = 11800
+            observe()
+            observe()
+            send.assert_called_once()
+            self.assertIn('持续降载', send.call_args.args[0])
+            fit.return_value = {'status': 'ok', 'pressure_runway': 1.0}
+            observe()
+            clock.return_value = 13600
+            observe()  # sustained healthy state rearms without a recovery notification
+            send.assert_called_once()
+            fit.return_value = {'status': 'ok', 'pressure_runway': .1}
+            observe()
+            clock.return_value = 15400
+            observe()
+            self.assertEqual(send.call_count, 2)
+
+    def test_short_stale_or_imminent_refill_never_alerts(self):
+        import economics
+        snapshot = {'kimi-for-coding': {'state': 'ok', 'stale': False}}
+        with patch.object(notifications.quota, 'tier_guidance', return_value={
+                'provider_conservation_level': {'kimi-for-coding': 2},
+                'runway_threshold_percent': 38, 'level2_runway_percent': 25}), \
+             patch.object(economics, '_selected_window', return_value={'duration_minutes': 300}) as window, \
+             patch.object(economics, '_window_fit', return_value={'status': 'ok', 'pressure_runway': .1}), \
+             patch.object(notifications.time, 'time', return_value=10000) as clock, \
+             patch.object(notifications, 'send') as send:
+            for instant in (10000, 20000):
+                clock.return_value = instant
+                notifications._observe_long_conservation({}, {}, snapshot)
+            window.return_value = {'duration_minutes': 10080, 'resets_at': '1970-01-01T05:40:00Z'}
+            notifications._observe_long_conservation({}, {}, snapshot)
+            snapshot['kimi-for-coding']['stale'] = True
+            window.return_value = {'duration_minutes': 10080}
+            notifications._observe_long_conservation({}, {}, snapshot)
+            send.assert_not_called()
+
     def test_task_completion_is_explicit_opt_in(self):
         cfg = {'notifications': {'enabled': True}}
         with patch.object(notifications.common, 'config', return_value=cfg), \

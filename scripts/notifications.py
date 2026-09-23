@@ -191,12 +191,59 @@ def _observe_balance_and_windows(settings, snapshot):
     return events
 
 
+def _observe_long_conservation(settings, config, snapshot):
+    """Notify one durable shortage episode after 30 minutes of confirmation."""
+    import economics
+    guidance = quota.tier_guidance(config, snapshot)
+    events = []
+    now = time.time()
+    for provider in guidance.get('provider_conservation_level', {}):
+        record = snapshot.get(provider) or {}
+        if record.get('state') != 'ok' or record.get('stale', True):
+            continue
+        window = economics._selected_window(provider, record) or {}
+        if (quota.number(window.get('duration_minutes')) or 0) <= 1440:
+            continue
+        fit = economics._window_fit(provider, record, now)
+        runway = quota.number(fit.get('pressure_runway'))
+        if fit.get('status') != 'ok' or fit.get('stale') or runway is None:
+            continue
+        # Derive from the durable window, never the short-window availability flag.
+        level = quota._provider_conservation_level(guidance, True, runway)
+        reset = quota.routing._iso_seconds(window.get('resets_at'))
+        if reset and reset - now <= 3600:
+            continue  # imminent refill is not an actionable long-term warning
+        key = 'long_conservation:' + provider
+        with common.locked('notifications'):
+            state = _state()
+            episode = state.get(key) or {}
+            marker = 'low_since' if level else 'healthy_since'
+            episode.pop('healthy_since' if level else 'low_since', None)
+            episode.setdefault(marker, now)
+            confirmed = now - episode[marker] >= 1800
+            state[key] = episode
+            _save(state)
+        if not confirmed:
+            continue
+        name = {'kimi-for-coding': 'Kimi', 'volcengine-agent-plan': '方舟 Agent Plan'}.get(provider, provider)
+        note = ''
+        if reset:
+            from datetime import datetime, timezone, timedelta
+            note = ' 下次额度刷新：北京时间 ' + datetime.fromtimestamp(
+                reset, timezone(timedelta(hours=8))).strftime('%m/%d %H:%M') + '。'
+        events += _threshold_alert(settings, key + ':notice', int(level > 0),
+            'Worker Desk · ' + name + ' 持续降载',
+            name + ' 的长期套餐额度持续紧张，已减少该套餐的任务分配，服务继续通过其他可用路由运行。' + note)
+    return events
+
+
 def observe_quota(config, snapshot):
     """Cash needs action; transparent provider failovers do not need a push."""
     settings = normalize(config.get('notifications'))
     if not settings['enabled'] or not settings['quota_transitions']:
         return []
     events = _observe_balance_and_windows(settings, snapshot)
+    events += _observe_long_conservation(settings, config, snapshot)
     # Probe the same admission path as dispatch, without advancing routing counters.
     # Do not infer an outage from a single empty window or conservation level.
     if not config.get('profiles'):
