@@ -9,6 +9,22 @@ import holiday_calendar
 
 
 class EconomicsTests(unittest.TestCase):
+    def test_monthly_pressure_survives_weekly_and_short_refills(self):
+        now = 1800000000
+        record = {'state': 'ok', 'stale': False, 'available': True, 'windows': [
+            {'name': 'AFPWeekly', 'valid': True, 'duration_minutes': 10080,
+             'remaining_percent': 100, 'resets_at': now + 2 * 86400,
+             'consumption_estimate': {'hours': 100}},
+            {'name': 'AFPMonthly', 'valid': True, 'duration_minutes': 43200,
+             'remaining_percent': 30, 'resets_at': now + 20 * 86400,
+             'consumption_estimate': {'hours': 72}},
+            {'name': 'AFPFiveHour', 'valid': True, 'duration_minutes': 300,
+             'remaining_percent': 1, 'resets_at': now + 3600,
+             'consumption_estimate': {'hours': .01}}]}
+        fit = economics._window_fit('volcengine-agent-plan', record, now)
+        self.assertAlmostEqual(fit['pressure_runway'], .15)
+        self.assertGreater(fit['runway'], 1)
+
     def test_default_unit_and_baseline_formula_match_plan_math(self):
         result = economics.summary({}, {})
         self.assertEqual(result['afp_eq_per_cny'], 500.0)

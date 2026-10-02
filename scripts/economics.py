@@ -390,6 +390,14 @@ def _window_fit(provider, record, now=None):
     # paused machine does not create false endurance anxiety. Short renewable
     # windows are not selected here and therefore cannot collapse the plan.
     pressure_window = capacity_model.window(window, now)
+    # Weekly renewal cannot rescue an insufficient monthly allowance. Pressure
+    # follows the tightest durable window; short burst windows stay admission-only.
+    durable_pressures = [capacity_model.window(w, now) for w in record.get('windows') or []
+                        if isinstance(w, dict) and
+                        (_non_negative(w.get('duration_minutes')) or 0) > 1440]
+    durable_pressures = [w for w in durable_pressures if w is not None and not w.get('expired')]
+    if durable_pressures:
+        pressure_window = min(durable_pressures, key=lambda w: w['runway'])
     rate = fitted_window['rate_percent_per_hour'] if fitted_window else max((r for r in rates if r is not None), default=None)
     duration = _non_negative(window.get('duration_minutes'))
     # The live burn rate is authoritative. A full-window duration is only the
