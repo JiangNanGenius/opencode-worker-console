@@ -158,10 +158,29 @@ class ProactiveRerouteTests(unittest.TestCase):
             self.assertFalse(worker.proactive_reroute_if_needed(common.task('job-long'),{'type':'busy'}))
             call.assert_not_called()
 
-    def test_deep_and_explicit_tasks_never_move(self):
-        for fields in ({'tier': 'deep'}, {'requested_profile': 'senior-code'}):
-            common.update('job-long', **fields)
-            with patch.object(worker, 'call') as call:
-                self.assertFalse(worker.proactive_reroute_if_needed(
-                    common.task('job-long'), {'type': 'busy'}))
-            call.assert_not_called()
+    def test_explicit_task_never_moves(self):
+        common.update('job-long', requested_profile='senior-code')
+        with patch.object(worker, 'call') as call:
+            self.assertFalse(worker.proactive_reroute_if_needed(common.task('job-long'), {'type': 'busy'}))
+        call.assert_not_called()
+
+    def test_deep_task_can_leave_constrained_provider(self):
+        common.update('job-long', tier='deep')
+        with patch.object(quota, 'tier_guidance', return_value={
+                'conservation_level': 0, 'provider_conservation_level': {'ark': 2}}), \
+             patch.object(quota, 'route', return_value=('fallback', 'source_level2')), \
+             patch.object(worker, 'call', return_value={}):
+            self.assertTrue(worker.proactive_reroute_if_needed(common.task('job-long'), {'type': 'busy'}))
+        self.assertEqual(common.task('job-long')['tier'], 'deep')
+
+    def test_same_level_source_pressure_rechecks_after_cooldown(self):
+        common.update('job-long', profile='ark-auto', proactive_reroute_levels=[2],
+                      route_history=[{'at': time.time(), 'switch_state': 'active'}])
+        with patch.object(quota, 'tier_guidance', return_value={
+                'conservation_level': 0, 'provider_conservation_level': {'ark': 2}}), \
+             patch.object(quota, '_allowed_profile', return_value=('ark', True, 'available')), \
+             patch.object(quota, 'route', return_value=('fallback', 'source_level2')), \
+             patch.object(worker, 'call', return_value={}):
+            self.assertFalse(worker.proactive_reroute_if_needed(common.task('job-long'), {'type': 'busy'}))
+            common.update('job-long', route_history=[{'at': time.time()-1000, 'switch_state': 'active'}])
+            self.assertTrue(worker.proactive_reroute_if_needed(common.task('job-long'), {'type': 'busy'}))

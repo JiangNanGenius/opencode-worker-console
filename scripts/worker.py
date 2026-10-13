@@ -452,14 +452,14 @@ def proactive_reroute_if_needed(t, native_status):
 
     The current turn is never aborted.  OpenCode accepts the continuation in the
     same session and runs it after the current turn, so partial work and context are
-    retained.  Only automatic Fast/Normal tasks participate; Deep and operator pins
-    remain stable. Level 1 can use only the configured bounded spillover target,
+    retained.  Automatic task tiers participate; operator pins remain stable. Capability
+    floors remain mandatory for every destination. Level 1 can use only the configured bounded spillover target,
     while Level 2 can move Normal work into the configured Fast source pool.
     """
     c = config()
     if c.get('proactive_long_task_reroute', True) is not True or \
             (t.get('requested_profile') or 'auto') != 'auto' or \
-            t.get('tier') == 'deep' or native_status.get('type') != 'busy':
+            native_status.get('type') != 'busy':
         return False
     after = c.get('proactive_reroute_after_seconds', 900)
     if isinstance(after, bool) or not isinstance(after, (int, float)):
@@ -481,7 +481,11 @@ def proactive_reroute_if_needed(t, native_status):
         return False
     if level in (t.get('proactive_reroute_levels') or []):
         _, admitted, _ = quota._allowed_profile(t.get('profile'), t, c, q)
-        if admitted:
+        # A level is not a lifetime exemption. Recheck sustained provider pressure
+        # after a cooldown; ordinary global-only rebalancing remains one-shot.
+        source_level = int((guidance.get('provider_conservation_level') or {}).get(current_provider) or 0)
+        switches = [h.get('at', 0) for h in t.get('route_history', []) if isinstance(h, dict)]
+        if admitted and (source_level < 2 or time.time() - max(switches, default=0) < 900):
             return False
     try:
         profile, reason = quota.route(dict(t, requested_profile='auto'), c, q)
@@ -506,7 +510,7 @@ def proactive_reroute_if_needed(t, native_status):
     spill = routing.configured_spillover(c, policy)
     if level == 1 and (not spill or profile != spill.get('profile')):
         return False
-    if level == 2:
+    if level == 2 and t.get('tier') != 'deep':
         fast_profiles = {entry.get('profile') for stage in (policy or {}).get('fast', []) for entry in stage}
         if profile not in fast_profiles and (not spill or profile != spill.get('profile')):
             return False
