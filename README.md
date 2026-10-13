@@ -161,6 +161,12 @@ There is no artificial model-step, tool-call or total-runtime cap. `wait` blocks
 - Statistics reuse one usage snapshot every three seconds for the last hour, 24 hours and 30 days. Charts carry real Token scales plus model, tier, status and profile breakdowns.
 - Task scheduling reports CPU, memory, disk, load and worker counts. Cleaned-task Token, cost and route summaries remain in an expandable **History ledger**.
 
+### Host overview and structured controls
+
+Signing in lands on the **Host overview**: live CPU, GPU, memory, kernel memory-pressure, die temperatures, fan RPM, network rate, disk I/O and internal/external disk capacity charts (15 minutes, 1 hour, 24 hours), the active Codex and OpenCode tasks with their real model and elapsed time, provider quotas, and managed-service status. One shared collector serves the web and the physical information board; the board payload is published as an owner-only `STATE/host-board.json` in the existing v2 schema. Missing sensors render as unavailable, never as zero.
+
+Progressive drawers offer fixed, validated controls — no terminal, no file browser: fan profiles and fixed RPM through the local fan daemon (its safety floor is never touched), supported macOS power modes with readback, a managed keep-awake (`caffeinate`), ending own-user processes with TERM then explicit KILL (PID + start time validated), restarting managed services, and sleep/restart/shutdown with affected-work confirmation, recent-password reauthentication and persisted operation status. Disruptive actions run through a narrow root helper that must be installed and verified first; until then they report unavailable. See [Host controls](references/host-controls.md) for installation, capabilities, configuration paths and rollback.
+
 ### Clean safely and retain evidence
 
 Before deleting terminal work, Worker Desk writes a compact usage ledger, then removes the linked OpenCode session and disposable evidence. Integrated or unchanged managed worktrees are released; unintegrated changes stay for review. An idle `needs_attention` task becomes reclaimable after 24 hours or when a newer task exists under the same coordinator conversation.

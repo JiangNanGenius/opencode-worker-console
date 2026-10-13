@@ -55,6 +55,25 @@ def _memory():
 
 def snapshot(now=None):
     now = time.time() if now is None else now
+    # The console's legacy task page consumes the same host sample as the home.
+    try:
+        import host_telemetry
+        collector = host_telemetry.current_collector()
+        sample = collector.snapshot(now)['system'] if collector else None
+        if sample:
+            disk = next((d for d in sample.get('disks', []) if d.get('internal')), None)
+            total = sample.get('memory_total_gb')
+            used = sample.get('memory_used_gb')
+            return {'sampled_at': sample['sampled_at'], 'cpu_percent':sample.get('cpu_percent'),
+                    'load_average':sample.get('load_average', []),
+                    'memory':{'total_bytes':total * 1024**3 if total is not None else None,
+                              'available_bytes':max(0,total-used)*1024**3 if total is not None and used is not None else None,
+                              'used_percent':sample.get('memory_percent')},
+                    'disk':{'total_bytes':disk['total_gb']*1024**3 if disk else None,
+                            'free_bytes':disk['free_gb']*1024**3 if disk else None,
+                            'used_percent':disk.get('used_percent') if disk else None}}
+    except (ImportError, KeyError, TypeError):
+        pass
     if _CACHE['value'] is not None and now - _CACHE['at'] < 5:
         return dict(_CACHE['value'])
     disk = shutil.disk_usage(Path.home())

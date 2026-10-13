@@ -7,6 +7,7 @@
   <script src="/console-assets/i18n.js" defer></script>
   <script src="/console-assets/task-view.js" defer></script>
   <script src="/console-assets/app.js" defer></script>
+  <script src="/console-assets/host.js" defer></script>
   <script src="/console-assets/manage.js" defer></script>
   <script src="/console-assets/setup.js" defer></script>
 </head>
@@ -14,14 +15,43 @@
   <canvas id="ambient-particles" class="ambient-particles" aria-hidden="true"></canvas>
   <aside class="sidebar">
     <a class="brand" href="/console" aria-label="Task console home" data-i18n-aria-label="aria.home"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M5 5h7v7H5zM16 5h7v7h-7zM5 16h7v7H5zM16 16h7v7h-7z"/></svg><span>Worker Desk<small>LOCAL × OPENCODE</small></span></a>
-    <nav class="primary-nav" aria-label="Workspace navigation" data-i18n-aria-label="nav.aria"><button data-view="tasks" class="selected" aria-current="page" data-i18n="nav.tasks">Task scheduling</button><button data-view="stats" data-i18n="nav.stats">Statistics</button><button data-view="sessions" data-i18n="nav.sessions">OpenCode sessions</button><button data-view="memory" data-i18n="nav.memory">Project memory</button><button data-view="models" data-i18n="nav.models">Models &amp; routing</button><button data-view="setup" data-i18n="nav.setup">Setup wizard</button></nav><div class="nav-heading" data-i18n="nav.groups">Task groups</div>
+    <nav class="primary-nav" aria-label="Workspace navigation" data-i18n-aria-label="nav.aria"><button data-view="host" class="selected" aria-current="page" data-i18n="nav.host">Host overview</button><button data-view="tasks" data-i18n="nav.tasks">Task scheduling</button><button data-view="stats" data-i18n="nav.stats">Statistics</button><button data-view="sessions" data-i18n="nav.sessions">OpenCode sessions</button><button data-view="memory" data-i18n="nav.memory">Project memory</button><button data-view="models" data-i18n="nav.models">Models &amp; routing</button><button data-view="setup" data-i18n="nav.setup">Setup wizard</button></nav><div class="nav-heading" data-i18n="nav.groups">Task groups</div>
     <nav id="groups" aria-label="Filter by parent task" data-i18n-aria-label="nav.filterByGroup"><div class="sidebar-loading" data-i18n="tasks.loading">Loading tasks…</div></nav>
     <div class="sidebar-bottom"><div class="model-heading">WORKER DESK</div><p><span data-i18n="sidebar.tagline1">Investigate, summarize, write and verify</span><br><span data-i18n="sidebar.tagline2">Runs locally · multi-model collaboration</span></p></div>
   </aside>
   <main>
-    <header class="page-header"><div><h1 id="page-title" data-i18n="nav.tasks">Task scheduling</h1><p id="page-description" data-i18n="page.tasks.desc">See task ownership, progress and available quota at a glance.</p></div><div class="connection"><label class="language-picker"><span class="sr-only" data-i18n="lang.label">Language</span><select id="language-select" class="language-select" data-language-select data-i18n-aria-label="lang.label"></select></label><span id="health" class="health"><i></i><span data-i18n="health.connecting">Connecting</span></span><span id="updated">—</span><div class="account-controls"><span id="account-name"></span><button id="sign-out" class="text-button" data-i18n="auth.signOut">Sign out</button></div></div></header>
+    <header class="page-header"><div><h1 id="page-title" data-i18n="nav.host">Host overview</h1><p id="page-description" data-i18n="page.host.desc">Host health, active work and remaining resources at a glance.</p></div><div class="connection"><label class="language-picker"><span class="sr-only" data-i18n="lang.label">Language</span><select id="language-select" class="language-select" data-language-select data-i18n-aria-label="lang.label"></select></label><span id="health" class="health"><i></i><span data-i18n="health.connecting">Connecting</span></span><span id="updated">—</span><div class="account-controls"><span id="account-name"></span><button id="sign-out" class="text-button" data-i18n="auth.signOut">Sign out</button></div></div></header>
     <div id="error" role="alert" hidden></div>
-    <div id="view-tasks" class="view-panel">
+    <div id="hostov-error" role="alert" hidden></div>
+    <section id="view-host" class="view-panel">
+      <div class="section-header"><div><h2 data-i18n="hostov.heading">Host overview</h2><span id="hostov-status" class="muted"></span></div><div class="hostov-ranges" role="group" aria-label="Chart range" data-i18n-aria-label="hostov.rangeAria"><button data-range="15m" class="selected" data-i18n="hostov.range15m">15 min</button><button data-range="1h" data-i18n="hostov.range1h">1 hour</button><button data-range="24h" data-i18n="hostov.range24h">24 hours</button></div></div>
+      <div id="hostov-strip" class="hostov-strip" aria-label="Host metrics" data-i18n-aria-label="hostov.stripAria"></div>
+      <div id="hostov-charts" class="hostov-charts">
+        <article class="stats-panel hostov-chart-card" data-chart="cpu"><h3 data-i18n="hostov.cpu">CPU</h3><div class="hostov-chart"></div><strong class="hostov-chart-value">—</strong></article>
+        <article class="stats-panel hostov-chart-card" data-chart="gpu"><h3 data-i18n="hostov.gpu">GPU</h3><div class="hostov-chart"></div><strong class="hostov-chart-value">—</strong></article>
+        <article class="stats-panel hostov-chart-card" data-chart="memory"><h3 data-i18n="hostov.memory">Memory</h3><div class="hostov-chart"></div><strong class="hostov-chart-value">—</strong></article>
+        <article class="stats-panel hostov-chart-card" data-chart="pressure"><h3 data-i18n="hostov.diskRead">Disk reads</h3><div class="hostov-chart"></div><strong class="hostov-chart-value">—</strong></article>
+        <article class="stats-panel hostov-chart-card" data-chart="temp"><h3 data-i18n="hostov.temperature">Temperature</h3><div class="hostov-chart"></div><strong class="hostov-chart-value">—</strong></article>
+        <article class="stats-panel hostov-chart-card" data-chart="fans"><h3 data-i18n="hostov.fans">Fans</h3><div class="hostov-chart"></div><strong class="hostov-chart-value">—</strong></article>
+        <article class="stats-panel hostov-chart-card" data-chart="net"><h3 data-i18n="hostov.network">Network</h3><div class="hostov-chart"></div><strong class="hostov-chart-value">—</strong></article>
+        <article class="stats-panel hostov-chart-card" data-chart="diskio"><h3 data-i18n="hostov.diskio">Disk I/O</h3><div class="hostov-chart"></div><strong class="hostov-chart-value">—</strong></article>
+      </div>
+      <div class="hostov-columns">
+        <section class="stats-panel" aria-label="Disk capacity" data-i18n-aria-label="hostov.disk"><div class="stats-panel-heading"><h3 data-i18n="hostov.disk">Disk capacity</h3></div><div id="hostov-disks"></div></section>
+        <section class="stats-panel" aria-label="Active tasks" data-i18n-aria-label="hostov.tasksAria"><div class="stats-panel-heading"><h3 data-i18n="hostov.tasks">Active tasks</h3><span id="hostov-tasks-count" class="muted"></span></div><div id="hostov-tasks"></div></section>
+        <section class="stats-panel" aria-label="Quotas" data-i18n-aria-label="hostov.quotasAria"><div class="stats-panel-heading"><h3 data-i18n="hostov.quotas">Quotas</h3></div><div id="hostov-quotas"></div></section>
+        <section class="stats-panel" aria-label="Services" data-i18n-aria-label="hostov.servicesAria"><div class="stats-panel-heading"><h3 data-i18n="hostov.services">Services</h3></div><div id="hostov-services"></div></section>
+      </div>
+      <div id="hostov-drawers" class="hostov-drawers">
+        <details class="hostov-drawer"><summary><strong data-i18n="hostov.fans">Fans</strong><small data-i18n="hostov.fansHint">Profiles and fixed RPM through the fan daemon</small></summary><div id="hostov-fans" class="hostov-drawer-body"></div></details>
+        <details class="hostov-drawer"><summary><strong data-i18n="hostov.powerMode">Power mode</strong><small data-i18n="hostov.powerModeHint">Supported macOS low/high power modes</small></summary><div id="hostov-power" class="hostov-drawer-body"></div></details>
+        <details class="hostov-drawer"><summary><strong data-i18n="hostov.keepAwake">Keep awake</strong><small data-i18n="hostov.keepAwakeHint">Managed caffeinate, never rewrites sleep settings</small></summary><div id="hostov-caffeinate" class="hostov-drawer-body"></div></details>
+        <details class="hostov-drawer"><summary><strong data-i18n="hostov.processes">Processes</strong><small data-i18n="hostov.processesHint">Own-user processes; TERM then explicit KILL</small></summary><div id="hostov-processes" class="hostov-drawer-body"></div></details>
+        <details class="hostov-drawer"><summary><strong data-i18n="hostov.svcCtl">Managed services</strong><small data-i18n="hostov.svcCtlHint">Console-managed services only</small></summary><div id="hostov-svc" class="hostov-drawer-body"></div></details>
+        <details class="hostov-drawer"><summary><strong data-i18n="hostov.powerOps">Sleep · restart · shutdown</strong><small data-i18n="hostov.powerOpsHint">Requires confirmation and recent authentication</small></summary><div id="hostov-powerops" class="hostov-drawer-body"></div></details>
+      </div>
+    </section>
+    <div id="view-tasks" class="view-panel" hidden>
     <div id="setup-banner" class="setup-banner" hidden>
       <div class="setup-banner-text"><strong data-i18n="setup.banner.title">Finish setting up Worker Desk</strong><p data-i18n="setup.banner.text">Connect a provider in OpenCode, then choose models and worker preferences before your first task.</p></div>
       <button id="setup-banner-start" class="primary-button" data-i18n="setup.banner.start">Open setup wizard</button>

@@ -17,6 +17,7 @@ import re
 import select
 import socket
 import time
+import threading
 import urllib.parse
 from common import (STATE, api, artifact_dir, config, public_task, read_json, redact,
                     request_cancel, task, tasks)
@@ -28,6 +29,8 @@ import delegate
 import task_activity
 import credentials
 import system_status
+import host_telemetry
+import host_controls
 from common import CONFIG, HttpFailure, locked, update, write_json
 
 WEB = Path(__file__).resolve().parent.parent / 'web'
@@ -37,7 +40,8 @@ PUBLIC_ASSETS = {'login.js': 'text/javascript', 'style.css': 'text/css', 'i18n.j
                  'worker-desk-icon.svg': 'image/svg+xml', 'worker-desk-icon.png': 'image/png'}
 # Authenticated application assets are never served anonymously.
 PRIVATE_ASSETS = {'app.js': 'text/javascript', 'manage.js': 'text/javascript', 'i18n.js': 'text/javascript',
-                  'setup.js': 'text/javascript', 'task-view.js': 'text/javascript'}
+                  'setup.js': 'text/javascript', 'task-view.js': 'text/javascript',
+                  'host.js': 'text/javascript'}
 MAX_LOGIN_BODY = 4096
 MAX_API_BODY = 65536
 # Long-lived streams and WebSockets re-check the server-side session this often
@@ -71,6 +75,31 @@ def service_health():
     except Exception:
         server_ok = False
     return {'pool': bool(pool_ok), 'server': server_ok}
+
+
+_HOST_AUX = None
+
+def read_host_aux():
+    return {'services': host_controls.services_status(), 'service_health': service_health(),
+            'processes': host_controls.top_processes(), 'caffeinate': host_controls.caffeinate_status(),
+            'operations': host_controls.reconcile_operations(), 'affected_jobs': host_controls.affected_jobs()}
+
+
+def start_host_aux():
+    global _HOST_AUX
+    if _HOST_AUX is not None:
+        return
+    _HOST_AUX = {'services': [], 'service_health': {}, 'processes': [], 'operations': [],
+                 'affected_jobs': [], 'caffeinate': {}}
+    def collect_aux():
+        global _HOST_AUX
+        while True:
+            try:
+                _HOST_AUX = read_host_aux()
+            except Exception:
+                pass
+            time.sleep(5)
+    threading.Thread(target=collect_aux,daemon=True,name='host-service-observer').start()
 
 
 def quota_credential_refs():
@@ -403,6 +432,29 @@ class Handler(BaseHTTPRequestHandler):
         self.proxy()
 
     def console_get(self, path):
+        if path == '/console-api/host/snapshot':
+            # Cached collector read only; slow acquisition never happens in GET.
+            collector = host_telemetry.ensure_collector()
+            snapshot = collector.snapshot()
+            snapshot.update(_HOST_AUX if _HOST_AUX is not None else read_host_aux())
+            self.reply(200, redact({'snapshot': snapshot}))
+            return
+        if path == '/console-api/host/capabilities':
+            self.reply(200, host_controls.capabilities())
+            return
+        if path == '/console-api/host/operations':
+            self.reply(200, {'operations': host_controls.reconcile_operations()})
+            return
+        if path.startswith('/console-api/host/history'):
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            range_name = (query.get('range') or ['15m'])[0]
+            try:
+                history = host_telemetry.ensure_collector().history(range_name)
+            except ValueError as error:
+                self.reply(400, {'error': str(error)})
+                return
+            self.reply(200, redact(history))
+            return
         if path in ('/console-api/models', '/console-api/settings', '/console-api/sessions',
                     '/console-api/workspaces', '/console-api/cleanup', '/console-api/usage-history',
                     '/console-api/credentials', '/console-api/stats', '/console-api/opencode-version',
@@ -489,7 +541,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.proxy()
         try:
             body = self.read_body()
-            if path == '/console-api/quota':
+            if path == '/console-api/host/action':
+                user = self.authenticated_user()
+                result = host_controls.dispatch(body.get('action'), body.get('params'), user,
+                                                peer=self.client_identity())
+            elif path == '/console-api/quota':
                 result = quota.refresh()
             elif path == '/console-api/opencode-version':
                 action = body.get('action')
@@ -747,6 +803,14 @@ def main():
     # Cold start creates the documented fresh default only when no account exists;
     # existing credentials and sessions are preserved. Malformed state fails closed.
     console_auth.ensure_default_account(STATE)
+    # The shared host collector is owned by the console process; board consumers
+    # read its published file, so their presence or absence never affects it.
+    try:
+        host_telemetry.ensure_collector()
+        start_host_aux()
+        host_controls._ensure_supervisor()
+    except Exception:
+        pass
     server = ThreadingHTTPServer((bind, parsed.port), Handler)
     server.daemon_threads = True
     # Cookies are host-scoped, not port-scoped. Separate concurrent local installations
