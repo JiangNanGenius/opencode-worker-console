@@ -88,6 +88,15 @@ class ProactiveRerouteTests(unittest.TestCase):
             self.assertTrue(worker.proactive_reroute_if_needed(common.task('job-long'), {'type': 'busy'}))
         self.assertEqual(common.task('job-long')['profile'], 'fallback')
 
+    def test_provider_level_triggers_switch_with_healthy_global_pool(self):
+        common.update('job-long', profile='ark-auto', tier='fast')
+        with patch.object(quota, 'tier_guidance', return_value={
+                'conservation_level': 0, 'provider_conservation_level': {'ark': 2}}), \
+             patch.object(quota, 'route', return_value=('fallback', 'source_level2')), \
+             patch.object(worker, 'call', return_value={}):
+            self.assertTrue(worker.proactive_reroute_if_needed(common.task('job-long'), {'type': 'busy'}))
+        self.assertEqual(common.task('job-long')['profile'], 'fallback')
+
     def test_switch_is_active_only_after_requested_model_assistant_turn(self):
         common.update('job-long', profile='ark-auto', message_id='msg_switch', route_history=[{
             'from_profile': 'senior-code', 'to_profile': 'ark-auto',

@@ -468,7 +468,9 @@ def proactive_reroute_if_needed(t, native_status):
         return False
     q = quota.view(read_json(STATE / 'quota.json', {}))
     guidance = quota.tier_guidance(c, q)
-    level = int(guidance.get('conservation_level') or 0)
+    current_provider = str((c['profiles'].get(t.get('profile')) or {}).get('model', '')).split('/')[0]
+    level = max(int(guidance.get('conservation_level') or 0),
+                int((guidance.get('provider_conservation_level') or {}).get(current_provider) or 0))
     if level <= 0:
         return False
     policy = routing.configured(c)
