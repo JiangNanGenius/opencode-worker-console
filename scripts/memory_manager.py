@@ -13,6 +13,7 @@ import common
 
 DEFAULTS = {
     'enabled': False,
+    'backend': 'opencode-mem',
     'storage_path': None,
     'api_url': 'http://127.0.0.1:4747',
     'embedding_api_url': 'https://ark.cn-beijing.volces.com/api/plan/v3',
@@ -20,18 +21,37 @@ DEFAULTS = {
     'embedding_dimensions': 2048,
     'capture_profile': 'volcengine-agent-plan/doubao-seed-evolving',
     'reserve': {'minimum_percent': 0.25, 'maximum_percent': 3.0, 'headroom_multiplier': 1.5},
+    'openviking': {'url': 'http://127.0.0.1:1933', 'vlm_model': 'deepseek-flash',
+                   'vlm_api_base': 'https://api.deepseek.com'},
     # Capacity-based rolling retention keeps durable memory independent from
     # session age. Old unpinned records leave only after the configured ceiling
     # is crossed; a lower target avoids deleting one record on every capture.
-    'rolling': {'enabled': True, 'max_storage_mb': 256, 'max_memories': 25000,
+    'rolling': {'enabled': True, 'max_storage_mb': 1024, 'max_memories': 100000,
                 'target_percent': 90, 'check_interval_hours': 24},
 }
+
+
+def backend(value=None):
+    if isinstance(value, dict):
+        raw = value
+    else:
+        try:
+            raw = common.config().get('memory')
+        except RuntimeError:
+            raw = None
+    raw = raw if isinstance(raw, dict) else {}
+    return 'openviking' if raw.get('backend') == 'openviking' else 'opencode-mem'
+
+
+def init_backend():
+    """Ensure backend state directories exist for whichever backend is active."""
+    common.init()
 
 
 def settings(value=None):
     raw = value if isinstance(value, dict) else {}
     out = dict(DEFAULTS)
-    out.update({k: raw[k] for k in ('enabled', 'storage_path', 'api_url', 'embedding_api_url',
+    out.update({k: raw[k] for k in ('enabled', 'backend', 'storage_path', 'api_url', 'embedding_api_url',
                                     'embedding_model', 'embedding_dimensions', 'capture_profile')
                 if k in raw})
     if not out.get('storage_path'):
@@ -39,6 +59,9 @@ def settings(value=None):
     reserve = dict(DEFAULTS['reserve'])
     if isinstance(raw.get('reserve'), dict): reserve.update(raw['reserve'])
     out['reserve'] = reserve
+    openviking = dict(DEFAULTS['openviking'])
+    if isinstance(raw.get('openviking'), dict): openviking.update(raw['openviking'])
+    out['openviking'] = openviking
     rolling = dict(DEFAULTS['rolling'])
     if isinstance(raw.get('rolling'), dict): rolling.update(raw['rolling'])
     out['rolling'] = rolling
@@ -49,12 +72,23 @@ def validate(value):
     if not isinstance(value, dict) or not isinstance(value.get('enabled'), bool):
         raise ValueError('memory.enabled must be boolean')
     result = settings(value)
+    if result.get('backend') not in ('opencode-mem', 'openviking'):
+        raise ValueError('memory.backend must be opencode-mem or openviking')
     if not isinstance(result['storage_path'], str) or not result['storage_path'].strip():
         raise ValueError('memory.storage_path must be a non-empty absolute path')
     storage = Path(result['storage_path']).expanduser()
     if not storage.is_absolute():
         raise ValueError('memory.storage_path must be an absolute path')
     result['storage_path'] = str(storage)
+    openviking = result['openviking']
+    for key in ('url', 'vlm_model', 'vlm_api_base'):
+        if not isinstance(openviking.get(key), str) or not openviking[key].strip():
+            raise ValueError('memory.openviking.' + key + ' must be non-empty text')
+    parsed = urllib.parse.urlsplit(openviking['url'])
+    if parsed.scheme != 'http' or parsed.hostname not in ('127.0.0.1', 'localhost'):
+        raise ValueError('memory.openviking.url must remain on loopback HTTP')
+    if urllib.parse.urlsplit(openviking['vlm_api_base']).scheme not in ('http', 'https'):
+        raise ValueError('memory.openviking.vlm_api_base must be an HTTP URL')
     for key in ('api_url', 'embedding_api_url', 'embedding_model', 'capture_profile'):
         if not isinstance(result[key], str) or not result[key].strip():
             raise ValueError('memory.' + key + ' must be non-empty text')
@@ -164,6 +198,14 @@ def configure():
     cfg = settings(c.get('memory'))
     if not cfg['enabled']:
         return {'enabled': False, 'configured': False}
+    if cfg.get('backend') == 'openviking':
+        import openviking_service
+        result = openviking_service.write_runtime_config()
+        return {'enabled': True, 'configured': True, 'backend': 'openviking',
+                'config': result['config'], 'cli_config': result['cli_config'],
+                'runtime': str(openviking_service.venv_bin('openviking-server')),
+                'embedding_model': cfg['embedding_model'], 'dimensions': cfg['embedding_dimensions'],
+                'plugin': '@openviking/opencode-plugin'}
     plugin = install_plugin()
     _api_token(create=True)
     key = common.auth_key('volcengine-agent-plan')
@@ -205,10 +247,14 @@ def configure():
             'plugin_version': plugin['version']}
 
 
-def _request(path, method='GET', data=None, timeout=30):
+def _backend_module():
+    import openviking_backend
+    return openviking_backend
+
+
+def legacy_request(path, method='GET', data=None, timeout=30):
+    """Unwrapped opencode-mem loopback request (kept for migration and rollback)."""
     cfg = settings(common.config().get('memory'))
-    if not cfg['enabled']:
-        raise ValueError('Project memory is disabled')
     token = _api_token()
     if not token:
         raise ValueError('OpenCode memory service token is unavailable')
@@ -219,9 +265,14 @@ def _request(path, method='GET', data=None, timeout=30):
     return result.get('data', result)
 
 
+_request = legacy_request
+
+
 def status():
     cfg = settings(common.config().get('memory'))
-    result = {'enabled': cfg['enabled'], 'url': cfg['api_url'],
+    if cfg['enabled'] and backend() == 'openviking':
+        return _backend_module().status()
+    result = {'enabled': cfg['enabled'], 'backend': 'opencode-mem', 'url': cfg['api_url'],
               'storage_path': cfg['storage_path'],
               'embedding_model': cfg['embedding_model'], 'reserve': cfg['reserve'],
               'rolling': {**cfg['rolling'],
@@ -270,6 +321,22 @@ def project_info(directory):
             'projectName': root.name, **({'gitRepoUrl': remote} if remote else {})}
 
 
+def known_directories():
+    """Candidate project directories from saved workspaces and task records."""
+    candidates = []
+    for item in common.read_json(common.STATE / 'workspaces.json', []) or []:
+        if isinstance(item, dict): candidates.append(item.get('directory'))
+    for task in common.tasks():
+        if isinstance(task, dict): candidates.append(task.get('source_dir') or task.get('directory'))
+    seen, out = set(), []
+    for directory in candidates:
+        if not isinstance(directory, str) or directory in seen or not Path(directory).is_dir():
+            continue
+        seen.add(directory)
+        out.append(directory)
+    return out
+
+
 def projects():
     """Memory projects plus known bridge workspaces, including a fresh install.
 
@@ -277,16 +344,13 @@ def projects():
     contributes saved workspaces and task directories so the first memory can be
     created from the console without a CLI bootstrap step.
     """
+    if backend() == 'openviking':
+        return _backend_module().projects()
     remote = _request('/api/tags').get('project', [])
     rows = [dict(item) for item in remote if isinstance(item, dict)]
     known_paths = {item.get('projectPath') for item in rows if item.get('projectPath')}
-    candidates = []
-    for item in common.read_json(common.STATE / 'workspaces.json', []) or []:
-        if isinstance(item, dict): candidates.append(item.get('directory'))
-    for task in common.tasks():
-        if isinstance(task, dict): candidates.append(task.get('source_dir') or task.get('directory'))
-    for directory in candidates:
-        if not isinstance(directory, str) or directory in known_paths or not Path(directory).is_dir():
+    for directory in known_directories():
+        if directory in known_paths:
             continue
         info = project_info(directory)
         if info['projectPath'] in known_paths:
@@ -296,15 +360,20 @@ def projects():
     return sorted(rows, key=lambda item: str(item.get('projectName') or item.get('projectPath') or '').lower())
 
 
-def list_memories(directory=None, page=1, page_size=50, include_prompts=False):
-    tag = project_info(directory)['tag'] if directory else None
+def list_memories(directory=None, page=1, page_size=50, include_prompts=False, tag=None):
+    if backend() == 'openviking':
+        return _backend_module().list_memories(directory, page, page_size, tag=tag,
+                                               include_prompts=include_prompts)
+    tag_value = project_info(directory)['tag'] if directory else None
     query = {'page': max(1, int(page)), 'pageSize': min(200, max(1, int(page_size))),
              'includePrompts': 'true' if include_prompts else 'false'}
-    if tag: query['tag'] = tag
+    if tag_value: query['tag'] = tag_value
     return _request('/api/memories?' + urllib.parse.urlencode(query))
 
 
-def search(query, directory=None, page=1, page_size=20):
+def search(query, directory=None, page=1, page_size=20, tag=None):
+    if backend() == 'openviking':
+        return _backend_module().search(query, directory, page, page_size, tag=tag)
     if not isinstance(query, str) or not query.strip(): raise ValueError('Memory search query is required')
     params = {'q': query.strip(), 'page': max(1, int(page)),
               'pageSize': min(100, max(1, int(page_size)))}
@@ -313,6 +382,8 @@ def search(query, directory=None, page=1, page_size=20):
 
 
 def add(content, directory, tags=None, memory_type=None):
+    if backend() == 'openviking':
+        return _backend_module().add(content, directory, tags, memory_type)
     if not isinstance(content, str) or not content.strip() or len(content) > 100000:
         raise ValueError('Memory content must contain 1-100000 characters')
     info = project_info(directory)
@@ -323,6 +394,8 @@ def add(content, directory, tags=None, memory_type=None):
 
 
 def update(memory_id, content):
+    if backend() == 'openviking':
+        return _backend_module().update(memory_id, content)
     _id(memory_id)
     if not isinstance(content, str) or not content.strip() or len(content) > 100000:
         raise ValueError('Memory content must contain 1-100000 characters')
@@ -330,13 +403,23 @@ def update(memory_id, content):
 
 
 def delete(memory_id):
+    if backend() == 'openviking':
+        return _backend_module().delete(memory_id)
     _id(memory_id)
     return _request('/api/memories/' + memory_id + '?cascade=true', 'DELETE')
 
 
 def bulk_delete(ids):
+    if backend() == 'openviking':
+        return _backend_module().bulk_delete(ids)
     clean = [_id(value) for value in ids]
     return _request('/api/memories/bulk-delete', 'POST', {'ids': clean, 'cascade': True})
+
+
+def pin(memory_id, pinned=True):
+    if backend() != 'openviking':
+        raise ValueError('Pinning requires the OpenViking memory backend')
+    return _backend_module().pin(memory_id, pinned)
 
 
 def _memory_epoch(item):
@@ -396,6 +479,8 @@ def _rolling_candidates(items, maximum_bytes, maximum_records, target_percent, d
 
 def maintain(force=False):
     """Apply capacity-based rolling retention without coupling memory to sessions."""
+    if backend() == 'openviking':
+        return _backend_module().maintain(force=force)
     cfg = settings(common.config().get('memory'))
     policy = cfg['rolling']
     state_path = common.STATE / 'memory-maintenance.json'
@@ -440,8 +525,16 @@ def maintain(force=False):
         return result
 
 
-def profile(): return _request('/api/user-profile')
-def stats(): return _request('/api/stats')
+def profile():
+    if backend() == 'openviking':
+        return _backend_module().profile()
+    return _request('/api/user-profile')
+
+
+def stats():
+    if backend() == 'openviking':
+        return _backend_module().stats()
+    return _request('/api/stats')
 
 
 def _id(value):

@@ -28,7 +28,7 @@ class MemoryManagerTests(unittest.TestCase):
                         'headroom_multiplier': 1.5},
         })
         self.assertEqual(value['reserve']['minimum_percent'], .25)
-        self.assertEqual(value['rolling']['max_storage_mb'], 256)
+        self.assertEqual(value['rolling']['max_storage_mb'], 1024)
         with self.assertRaises(ValueError):
             memory_manager.validate({**value, 'api_url': 'http://192.168.1.2:4747'})
         with self.assertRaises(ValueError):

@@ -25,6 +25,29 @@ class EconomicsTests(unittest.TestCase):
         self.assertAlmostEqual(fit['pressure_runway'], .15)
         self.assertGreater(fit['runway'], 1)
 
+    def test_cost_multiple_is_configured_only_for_known_ark_models(self):
+        config = {'profiles': {
+            'ark-auto': {'model': 'volcengine-agent-plan/ark-code-latest'},
+            'ark-evolving': {'model': 'volcengine-agent-plan/doubao-seed-evolving'},
+            'ark-k3': {'model': 'volcengine-agent-plan/kimi-k3'},
+            'native-k3': {'model': 'kimi-for-coding/k3'},
+            'custom': {'model': 'custom/model'},
+        }}
+        self.assertEqual(economics.candidate_cost_multiple(
+            config, 'volcengine-agent-plan', 'ark-auto', {'ark-auto'}), 1.0)
+        self.assertEqual(economics.candidate_cost_multiple(
+            config, 'volcengine-agent-plan', 'ark-evolving', {'ark-auto'}), 5.0)
+        self.assertEqual(economics.candidate_cost_multiple(
+            config, 'volcengine-agent-plan', 'ark-k3', {'ark-auto'}), 20.0)
+        # Same model name on another provider, unknown models and providers stay
+        # neutral instead of being guessed expensive.
+        self.assertEqual(economics.candidate_cost_multiple(
+            config, 'kimi-for-coding', 'native-k3', {'native-k3'}), 1.0)
+        self.assertEqual(economics.candidate_cost_multiple(
+            config, 'custom', 'custom', {'custom'}), 1.0)
+        self.assertEqual(economics.candidate_cost_multiple(
+            config, 'volcengine-agent-plan', 'ark-k3', {'custom'}), 1.0)
+
     def test_default_unit_and_baseline_formula_match_plan_math(self):
         result = economics.summary({}, {})
         self.assertEqual(result['afp_eq_per_cny'], 500.0)

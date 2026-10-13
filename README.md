@@ -156,7 +156,7 @@ There is no artificial model-step, tool-call or total-runtime cap. `wait` blocks
 
 - Expand a task in place to inspect reverse-chronological activity, full redacted messages, input/output/reasoning/cache Tokens, and steer a running model.
 - Search, create, rename, fork, archive, bind, delete and open native OpenCode sessions.
-- Search, add, edit and delete durable project memory through the bridge or console. The optional `opencode-mem` integration keeps its vector database local. Capacity-based rolling retention removes exact duplicates and then the oldest unpinned records only after the configured ceiling is crossed; deleting sessions or leaving the computer off does not age memory out.
+- Search, add, edit, pin and delete durable project memory through the bridge or console. The memory backend is either the legacy `opencode-mem` service or a loopback-only OpenViking server (published wheel, Ark embeddings + DeepSeek Flash extraction) whose data, vectors and migration journal stay on the internal disk. Capacity-based rolling retention removes the oldest unpinned records only after the configured ceiling is crossed, keeps pins, and runs at the next service start even after the machine was off; deleting sessions does not age memory out. The OpenViking service binds loopback only, requires an owner-only API key for data access, and keeps every model credential an environment reference. See [OpenViking memory](references/openviking-memory.md).
 - Long builds, deployments and GitHub Actions runs can publish truthful phase, percentage and ETA data; jobs without measurable totals remain visibly indeterminate.
 - Statistics reuse one usage snapshot every three seconds for the last hour, 24 hours and 30 days. Charts carry real Token scales plus model, tier, status and profile breakdowns.
 - Task scheduling reports CPU, memory, disk, load and worker counts. Cleaned-task Token, cost and route summaries remain in an expandable **History ledger**.
@@ -204,7 +204,9 @@ sends one Bark alert only after that task completes successfully. Routine tasks 
 | Runtime and Codex skill | `~/.codex/skills/delegate-opencode` |
 | Configuration | `~/.config/opencode/delegate-pool.json` |
 | Private state, artifacts and worktrees | `~/.local/state/delegate-opencode` |
-| Project memory (default, configurable) | `~/.local/state/delegate-opencode/opencode-mem` |
+| Project memory, legacy store (configurable) | `~/.local/state/delegate-opencode/opencode-mem` |
+| Project memory, OpenViking data and journal | `~/.local/state/delegate-opencode/openviking` |
+| OpenViking model config (owner-only, env refs) | `~/.openviking/ov.conf` |
 
 Archiving a coordinator conversation does not remove the installation. Keep source in a stable checkout for updates; runtime is copied out. Alternate paths: `DELEGATE_INSTALL`, `DELEGATE_CONFIG`, `DELEGATE_STATE`, `DELEGATE_BIN_DIR`.
 

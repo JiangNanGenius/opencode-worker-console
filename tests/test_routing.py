@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import common
 import delegate
 import diagnostics
+import economics
 import management
 import quota
 import routing
@@ -44,6 +45,58 @@ def profiles():
         'ark-auto': {'model': 'ark/ark-code-latest', 'enabled': True, 'variant': 'max'},
         'ark-k3': {'model': 'ark/kimi-k3', 'enabled': True, 'variant': 'max'},
         'disabled': {'model': 'ark/other', 'enabled': False},
+    }
+
+
+def pool_window(now, name, percent, hours, reset_hours, duration):
+    return {'name': name, 'valid': True, 'remaining_percent': percent,
+            'duration_minutes': duration, 'resets_at': now + reset_hours * 3600,
+            'consumption_estimate': {'hours': hours}}
+
+
+def depleted_pool_config(base):
+    """Operator-shaped policy: one Ark Fast source, Kimi/Ark Normal peers, cash later."""
+    c = json.loads(json.dumps(base))
+    c['kimi_reserve_percent'] = 0
+    c['profiles']['ark-auto']['model'] = 'volcengine-agent-plan/ark-code-latest'
+    c['profiles']['ark-k3']['model'] = 'volcengine-agent-plan/kimi-k3'
+    c['profiles']['ark-evolving'] = {'model': 'volcengine-agent-plan/doubao-seed-evolving',
+                                     'enabled': True, 'variant': 'max'}
+    c['routing_policy'] = {
+        'fast': [[{'profile': 'ark-auto', 'weight': 1}],
+                 [{'profile': 'fallback', 'weight': 1}]],
+        'background': [[{'profile': 'senior-code', 'weight': 1},
+                        {'profile': 'ark-evolving', 'weight': 1}],
+                       [{'profile': 'ark-auto', 'weight': 1}],
+                       [{'profile': 'fallback', 'weight': 1}]],
+        'deep': [[{'profile': 'deep-research', 'weight': 9},
+                  {'profile': 'ark-k3', 'weight': 1}],
+                 [{'profile': 'senior-code', 'weight': 1},
+                  {'profile': 'ark-evolving', 'weight': 1}],
+                 [{'profile': 'ark-auto', 'weight': 1}],
+                 [{'profile': 'fallback', 'weight': 1}]],
+    }
+    c['routing_dynamics'] = {
+        'background': {'0': {'ladder': [[1, 0], [7, 3], [1, 1], [1, 2]]}},
+        'deep': {'0': {'ladder': [[1, 0], [9, 1], [4, 1], [1, 1]]}},
+    }
+    c['quota_spillover'] = {'enabled': True, 'profile': 'fallback',
+                            'tiers': ['fast', 'background'], 'max_share_percent': 33,
+                            'level2_runway_percent': 25}
+    return c
+
+
+def depleted_pool_quota(now):
+    """Regression fixture: 2.576% of the month left, 161.4h to reset, cheap recent burn."""
+    return {
+        'volcengine-agent-plan': {'state': 'ok', 'available': True, 'stale': False, 'windows': [
+            pool_window(now, 'AFPMonthly', 2.576, 37.2, 161.4, 43200),
+            pool_window(now, 'AFPWeekly', 95.168, 703, 113.4, 10080)]},
+        'kimi-for-coding': {'state': 'ok', 'available': True, 'stale': False, 'windows': [
+            pool_window(now, 'window_0', 40, 3.2, .17, 300),
+            pool_window(now, 'overall', 76, 28, 149, 10080)]},
+        'deepseek': {'state': 'ok', 'available': True, 'stale': False,
+                     'windows': [], 'balances': [{'currency': 'CNY', 'remaining': 126.25}]},
     }
 
 
@@ -651,6 +704,181 @@ class RoutePolicyTests(unittest.TestCase):
         with patch('economics._window_fit', return_value={'status': 'ok', 'pressure_runway': .8}):
             self.assertEqual(quota.route(t, c, q)[0], 'ark-k3')
 
+    def test_depleted_month_rejects_expensive_ark_and_uses_paid_or_cash_peer(self):
+        now = 1_800_000_000
+        c = depleted_pool_config(self.c)
+        q = depleted_pool_quota(now)
+        normal = self.task()
+        deep = self.task(complexity='deep')
+        with patch.object(quota.time, 'time', return_value=now), \
+             patch.object(economics.time, 'time', return_value=now):
+            fit = economics._window_fit('volcengine-agent-plan', q['volcengine-agent-plan'], now)
+            # The observed pace predicts ~37 working hours, but 2.576% of the
+            # month against 161.4h to reset is below the Level 2 endpoint once
+            # the schedule prior bounds it (0.1149 <= 0.25 * 0.9).
+            self.assertGreater(fit['runway'], fit['pressure_runway'])
+            self.assertAlmostEqual(fit['pressure_runway'], .1149, places=3)
+            self.assertTrue(fit['schedule_scarce'])
+            self.assertFalse(quota._allowed_profile('ark-evolving', normal, c, q)[1])
+            self.assertEqual(quota._allowed_profile('ark-evolving', normal, c, q)[2],
+                             'provider_reserved_for_fast')
+            self.assertFalse(quota._allowed_profile('ark-k3', deep, c, q)[1])
+            self.assertTrue(quota._allowed_profile('ark-auto', self.task(urgency='fast'), c, q)[1])
+            status = quota.routing_status(c, q)
+            self.assertEqual(status['background'][0]['members']['ark-evolving']['reason'],
+                             'provider_reserved_for_fast')
+            # Kimi is available but also below the Level 2 threshold, so the
+            # reserved Ark pool gives Normal the configured cash fallback while
+            # Deep still uses its conserved paid-plan slot.
+            self.assertEqual(quota.route(normal, c, q)[0], 'fallback')
+            self.assertEqual(quota.route(deep, c, q)[0], 'senior-code')
+
+            # A healthy Kimi peer takes both automatic tiers; the depleted Ark
+            # plan never reopens for them.
+            q['kimi-for-coding']['windows'] = [pool_window(now, 'overall', 80, 300, 150, 10080)]
+            self.assertEqual(quota.route(normal, c, q)[0], 'senior-code')
+            self.assertEqual(quota.route(deep, c, q)[0], 'deep-research')
+
+            # Kimi temporarily exhausted: both tiers fall to the cash peer
+            # instead of reopening the expensive Ark plan.
+            q['kimi-for-coding']['available'] = False
+            self.assertEqual(quota.route(normal, c, q)[0], 'fallback')
+            self.assertEqual(quota.route(deep, c, q)[0], 'fallback')
+
+            # All peers unavailable: no automatic route at all, and no
+            # fabricated provider error is introduced.
+            q['deepseek']['available'] = False
+            self.assertIsNone(quota.route(normal, c, q)[0])
+            self.assertIsNone(quota.route(deep, c, q)[0])
+
+    def test_healthy_month_keeps_expensive_ark_on_the_curve(self):
+        now = 1_800_000_000
+        c = depleted_pool_config(self.c)
+        q = depleted_pool_quota(now)
+        q['volcengine-agent-plan']['windows'] = [
+            pool_window(now, 'AFPMonthly', 60, 150, 288, 43200),
+            pool_window(now, 'AFPWeekly', 95, 700, 113, 10080)]
+        q['kimi-for-coding']['windows'] = [pool_window(now, 'overall', 80, 200, 160, 10080)]
+        with patch.object(quota.time, 'time', return_value=now), \
+             patch.object(economics.time, 'time', return_value=now):
+            fit = economics._window_fit('volcengine-agent-plan', q['volcengine-agent-plan'], now)
+            self.assertAlmostEqual(fit['pressure_runway'], 150 / 288, places=3)
+            self.assertFalse(fit['schedule_scarce'])
+            self.assertTrue(quota._allowed_profile('ark-evolving', self.task(), c, q)[1])
+            self.assertTrue(quota._allowed_profile('ark-k3', self.task(complexity='deep'), c, q)[1])
+            self.assertIn(quota.route(self.task(), c, q)[0], {'senior-code', 'ark-evolving'})
+            status = quota.routing_status(c, q)
+            self.assertGreater(status['background'][0]['members']['ark-evolving']['share'], 0)
+            self.assertNotEqual(status['background'][0]['members']['ark-evolving'].get('reason'),
+                                'provider_reserved_for_fast')
+
+    def test_near_reset_low_residual_releases_the_reserved_pool(self):
+        now = 1_800_000_000
+        c = depleted_pool_config(self.c)
+        q = depleted_pool_quota(now)
+        q['volcengine-agent-plan']['windows'] = [
+            pool_window(now, 'AFPMonthly', 3, 46, 2, 43200),
+            pool_window(now, 'AFPWeekly', 95, 700, 113, 10080)]
+        q['kimi-for-coding']['windows'] = [pool_window(now, 'overall', 50, 100, 100, 10080)]
+        with patch.object(quota.time, 'time', return_value=now), \
+             patch.object(economics.time, 'time', return_value=now):
+            fit = economics._window_fit('volcengine-agent-plan', q['volcengine-agent-plan'], now)
+            # Well above the endpoint on both windows, so nothing is reserved.
+            self.assertGreater(fit['pressure_runway'], 1.0)
+            self.assertFalse(fit['schedule_scarce'])
+            self.assertTrue(quota._allowed_profile('ark-evolving', self.task(), c, q)[1])
+            self.assertTrue(quota._allowed_profile('ark-k3', self.task(complexity='deep'), c, q)[1])
+            # With no Kimi peer the near-reset Ark plan becomes the automatic
+            # route again instead of being held for Fast.
+            q['kimi-for-coding']['available'] = False
+            self.assertEqual(quota.route(self.task(complexity='deep'), c, q)[0], 'ark-k3')
+
+    def test_cost_multiple_reserves_severely_scarce_plan_only_without_paid_peer(self):
+        now = 1_800_000_000
+        c = depleted_pool_config(self.c)
+        q = depleted_pool_quota(now)
+        # Behind schedule but above the flat endpoint: 10% left with 30% of the
+        # cycle remaining gives a 0.333 prior while observed pace reads 0.463.
+        q['volcengine-agent-plan']['windows'] = [
+            pool_window(now, 'AFPMonthly', 10, 100, 216, 43200),
+            pool_window(now, 'AFPWeekly', 95, 700, 113, 10080)]
+        q['kimi-for-coding']['windows'] = [pool_window(now, 'overall', 80, 160, 160, 10080)]
+        with patch.object(quota.time, 'time', return_value=now), \
+             patch.object(economics.time, 'time', return_value=now):
+            self.assertTrue(quota._allowed_profile('ark-evolving', self.task(), c, q)[1])
+            self.assertTrue(quota._allowed_profile('ark-k3', self.task(complexity='deep'), c, q)[1])
+            # No paid peer left: the same 5x/20x profiles are held back while
+            # the cheap Auto profile and the smooth curve remain untouched.
+            q['kimi-for-coding']['available'] = False
+            blocked = quota._allowed_profile('ark-evolving', self.task(), c, q)
+            self.assertFalse(blocked[1])
+            self.assertEqual(blocked[2], 'provider_reserved_for_fast')
+            self.assertFalse(quota._allowed_profile('ark-k3', self.task(complexity='deep'), c, q)[1])
+            self.assertTrue(quota._allowed_profile('ark-auto', self.task(), c, q)[1])
+
+    def test_stale_or_missing_telemetry_never_invents_a_reservation(self):
+        now = 1_800_000_000
+        c = depleted_pool_config(self.c)
+        q = depleted_pool_quota(now)
+        q['volcengine-agent-plan']['stale'] = True
+        with patch.object(quota.time, 'time', return_value=now), \
+             patch.object(economics.time, 'time', return_value=now):
+            ok, why = quota._allowed_profile('ark-evolving', self.task(), c, q)[1:]
+            self.assertTrue(ok)
+            self.assertNotEqual(why, 'provider_reserved_for_fast')
+            q['volcengine-agent-plan'] = {'state': 'ok', 'available': True, 'stale': False,
+                                          'windows': []}
+            ok, why = quota._allowed_profile('ark-k3', self.task(complexity='deep'), c, q)[1:]
+            self.assertTrue(ok)
+            self.assertNotEqual(why, 'provider_reserved_for_fast')
+
+    def test_explicit_pins_and_capability_floors_survive_the_reservation(self):
+        now = 1_800_000_000
+        c = depleted_pool_config(self.c)
+        q = depleted_pool_quota(now)
+        q['kimi-for-coding']['available'] = False
+        with patch.object(quota.time, 'time', return_value=now), \
+             patch.object(economics.time, 'time', return_value=now):
+            pinned = dict(self.task(complexity='deep'), requested_profile='ark-k3')
+            self.assertEqual(quota.route(pinned, c, q),
+                             ('ark-k3', 'explicit_profile:quota_available'))
+            floored = dict(self.task(complexity='deep'), capability_floor='deep')
+            self.assertIsNone(quota.route(floored, c, q)[0])
+            # Automatic admission is reserved, but a deliberate reselection
+            # only ever sees floor-eligible profiles: the floor is never
+            # silently downgraded to the cash fallback.
+            self.assertEqual([item['profile'] for item in quota.alternatives(floored, c, q)],
+                             ['ark-k3'])
+
+    def test_generic_single_plan_uses_curves_without_cost_guesses(self):
+        now = 1_800_000_000
+        c = {
+            'profiles': {'solo': {'model': 'custom/model', 'enabled': True},
+                          'fallback': {'model': 'deepseek/deepseek-flash', 'enabled': True}},
+            'routing': {'fast': 'solo', 'background': 'solo', 'deep': 'solo'},
+            'routing_policy': {'fast': [[{'profile': 'solo', 'weight': 1}],
+                                         [{'profile': 'fallback', 'weight': 1}]],
+                                'background': [[{'profile': 'solo', 'weight': 1}],
+                                               [{'profile': 'fallback', 'weight': 1}]]},
+            'quota_spillover': {'enabled': True, 'profile': 'fallback',
+                                 'tiers': ['background'], 'max_share_percent': 33,
+                                 'level2_runway_percent': 25},
+        }
+        solo = {'state': 'ok', 'available': True, 'stale': False, 'windows': [
+            pool_window(now, 'window', 40, 200, 100, 10080)]}
+        q = {'custom': solo, 'deepseek': {'state': 'ok', 'available': True, 'stale': False,
+                                           'windows': [], 'balances': [{'currency': 'CNY', 'remaining': 50}]}}
+        with patch.object(quota.time, 'time', return_value=now), \
+             patch.object(economics.time, 'time', return_value=now):
+            # Unknown providers keep the ordinary positive curve: the plan is
+            # usable and its own cost coefficients are never guessed.
+            self.assertTrue(quota._allowed_profile('solo', self.task(), c, q)[1])
+            # A depleted sole plan is still reserved for Fast by the existing
+            # spillover contract, and the PAYG fallback takes the rest.
+            solo['windows'][0].update(remaining_percent=5, resets_at=now + 160 * 3600)
+            self.assertFalse(quota._allowed_profile('solo', self.task(), c, q)[1])
+            self.assertTrue(quota._allowed_profile('solo', self.task(urgency='fast'), c, q)[1])
+
     def test_fast_source_stays_reserved_when_peer_also_has_burst_pressure(self):
         providers = {'native': 'kimi-for-coding', 'ark': 'volcengine-agent-plan'}
         guidance = {
@@ -806,7 +1034,12 @@ class RoutePolicyTests(unittest.TestCase):
             guidance = quota.tier_guidance(c, q, _raw=True)
             status = quota.routing_status(c, q)
         self.assertEqual(guidance['conservation_level'], 0)
-        self.assertGreater(guidance['capacity_pressure_percent'], 100)
+        # Pressure is conservative: the healthy observed pace is capped by the
+        # window's own schedule prior, so it reads as roughly one full cycle of
+        # runway instead of the capped 4x forecast. Both stay well above the
+        # conservation threshold and the durable pool stays out of fallback.
+        self.assertGreater(guidance['capacity_pressure_percent'],
+                           guidance['runway_threshold_percent'])
         self.assertNotIn('fallback', status['fast'][0]['members'])
         self.assertNotIn('fallback', status['background'][0]['members'])
 

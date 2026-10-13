@@ -24,8 +24,11 @@ def runtime_overlay(c):
                'share': 'disabled', 'autoupdate': False, 'snapshot': False,
                'formatter': False}
     if c.get('memory', {}).get('enabled') is True:
-        # v1 plugin entry; OpenCode installs the published package into its own cache.
-        overlay['plugin'] = ['opencode-mem']
+        # Exactly one memory plugin is loaded: the OpenViking plugin after cutover,
+        # the legacy opencode-mem plugin otherwise. Both capture automatically, so
+        # loading them together would duplicate every session capture.
+        backend = c['memory'].get('backend') if isinstance(c['memory'], dict) else None
+        overlay['plugin'] = ['@openviking/opencode-plugin'] if backend == 'openviking' else ['opencode-mem']
     # Keep the original preset/auth ID stable when the upstream catalog renames it
     # to kimi-code-plan-cn/global. This uses the same existing kimi.com endpoint
     # and stored credential; no key migration or extra destination is involved.
@@ -55,9 +58,17 @@ def main():
     env['OPENCODE_SERVER_PASSWORD'] = (STATE / 'server-password').read_text().strip()
     env['OPENCODE_CONFIG_CONTENT'] = json.dumps(overlay)
     env['OPENCODE_DISABLE_AUTOUPDATE'] = '1'
+    if c.get('memory', {}).get('enabled') is True and c['memory'].get('backend') == 'openviking':
+        import openviking_service
+        openviking_service.write_runtime_config()
+        # The plugin and its MCP proxy authenticate with the owner-only data key
+        # through the environment; no key is written into configuration files.
+        key = openviking_service.api_key()
+        if key:
+            env['OPENVIKING_API_KEY'] = key
     # Pure mode prevents arbitrary project plugins from entering delegated execution.
-    # opencode-mem is an explicitly managed runtime plugin, so memory-enabled installs
-    # start without --pure and keep the plugin list pinned in our private overlay.
+    # A managed memory plugin is an explicitly configured runtime plugin, so enabled
+    # installs start without --pure and keep the plugin list pinned in our overlay.
     port = c['server_url'].rsplit(':', 1)[1]
     os.chdir(STATE)
     argv = [c['opencode_binary'], 'serve', '--hostname', '127.0.0.1', '--port', port]

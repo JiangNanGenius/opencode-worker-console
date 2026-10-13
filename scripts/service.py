@@ -26,14 +26,23 @@ def start():
         if c.get('memory', {}).get('enabled') is True:
             import memory_manager
             memory_manager.configure()
+            if memory_manager.backend() == 'openviking':
+                import openviking_service
+                openviking_service.start()
         binary = ensure_opencode(c.get('opencode_binary'))
         if binary != c.get('opencode_binary'):
             c['opencode_binary'] = binary
             write_json(CONFIG, c)
         records = read_json(STATE / 'services.json', {})
+        maintenance = read_json(STATE / 'maintenance.json', {}) or {}
+        paused = maintenance.get('paused_services', []) if isinstance(maintenance, dict) else []
         root = Path(__file__).resolve().parent
         for name, script, args in [('server', 'server.py', []), ('pool', 'delegate.py', ['daemon']),
                                    ('console', 'console.py', [])]:
+            # Other upstream callers may auto-start services during a cutover.
+            # Honor the operator's explicit pause until checkpoints are resumed.
+            if name in paused:
+                continue
             if name == 'console' and 'console_url' not in config():
                 continue
             if alive(records.get(name)):
@@ -85,7 +94,20 @@ def stop():
                         break
                     time.sleep(0.25)
                 if alive(entry):
+                    # Managed OpenCode is still disposing; keep the memory
+                    # service alive so plugin commits are not lost.
                     raise RuntimeError(name + ' is still stopping; retry service status later')
+        # Order matters: the OpenCode plugin commits and captures during its own
+        # disposal, so OpenViking is drained and only then stopped. A failed
+        # managed stop above raises before this point, preserving the service.
+        if config().get('memory', {}).get('backend') == 'openviking':
+            import openviking_service
+            if openviking_service.running_record():
+                drained = openviking_service.drain(timeout=120)
+                if drained.get('settled') is False:
+                    raise RuntimeError('OpenViking still has in-flight commits; '
+                                       'retry service stop after they settle')
+                openviking_service.stop()
         return {'services': 'stopped', 'artifacts': 'retained'}
 
 

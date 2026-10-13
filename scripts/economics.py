@@ -16,6 +16,8 @@ from datetime import datetime, timedelta, timezone
 import math
 import time
 
+from providers import ARK_PROVIDER
+
 
 DEEPSEEK_PRICE_SOURCE = 'https://api-docs.deepseek.com/zh-cn/quick_start/pricing/'
 DEEPSEEK_PRICE_EFFECTIVE = '2026-09-10'
@@ -80,6 +82,52 @@ def validate(value):
         result[key] = _number(raw, key, high=1.0) if key == 'deepseek_offpeak_multiplier' \
             else _number(raw, key)
     return result
+
+
+# Exact Ark Agent Plan model identifiers whose configured coefficients are the
+# plan's own quota-consumption estimates. Matching exact names keeps the mapping
+# from guessing: an unknown model, or the same model name on another provider,
+# stays neutral and is never treated as expensive.
+ARK_MODEL_COST_KEYS = {
+    'ark-code-latest': 'ark_auto_afp_per_m',
+    'doubao-seed-evolving': 'ark_evolving_afp_per_m',
+    'kimi-k3': 'ark_k3_afp_per_m',
+}
+
+
+def ark_model_cost(model, settings=None):
+    """Configured AFP-equivalent coefficient for a known Ark plan model, else None."""
+    if not isinstance(model, str):
+        return None
+    provider, _, name = model.partition('/')
+    if provider != ARK_PROVIDER or name not in ARK_MODEL_COST_KEYS:
+        return None
+    return normalize(settings)[ARK_MODEL_COST_KEYS[name]]
+
+
+def candidate_cost_multiple(config, provider, profile_name, baseline_names):
+    """Relative burn cost of one automatic candidate against its Fast baseline.
+
+    The coefficients are configurable estimates, so this is deliberately
+    fail-neutral: an unknown provider, model or Fast baseline returns 1.0 and the
+    candidate is judged by the ordinary runway curve alone. Only a strictly
+    costlier profile on the configured Ark plan is charged its multiple, and the
+    caller applies that only while the durable plan is behind its reset schedule.
+    """
+    profiles = (config or {}).get('profiles') if isinstance(config, dict) else None
+    if provider != ARK_PROVIDER or not isinstance(profiles, dict):
+        return 1.0
+    settings = (config or {}).get('economics')
+    candidate = ark_model_cost((profiles.get(profile_name) or {}).get('model'), settings)
+    if candidate is None:
+        return 1.0
+    baselines = [ark_model_cost((profiles.get(name) or {}).get('model'), settings)
+                 for name in baseline_names or ()]
+    baselines = [value for value in baselines if value is not None]
+    if not baselines:
+        return 1.0
+    baseline = min(baselines)
+    return candidate / baseline if candidate > baseline else 1.0
 
 
 def deepseek_peak(timestamp):
@@ -360,11 +408,30 @@ def _selected_window(provider, record):
         max(windows, key=lambda item: _non_negative(item.get('duration_minutes')) or 0.0)
 
 
+def _pressure_runway(forecast):
+    """One durable window's conservative routing pressure, or None when unknown.
+
+    The observed working-pace runway is the primary signal, but a plan that is
+    behind its own reset schedule must not look able to reach reset merely
+    because the most recent traffic was cheap or idle. Taking the lower of the
+    observed runway and the schedule prior charges that scarcity without
+    touching the display endurance.
+    """
+    if not isinstance(forecast, dict):
+        return None
+    observed = _non_negative(forecast.get('runway'))
+    if observed is None:
+        return None
+    prior = _non_negative(forecast.get('prior_runway'))
+    return observed if prior is None else min(observed, prior)
+
+
 def _window_fit(provider, record, now=None):
     window = _selected_window(provider, record)
     if window is None:
         return {'amount': None, 'capacity': None, 'remaining_percent': None,
                 'source_amount': None, 'unit': 'fitted-hours',
+                'pressure_runway': None, 'schedule_runway': None, 'schedule_scarce': False,
                 'status': 'missing' if not record else 'unknown', 'stale': bool(record.get('stale'))}
     import capacity as capacity_model
     now = time.time() if now is None else now
@@ -385,19 +452,25 @@ def _window_fit(provider, record, now=None):
     durable_window['consumption_estimate'] = durable_estimate
     rates = [_non_negative(estimate.get('rate_percent_per_hour'))]
     fitted_window = capacity_model.window(durable_window, now)
-    # Routing pressure uses the same selected durable plan window, but at the
-    # proven active working rate. The UI keeps the idle-inclusive fit below so a
-    # paused machine does not create false endurance anxiety. Short renewable
-    # windows are not selected here and therefore cannot collapse the plan.
-    pressure_window = capacity_model.window(window, now)
     # Weekly renewal cannot rescue an insufficient monthly allowance. Pressure
-    # follows the tightest durable window; short burst windows stay admission-only.
+    # follows the tightest durable window at the proven working rate, bounded by
+    # that window's own schedule prior; a short renewable window is never the
+    # pressure source and stays admission-only. The UI keeps the idle-inclusive
+    # observed fit elsewhere, so a paused machine does not create false anxiety.
     durable_pressures = [capacity_model.window(w, now) for w in record.get('windows') or []
                         if isinstance(w, dict) and
                         (_non_negative(w.get('duration_minutes')) or 0) > 1440]
     durable_pressures = [w for w in durable_pressures if w is not None and not w.get('expired')]
+    pressure_window = None
     if durable_pressures:
-        pressure_window = min(durable_pressures, key=lambda w: w['runway'])
+        pressure_window = min(durable_pressures, key=lambda w: _pressure_runway(w)
+                              if _pressure_runway(w) is not None else math.inf)
+        pressure = _pressure_runway(pressure_window)
+    else:
+        # No durable window: preserve the existing short-window observed pace.
+        fallback_window = capacity_model.window(window, now)
+        pressure = _non_negative(fallback_window.get('runway')) if fallback_window else None
+    schedule_runway = pressure_window.get('prior_runway') if pressure_window else None
     rate = fitted_window['rate_percent_per_hour'] if fitted_window else max((r for r in rates if r is not None), default=None)
     duration = _non_negative(window.get('duration_minutes'))
     # The live burn rate is authoritative. A full-window duration is only the
@@ -440,7 +513,9 @@ def _window_fit(provider, record, now=None):
             'status': state, 'stale': stale, 'resets_at': window.get('resets_at'),
             'window': selected_name,
             'runway': fitted_window.get('runway') if fitted_window else None,
-            'pressure_runway': pressure_window.get('runway') if pressure_window else None,
+            'pressure_runway': pressure,
+            'schedule_runway': schedule_runway,
+            'schedule_scarce': bool(schedule_runway is not None and schedule_runway < 1.0),
             'available_now': record.get('available'),
             'temporarily_blocked': short_window_block,
             'immediate_window': immediate_window,

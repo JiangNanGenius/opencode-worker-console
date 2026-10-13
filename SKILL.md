@@ -187,12 +187,14 @@ recover and inspect it before any replacement.
 ## Use durable project memory
 
 When project memory is enabled, search it before repeating broad repository discovery:
-`memory search --directory "$PWD" 'topic'`. The upstream harness may add, edit or permanently delete
-project memories through the CLI or console. Store durable, verified decisions, commands, constraints
-and outcomes; never store passwords, tokens, private keys or speculative conclusions. OpenCode's
-memory plugin performs retrieval during worker sessions, while the bridge remains the management and
-audit boundary. Use `memory status`, `memory list --directory "$PWD"`, `memory add 'verified fact'
---directory "$PWD"`, and `memory delete ID --yes` as needed.
+`memory search --directory "$PWD" 'topic'`. The upstream harness may add, edit, pin or permanently
+delete project memories through the CLI or console. Store durable, verified decisions, commands,
+constraints and outcomes; never store passwords, tokens, private keys or speculative conclusions.
+OpenCode's memory plugin performs recall and capture inside worker sessions, while the bridge remains
+the management and audit boundary. Use `memory status`, `memory list --directory "$PWD"`,
+`memory add 'verified fact' --directory "$PWD"`, `memory pin URI`, and `memory delete URI --yes`.
+The backend (opencode-mem or OpenViking) is reported by `memory status`; migration state stays
+visible through `memory migration`. See references/openviking-memory.md for the full protocol.
 
 ## Notify the user at meaningful milestones
 

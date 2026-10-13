@@ -31,6 +31,60 @@ class CapacityTests(unittest.TestCase):
         self.assertEqual(routing._window_runway(w, NOW), f['runway'])
         self.assertEqual(routing._runway(provider([w]), NOW), f['runway'])
 
+    def test_schedule_prior_is_exposed_separately_from_display_runway(self):
+        # Operator state: 2.576% of a 30-day month left with 161.4h to reset,
+        # recent cheap burn predicting 37.2 working hours.
+        w = win(name='AFPMonthly', p=2.576, hours=37.2, reset=161.4, duration=43200)
+        f = capacity.window(w, NOW)
+        self.assertAlmostEqual(f['runway'], 37.2 / 161.4, places=4)
+        self.assertAlmostEqual(f['prior_runway'], 2.576 / 100 / (161.4 / 720), places=4)
+        self.assertLess(f['prior_runway'], f['runway'])
+        # Display endurance through the provider view still uses the observed
+        # pace; only the routing pressure takes the pessimistic lower bound.
+        self.assertAlmostEqual(capacity.provider(provider([w]), NOW)['runway'],
+                               37.2 / 161.4, places=4)
+
+    def test_schedule_prior_requires_a_real_reset_schedule(self):
+        bare = {'name': 'w', 'valid': True, 'remaining_percent': 80,
+                'duration_minutes': 10080}
+        f = capacity.window(bare, NOW)
+        self.assertIsNone(f['prior_runway'])
+        self.assertEqual(f['runway'], .8)
+        with_rate = dict(bare, consumption_estimate={'hours': 20})
+        f = capacity.window(with_rate, NOW)
+        self.assertIsNone(f['prior_runway'])
+        self.assertEqual(f['runway'], .8)
+
+    def test_depleted_month_pressure_uses_schedule_prior_not_cheap_burn(self):
+        record = provider([win(name='AFPMonthly', p=2.576, hours=37.2,
+                               reset=161.4, duration=43200)])
+        fit = economics._window_fit('volcengine-agent-plan', record, NOW)
+        self.assertAlmostEqual(fit['runway'], 37.2 / 161.4, places=4)
+        self.assertAlmostEqual(fit['pressure_runway'], .1149, places=3)
+        self.assertAlmostEqual(fit['schedule_runway'], .1149, places=3)
+        self.assertTrue(fit['schedule_scarce'])
+
+    def test_healthy_and_near_reset_plans_keep_the_observed_pressure(self):
+        healthy = provider([win(name='AFPMonthly', p=60, hours=150,
+                                reset=288, duration=43200)])
+        fit = economics._window_fit('volcengine-agent-plan', healthy, NOW)
+        self.assertAlmostEqual(fit['pressure_runway'], 150 / 288, places=4)
+        self.assertFalse(fit['schedule_scarce'])
+        near_reset = provider([win(name='AFPMonthly', p=3, hours=46,
+                                   reset=2, duration=43200)])
+        fit = economics._window_fit('volcengine-agent-plan', near_reset, NOW)
+        self.assertEqual(fit['pressure_runway'], 4.0)
+        self.assertFalse(fit['schedule_scarce'])
+
+    def test_short_window_pressure_stays_observed_and_never_schedule_gated(self):
+        # A 5-hour burst must not become a schedule-prior gate: short windows
+        # stay admission-only and keep their observed working pace.
+        record = provider([win(name='five', p=20, hours=4, reset=4, duration=300)])
+        fit = economics._window_fit('kimi-for-coding', record, NOW)
+        self.assertEqual(fit['pressure_runway'], 1.0)
+        self.assertIsNone(fit['schedule_runway'])
+        self.assertFalse(fit['schedule_scarce'])
+
     def test_idle_does_not_erase_working_rate(self):
         w = win()
         w['consumption_estimate'].update(idle=True, active_rate_percent_per_hour=4)

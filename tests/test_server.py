@@ -81,3 +81,21 @@ class RuntimeOverlayTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class MemoryPluginOverlayTests(unittest.TestCase):
+    def test_legacy_backend_loads_only_opencode_mem(self):
+        c = {'profiles': {'fallback': profile()}, 'auto_approve': True,
+             'memory': {'enabled': True, 'backend': 'opencode-mem'}}
+        self.assertEqual(server.runtime_overlay(c)['plugin'], ['opencode-mem'])
+
+    def test_openviking_backend_loads_only_the_official_plugin(self):
+        # Both plugins auto-capture sessions; loading them together would
+        # duplicate every memory, so the overlay must pick exactly one.
+        c = {'profiles': {'fallback': profile()}, 'auto_approve': True,
+             'memory': {'enabled': True, 'backend': 'openviking'}}
+        self.assertEqual(server.runtime_overlay(c)['plugin'], ['@openviking/opencode-plugin'])
+
+    def test_disabled_memory_loads_no_plugin(self):
+        c = {'profiles': {'fallback': profile()}, 'auto_approve': True,
+             'memory': {'enabled': False, 'backend': 'openviking'}}
+        self.assertNotIn('plugin', server.runtime_overlay(c))

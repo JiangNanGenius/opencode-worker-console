@@ -1102,6 +1102,33 @@ def meets_capability_floor(name, t, c):
     return name in eligible
 
 
+def _other_plan_provider_available(t, c, q, provider, spill_provider):
+    """True when the task tier still has a usable subscription peer besides provider.
+
+    The configured spill target is the pay-as-you-go fallback, so it is not a
+    subscription peer here: this answers the "only this plan remains" question.
+    Capability floors, routing guards and provider admission all apply, but the
+    check never consumes credits or changes state.
+    """
+    policy = routing.configured(c) or {}
+    for entry in routing.tier_entries(policy, tier_of(t)):
+        name = entry['profile']
+        profile = (c.get('profiles') or {}).get(name) or {}
+        if profile.get('enabled') is False:
+            continue
+        model = profile.get('model')
+        other = str(model).split('/', 1)[0] if isinstance(model, str) and '/' in str(model) else None
+        if not other or other == provider or other == spill_provider:
+            continue
+        if not meets_capability_floor(name, t, c):
+            continue
+        if name in (t.get('excluded_profiles') or []) or other in (t.get('excluded_providers') or []):
+            continue
+        if allowed(other, q, t.get('complexity', 'normal'), c.get('kimi_reserve_percent', 0))[0]:
+            return True
+    return False
+
+
 def _allowed_profile(name, t, c, q):
     """(provider, ok, why) for one enabled profile, respecting quota and circuits."""
     p = c.get('profiles', {}).get(name)
@@ -1131,8 +1158,25 @@ def _allowed_profile(name, t, c, q):
         endpoint = float(spill.get('level2_runway_percent') or 0) / 100 * .9
         window = economics._selected_window(provider, q.get(provider) or {}) or {}
         durable = (number(window.get('duration_minutes')) or 0) > 1440
-        if durable and fit.get('status') == 'ok' and runway is not None and endpoint > 0 and runway <= endpoint:
-            return provider, False, 'provider_reserved_for_fast'
+        if durable and fit.get('status') == 'ok' and runway is not None and endpoint > 0:
+            # A plan that is behind its own reset schedule loses its expensive
+            # automatic candidates first. The recent sample may be cheap because
+            # cheap work ran, so while the plan is behind schedule and no other
+            # subscription peer exists, the candidate's configured cost multiple
+            # is charged against the same endpoint. The Fast source itself and
+            # near-reset recovery stay on the ordinary smooth curve, and unknown
+            # cost or a stale plan is never treated as exhausted.
+            pressured = runway <= endpoint
+            if not pressured and fit.get('schedule_scarce'):
+                spill_profile = (c.get('profiles', {}).get(spill.get('profile')) or {})
+                spill_model = spill_profile.get('model') if isinstance(spill_profile, dict) else None
+                spill_provider = str(spill_model).split('/', 1)[0] if isinstance(spill_model, str) \
+                    and '/' in spill_model else None
+                multiple = economics.candidate_cost_multiple(c, provider, name, fast_names)
+                if multiple > 1 and not _other_plan_provider_available(t, c, q, provider, spill_provider):
+                    pressured = runway / multiple <= endpoint
+            if pressured:
+                return provider, False, 'provider_reserved_for_fast'
     ok, why = allowed(provider, q, t.get('complexity', 'normal'), c.get('kimi_reserve_percent', 0))
     return provider, ok, why
 

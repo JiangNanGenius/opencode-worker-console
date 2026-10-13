@@ -621,13 +621,23 @@ def main():
     s.add_argument('--yes', action='store_true')
     s = sub.add_parser('memory', help='Manage persistent OpenCode project memory')
     msub = s.add_subparsers(dest='action', required=True)
-    for action in ('status', 'projects', 'profile', 'stats', 'maintain'):
+    for action in ('status', 'projects', 'profile', 'stats', 'maintain', 'migration'):
         msub.add_parser(action)
     ml = msub.add_parser('list'); ml.add_argument('--directory'); ml.add_argument('--page', type=int, default=1); ml.add_argument('--limit', type=int, default=50)
     ms = msub.add_parser('search'); ms.add_argument('query'); ms.add_argument('--directory'); ms.add_argument('--page', type=int, default=1); ms.add_argument('--limit', type=int, default=20)
     ma = msub.add_parser('add'); ma.add_argument('content'); ma.add_argument('--directory', required=True); ma.add_argument('--tag', action='append', default=[]); ma.add_argument('--type')
     mu = msub.add_parser('update'); mu.add_argument('id'); mu.add_argument('content')
     md = msub.add_parser('delete'); md.add_argument('ids', nargs='+'); md.add_argument('--yes', action='store_true')
+    mp = msub.add_parser('pin'); mp.add_argument('id'); mp.add_argument('--off', action='store_true')
+    mm = msub.add_parser('migrate', help='Back up and import legacy opencode-mem records into OpenViking')
+    mm.add_argument('--plan', action='store_true'); mm.add_argument('--backup', action='store_true')
+    mm.add_argument('--apply', action='store_true'); mm.add_argument('--verify', action='store_true')
+    mm.add_argument('--batch', type=int, default=50); mm.add_argument('--limit', type=int)
+    mm.add_argument('--offline', action='store_true', help='Read the stopped legacy SQLite store for the final capture delta')
+    mc = msub.add_parser('cutover', help='Switch capture and management between memory backends safely')
+    mc.add_argument('--apply', action='store_true'); mc.add_argument('--rollback', action='store_true')
+    mc.add_argument('--skip-delta', action='store_true')
+    mc.add_argument('--offline', action='store_true', help='Read the stopped legacy SQLite store')
     s = sub.add_parser('progress', help='Report or inspect a long-running operation')
     psub = s.add_subparsers(dest='action', required=True)
     pr = psub.add_parser('report'); pr.add_argument('id'); pr.add_argument('--phase', required=True); pr.add_argument('--message', default=''); pr.add_argument('--current', type=float); pr.add_argument('--total', type=float); pr.add_argument('--percent', type=float); pr.add_argument('--eta-seconds', type=float); pr.add_argument('--status', choices=['running','queued','completed','failed','cancelled'], default='running'); pr.add_argument('--github-run')
@@ -758,7 +768,14 @@ def main():
         result = doctor()
     elif args.cmd == 'service':
         import service
-        result = service.start() if args.action == 'start' else service.stop()
+        if args.action == 'start':
+            result = service.start()
+        elif args.action == 'restart':
+            # Idle-safe restart: refuses while tasks or sessions are active, so a
+            # backend or plugin change never interrupts running work.
+            result = service.reload_runtime()
+        else:
+            result = service.stop()
     elif args.cmd == 'opencode':
         import opencode_update
         if args.action == 'version':
@@ -780,6 +797,32 @@ def main():
         elif args.action == 'search': result = memory_manager.search(args.query, args.directory, args.page, args.limit)
         elif args.action == 'add': result = memory_manager.add(args.content, args.directory, args.tag, args.type)
         elif args.action == 'update': result = memory_manager.update(args.id, args.content)
+        elif args.action == 'pin': result = memory_manager.pin(args.id, not args.off)
+        elif args.action == 'migration':
+            import openviking_migrate
+            result = openviking_migrate.status()
+        elif args.action == 'cutover':
+            import openviking_migrate
+            result = openviking_migrate.cutover(apply=args.apply, rollback=args.rollback,
+                                                skip_delta=args.skip_delta, offline=args.offline)
+        elif args.action == 'migrate':
+            if not (args.plan or args.apply or args.verify or args.backup):
+                raise ValueError('Choose --plan, --backup, --apply and/or --verify')
+            import openviking_migrate
+            import openviking_service
+            result = {}
+            if args.backup or (args.apply and not openviking_migrate.latest_backup()):
+                result['backup'] = openviking_migrate.backup()
+            if args.apply:
+                if not openviking_service.probe()['ready']:
+                    raise ValueError('OpenViking is not ready; start the service before importing')
+                result['run'] = openviking_migrate.run(limit=args.limit, batch=args.batch, offline=args.offline)
+            elif args.plan:
+                plan = openviking_migrate.plan(offline=args.offline)
+                plan.pop('items', None)
+                result['plan'] = plan
+            if args.verify:
+                result['verify'] = openviking_migrate.verify(offline=args.offline)
         else:
             if not args.yes: raise ValueError('Use --yes for permanent memory deletion')
             result = memory_manager.delete(args.ids[0]) if len(args.ids) == 1 else memory_manager.bulk_delete(args.ids)

@@ -557,13 +557,20 @@ class Handler(BaseHTTPRequestHandler):
                 memory = __import__('memory_manager')
                 action = body.get('action')
                 if action == 'list':
-                    result = memory.list_memories(body.get('directory'), body.get('page', 1), body.get('limit', 50))
+                    result = memory.list_memories(body.get('directory'), body.get('page', 1), body.get('limit', 50),
+                                                  tag=body.get('tag'))
                 elif action == 'search':
-                    result = memory.search(body.get('query'), body.get('directory'), body.get('page', 1), body.get('limit', 20))
+                    result = memory.search(body.get('query'), body.get('directory'), body.get('page', 1),
+                                           body.get('limit', 20), tag=body.get('tag'))
                 elif action == 'add':
                     result = memory.add(body.get('content'), body.get('directory'), body.get('tags'), body.get('type'))
                 elif action == 'update':
                     result = memory.update(body.get('id'), body.get('content'))
+                elif action == 'pin':
+                    memory_id = body.get('id')
+                    if not memory_id:
+                        raise ValueError('Memory ID is required')
+                    result = memory.pin(memory_id, bool(body.get('pinned', True)))
                 elif action == 'delete':
                     result = memory.delete(body.get('id'))
                 elif action == 'bulk_delete':

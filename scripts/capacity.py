@@ -21,7 +21,14 @@ def epoch(value):
 
 
 def window(value, now):
-    """Forecast at observed working pace; a reset schedule is the cold-start prior."""
+    """Forecast at observed working pace; a reset schedule is the cold-start prior.
+
+    ``runway`` stays the display endurance: remaining hours at the observed rate
+    over time to reset. ``prior_runway`` is the same ratio at the window's own
+    full-cycle pace (remaining fraction over remaining time fraction). Automatic
+    routing takes the more pessimistic of the two; the UI keeps the observed
+    fit. Without a real reset schedule there is no prior to expose.
+    """
     if not isinstance(value, dict) or value.get('valid') is not True:
         return None
     p = number(value.get('remaining_percent'))
@@ -40,6 +47,11 @@ def window(value, now):
     if reported_hours and reported_hours > 0 and p > 0:
         rates.append(p / reported_hours)
     rate = max(rates) if rates else None
+    # Schedule-aware pace: at the cycle's own average burn rate the allowance
+    # lands exactly on zero at reset, so this is the pace a plan must not exceed.
+    # It is exposed separately and never replaces the observed display runway.
+    fraction = min(1.0, left / span) if left and span > 0 else None
+    prior = max(0.0, min(4.0, p / 100.0 / fraction)) if fraction else None
     if rate:
         hours, full = p / rate, 100 / rate
         runway = hours / left if left else p / 100
@@ -47,12 +59,11 @@ def window(value, now):
     else:
         full = span or None
         hours = full * p / 100 if full is not None else None
-        fraction = min(1, left / span) if left and span > 0 else 1
-        runway = p / 100 / fraction
+        runway = prior if prior is not None else p / 100
         source = 'window_prior'
     return {'window': value.get('name'), 'remaining_percent': p, 'hours': hours,
             'capacity_hours': full, 'rate_percent_per_hour': rate, 'source': source,
-            'runway': max(0.0, min(4.0, runway)), 'reset_hours': left,
+            'runway': max(0.0, min(4.0, runway)), 'prior_runway': prior, 'reset_hours': left,
             'resets_at': value.get('resets_at'), 'reset_epoch': reset,
             'expired': bool(reset and reset <= now)}
 
