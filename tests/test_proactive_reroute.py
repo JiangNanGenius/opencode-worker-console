@@ -97,6 +97,17 @@ class ProactiveRerouteTests(unittest.TestCase):
             self.assertTrue(worker.proactive_reroute_if_needed(common.task('job-long'), {'type': 'busy'}))
         self.assertEqual(common.task('job-long')['profile'], 'fallback')
 
+    def test_current_model_uses_latest_response_not_queued_profile(self):
+        common.update('job-long', profile='fallback')
+        messages = [
+            {'info': {'id': 'u', 'role': 'user', 'variant': 'max'}},
+            {'info': {'id': 'a', 'role': 'assistant', 'parentID': 'u',
+                      'providerID': 'ark', 'modelID': 'auto', 'time': {'created': 100}}}]
+        t = worker.observe_live_models_and_switches(common.task('job-long'), messages)
+        self.assertEqual(t['current_model'], 'ark/auto')
+        self.assertEqual(t['current_variant'], 'max')
+        self.assertEqual(t['profile'], 'fallback')
+
     def test_switch_is_active_only_after_requested_model_assistant_turn(self):
         common.update('job-long', profile='ark-auto', message_id='msg_switch', route_history=[{
             'from_profile': 'senior-code', 'to_profile': 'ark-auto',

@@ -3,6 +3,12 @@
   'use strict';
   const numeric = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
   const fields = ['total', 'input', 'output', 'reasoning', 'cache_read', 'cache_write'];
+  function currentModel(task, profiles = {}) {
+    const model = task.current_model || (task.actual_models?.length === 1 ? task.actual_models[0] : null);
+    if (!model) return '';
+    const match = Object.values(profiles).find(p => p.model === model);
+    return (match?.label || model) + (task.current_variant ? ' · ' + task.current_variant : '');
+  }
   function usageOf(task) {
     if (task.usage) return task.usage;
     const tokens = task.tokens || {};
@@ -82,7 +88,7 @@
     }
     return { open, close, refresh, state, cache };
   }
-  const api = { numeric, usageOf, aggregate, usageHTML, activityHTML, createController };
+  const api = { currentModel, numeric, usageOf, aggregate, usageHTML, activityHTML, createController };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.TaskView = api;
 })(typeof window !== 'undefined' ? window : globalThis);

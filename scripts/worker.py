@@ -304,13 +304,22 @@ def observe_live_models_and_switches(t, messages):
         for info in [message.get('info', {})]
         if info.get('role') == 'assistant' and info.get('providerID') and info.get('modelID')
     ))
+    assistants = [m.get('info', {}) for m in messages if m.get('info', {}).get('role') == 'assistant'
+                  and m.get('info', {}).get('providerID') and m.get('info', {}).get('modelID')]
+    latest = max(enumerate(assistants), key=lambda pair: (
+        (pair[1].get('time') or {}).get('created') or 0, pair[0]))[1] if assistants else {}
+    current_model = latest.get('providerID', '') + '/' + latest.get('modelID', '') if latest else None
+    parent = next((m.get('info', {}) for m in messages
+                   if latest.get('parentID') and m.get('info', {}).get('id') == latest['parentID']), {})
+    current_variant = latest.get('variant') or parent.get('variant')
     history = [dict(hop) if isinstance(hop, dict) else hop
                for hop in (t.get('route_history') or [])]
     usage = task_activity.usage_from_messages(messages, complete_history=True, source='live')
     recent_activity, _ = task_activity.events_from_messages(messages, t, limit=12)
     latest_events = recent_activity[-1:]
     latest_activity = latest_events[-1] if latest_events else None
-    changed = actual_models != (t.get('actual_models') or []) or usage != t.get('usage') or \
+    changed = current_model != t.get('current_model') or current_variant != t.get('current_variant') or \
+        actual_models != (t.get('actual_models') or []) or usage != t.get('usage') or \
         latest_activity != t.get('last_activity') or recent_activity != t.get('recent_activity')
     message_positions = {
         message.get('info', {}).get('id'): index
@@ -346,7 +355,8 @@ def observe_live_models_and_switches(t, messages):
             changed = True
             break
     if changed:
-        return update(t['id'], actual_models=actual_models, route_history=history,
+        return update(t['id'], actual_models=actual_models, current_model=current_model,
+                      current_variant=current_variant, route_history=history,
                       usage=usage, last_activity=latest_activity,
                       recent_activity=recent_activity)
     return t

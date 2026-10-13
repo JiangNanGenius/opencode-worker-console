@@ -290,3 +290,10 @@ test('cleanup result stays visible in the task row and raises a success toast', 
  assert.equal(h.get('toast-title').textContent,'tasks.cleanupDone');
  assert.equal(h.get('task-cleanup-message').textContent,'tasks.cleanupResult');
 });
+
+test('current model ignores queued profile and historical models', () => {
+  const profiles = {next: {model: 'ark/next', label: 'Next'}, live: {model: 'deepseek/flash', label: 'DeepSeek'}};
+  assert.equal(View.currentModel({profile: 'next', current_model: 'deepseek/flash', current_variant: 'max', actual_models: ['ark/next', 'deepseek/flash']}, profiles), 'DeepSeek · max');
+  assert.equal(View.currentModel({profile: 'next', actual_models: ['ark/next', 'deepseek/flash']}, profiles), '');
+  assert.equal(View.currentModel({actual_models: ['deepseek/flash']}, profiles), 'DeepSeek');
+});
