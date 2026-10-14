@@ -25,7 +25,9 @@ terminal and no file browser** in this surface.
   `memory_percent`, `memory_used_gb`, `memory_total_gb`, `disks`,
   `uptime_hours`) alongside the richer new names, so existing firmware keeps
   working. Board consumers read the file; their presence or absence never
-  affects the collector.
+  affects the collector. Quota IDs on this board-only payload retain the
+  firmware identifiers `codex`, `kimi`, `ark`, `deepseek`; the web snapshot
+  retains full provider IDs such as `volcengine-agent-plan`.
 - `scripts/host_controls.py` — fixed action dispatch with validated
   parameters, metadata-only audit (`STATE/host/audit.log`, size-bounded), and
   capability probes.

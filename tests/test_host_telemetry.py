@@ -257,6 +257,28 @@ class BoardAndTaskTests(unittest.TestCase):
         self.assertEqual(self.root.stat().st_mode & 0o777, 0o700)
 
 
+    def test_board_quota_ids_match_firmware_without_mutating_web_snapshot(self):
+        windows = [{'label': '每月', 'remaining_percent': 2.48, 'resets_at': 1792511999.0}]
+        self.collector.latest_quotas = [
+            {'id': 'codex', 'sampled_at': 1234, 'state': 'ok', 'windows': [], 'balances': []},
+            {'id': 'kimi-for-coding', 'sampled_at': 1234, 'state': 'ok', 'windows': windows, 'balances': []},
+            {'id': 'volcengine-agent-plan', 'sampled_at': 1234, 'state': 'ok', 'windows': windows, 'balances': []},
+            {'id': 'deepseek', 'sampled_at': 1234, 'state': 'ok', 'windows': [],
+             'balances': [{'currency': 'CNY', 'remaining': 40}]}]
+        # The existing firmware looks up codex/kimi/ark/deepseek by exact ID.
+        board = self.collector.board_payload()
+        ids = [q['id'] for q in board['quotas']]
+        self.assertEqual(ids, ['codex', 'kimi', 'ark', 'deepseek'])
+        ark = next(q for q in board['quotas'] if q['id'] == 'ark')
+        self.assertEqual(ark['sampled_at'], 1234)
+        self.assertEqual(ark['windows'][0]['remaining_percent'], 2.48)
+        web = self.collector.snapshot()
+        self.assertEqual([q['id'] for q in web['quotas']],
+                         ['codex', 'kimi-for-coding', 'volcengine-agent-plan', 'deepseek'])
+        ark['windows'][0]['remaining_percent'] = 0
+        self.assertEqual(self.collector.latest_quotas[2]['windows'][0]['remaining_percent'], 2.48)
+
+
 class TaskCollectionTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

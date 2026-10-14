@@ -918,6 +918,11 @@ class Collector:
             latest = json.loads(json.dumps(self.latest_system)) if self.latest_system else {}
             tasks = json.loads(json.dumps(self.latest_tasks))
             quotas = json.loads(json.dumps(self.latest_quotas))
+        # v2 firmware matches these exact compact IDs. Keep full provider IDs
+        # in the web snapshot/cache; adapt only this independent board copy.
+        board_ids = {'kimi-for-coding': 'kimi', 'volcengine-agent-plan': 'ark'}
+        for quota in quotas:
+            quota['id'] = board_ids.get(quota.get('id'), quota.get('id'))
         unix_time = int(time.time())
         try:
             time.tzset()
