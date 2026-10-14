@@ -8,6 +8,7 @@
   <script src="/console-assets/task-view.js" defer></script>
   <script src="/console-assets/app.js" defer></script>
   <script src="/console-assets/host.js" defer></script>
+  <script src="/console-assets/memory.js" defer></script>
   <script src="/console-assets/manage.js" defer></script>
   <script src="/console-assets/setup.js" defer></script>
 </head>
@@ -91,9 +92,27 @@
       <div id="session-list" class="session-list"></div><p class="muted" data-i18n="sessions.note">Archived sessions can be restored anytime. To stop a running delegated task, return to task scheduling.</p>
     </section>
     <section id="view-memory" class="view-panel" hidden>
-      <div class="section-header"><div><h2 data-i18n="memory.heading">Project memory</h2><span id="memory-status" class="muted" data-i18n="memory.loading">Reading memory service…</span></div><button id="memory-add" class="primary-button" data-i18n="memory.add">Add memory</button></div>
-      <div class="memory-toolbar"><select id="memory-project" aria-label="Memory project" data-i18n-aria-label="memory.project"><option value="" data-i18n="memory.allProjects">All projects</option></select><label class="search"><input id="memory-search" type="search" placeholder="Search project memory" data-i18n-placeholder="memory.search"></label><button id="memory-refresh" class="secondary-button" data-i18n="stats.refresh">Refresh</button><button id="memory-delete-selected" class="secondary-button danger-text" disabled data-i18n="memory.deleteSelected">Delete selected</button></div>
-      <div id="memory-summary" class="stats-summary"></div><div id="memory-list" class="memory-list"><p class="muted" data-i18n="memory.loading">Reading memory service…</p></div>
+      <div class="section-header"><div><h2 data-i18n="memory.heading">Project memory</h2><span id="memory-status" class="muted" data-i18n="memory.loading">Reading memory service…</span></div><div class="memory-header-actions"><button id="memory-add" class="primary-button" data-i18n="memory.add">Add memory</button><button id="memory-refresh" class="secondary-button" data-i18n="stats.refresh">Refresh</button></div></div>
+      <div id="memory-strip" class="memory-strip" aria-label="Memory service status" data-i18n-aria-label="memory.statusAria"></div>
+      <div id="memory-layout" class="memory-layout">
+        <nav id="memory-nav" class="memory-nav" aria-label="Memory navigation" data-i18n-aria-label="memory.navAria"><p class="muted">—</p></nav>
+        <div id="memory-center" class="memory-center">
+          <div class="memory-toolbar">
+            <label class="search memory-search"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 4 4"/></svg><input id="memory-search" type="search" placeholder="Semantic search across project memory" data-i18n-placeholder="memory.search" data-i18n-aria-label="memory.searchAria"></label>
+            <label class="memory-sort"><span class="sr-only" data-i18n="memory.sortLabel">Sort</span><select id="memory-sort" aria-label="Sort memories" data-i18n-aria-label="memory.sortLabel"><option value="newest" data-i18n="memory.sort.newest">Newest first</option><option value="oldest" data-i18n="memory.sort.oldest">Oldest first</option><option value="name" data-i18n="memory.sort.name">Name</option><option value="size" data-i18n="memory.sort.size">Size</option></select></label>
+            <button id="memory-delete-selected" class="secondary-button danger-text" disabled data-i18n="memory.deleteSelected">Delete selected</button>
+          </div>
+          <p id="memory-count" class="memory-count muted" role="status"></p>
+          <div id="memory-list" class="memory-list" role="list"><p class="muted memory-list-state" data-i18n="memory.loading">Reading memory service…</p></div>
+          <div id="memory-pager" class="memory-pager"></div>
+        </div>
+        <aside id="memory-inspector" class="memory-inspector" tabindex="-1" hidden aria-label="Memory inspector" data-i18n-aria-label="memory.inspectorAria">
+          <div class="memory-inspector-head"><button type="button" id="memory-back" class="text-button memory-back" data-i18n="memory.backToList">Back to list</button><span id="memory-inspector-title" class="memory-inspector-title"></span><button type="button" id="memory-inspector-close" class="icon-button memory-close" aria-label="Close inspector" data-i18n-aria-label="memory.closeInspector"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"/></svg></button></div>
+          <div id="memory-inspector-body"></div>
+        </aside>
+      </div>
+      <details id="memory-capacity" class="memory-panel"><summary><span><strong data-i18n="memory.capacityHeading">Capacity &amp; retention</strong><small data-i18n="memory.capacityHint">Logical estimate, measured workspace and a safe reclaim preview</small></span><span id="memory-capacity-state" class="muted"></span></summary><div id="memory-capacity-body" class="memory-panel-body"><p class="muted" data-i18n="memory.capacityLoading">Reading capacity…</p></div></details>
+      <details id="memory-activity" class="memory-panel"><summary><span><strong data-i18n="memory.activityHeading">Ingestion state</strong><small data-i18n="memory.activityHint">Native session commits, queue and index state</small></span><span id="memory-activity-state" class="muted"></span></summary><div id="memory-activity-body" class="memory-panel-body"><p class="muted" data-i18n="memory.activityLoading">Reading ingestion state…</p></div></details>
     </section>
     <section id="view-models" class="view-panel" hidden>
       <div class="section-header"><div><h2 data-i18n="models.heading">Model Profiles</h2><span class="muted" data-i18n="models.subtitle">Choose models as tasks require; role is not limited by tier</span></div><button id="add-profile" class="secondary-button" data-i18n="models.addProfile">Add Profile</button></div>

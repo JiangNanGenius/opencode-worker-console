@@ -31,7 +31,7 @@ in `~/.local/state/delegate-opencode/openviking` on the internal disk.
 | Bridge backend | `scripts/openviking_backend.py` | CRUD, search, projects, stats, pins, the SQLite journal, rolling retention |
 | Migration | `scripts/openviking_migrate.py` | consistent backup, bounded resumable import, delta, deletion reconciliation, verification |
 | OpenCode plugin | `@openviking/opencode-plugin` | automatic recall/capture inside worker sessions |
-| Console | `web/manage.js` + `/console-api/memory/*` | list/search/read/add/edit/pin/delete |
+| Console | `web/memory.js` + `/console-api/memory/*` | browse, inspect, semantic search, CRUD/pin, capacity preview and confirmed maintenance |
 
 ## Memory mapping
 
@@ -57,6 +57,54 @@ The journal at `~/.local/state/delegate-opencode/openviking/memory-state.db`
 stores `legacy-id -> viking-uri`, pin state, content hashes and tombstones. A
 deleted record is tombstoned by both URI and legacy id, so later migration
 passes never resurrect it.
+
+## Console management surface
+
+The console memory page extends the previous flat list; it does not replace the
+bridge API. All routes stay behind the console session and resolve the service
+key server-side only.
+
+| Route | Purpose |
+| --- | --- |
+| `GET /console-api/memory/browse` | paginated records with real category/folder/project facets; `q` switches to native semantic `find` scoped to the selected project |
+| `GET /console-api/memory/detail?id=` | one record (or one real folder) with sanitized body, provenance and L0/L1/L2 levels |
+| `GET /console-api/memory/activity` | native task queue, recent session commits, registered sessions and index counts |
+| `GET /console-api/memory/capacity` | logical estimate, measured workspace, rolling policy and a non-mutating reclaim preview |
+| `POST /console-api/memory` | existing CRUD/pin/bulk-delete actions plus `maintenance_run` |
+
+Semantics that the page must keep:
+
+- **Lists are metadata-first.** One depth-aware native tree listing with per-file tags builds a
+  short-lived navigation index; only the visible page reads bounded, server-
+  sanitized previews. Full bodies are read (raw, server-parsed) only for the
+  record selected in the inspector.
+- **Summaries are never invented.** OpenViking stores L0/L1 per folder, and the
+  native endpoint falls back to the parent folder for a file. The inspector shows
+  the folder summary labelled as such, marks aggregate folder summaries when a
+  project filter is active, and shows an explicit absent state when a summary is
+  missing or not ready. It also exposes the native `source_extraction_id` as
+  provenance; there is no supported reverse link from an extraction id to a
+  session, so no session association is fabricated.
+- **Session links require verification.** A migrated `session_id` becomes a link
+  only when it matches a real OpenCode session; otherwise it is shown as plain
+  text.
+- **Capacity separates measures.** The logical estimate (`content + float32
+  vector + bounded row overhead` per record) and the measured bytes under the
+  live `openviking/workspace` are displayed as different numbers; migration
+  backups and the legacy store are excluded and are never counted as live memory.
+  The reclaim preview only lists the oldest unpinned candidates and never
+  mutates; the confirmed `maintenance_run` is the console reclaim action.
+  Scheduled rolling retention remains active under the configured policy.
+- **Pins are the union of both owners.** Bridge journal pins and native
+  `pinned=true` retrieval tags are both protected from rolling retention. When
+  the native pinned-tag listing cannot be verified, maintenance fails closed and
+  reclaims nothing for that run.
+- **URIs are validated before any action.** Management URIs must be descendants
+  of `viking://user/default/memories`; traversal, percent-escapes, query
+  fragments and other namespaces are rejected.
+- **Legacy backends stay flat.** With `memory.backend = "opencode-mem"` the page
+  keeps a paginated flat list and CRUD; navigation, inspector, activity and
+  capacity are capability-gated and report that they need the OpenViking backend.
 
 ## Commands
 

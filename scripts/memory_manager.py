@@ -371,6 +371,54 @@ def list_memories(directory=None, page=1, page_size=50, include_prompts=False, t
     return _request('/api/memories?' + urllib.parse.urlencode(query))
 
 
+def browse(category=None, folder=None, project=None, directory=None, page=1, page_size=25,
+           sort='newest', query=None):
+    """Paginated memory browser; native OpenViking navigation with a legacy fallback."""
+    if backend() == 'openviking':
+        return _backend_module().browse(category, folder, project, directory, page, page_size,
+                                        sort, query=query)
+    if query:
+        result = search(query, directory, 1, page_size, tag=project)
+    else:
+        result = list_memories(directory, page, page_size, tag=project)
+    items = []
+    for item in result.get('items') or []:
+        preview = ' '.join(str(item.get('content') or '').split())[:360]
+        items.append({'id': item.get('id'), 'uri': item.get('id'), 'type': 'memory',
+                      'memoryType': item.get('memoryType') or '', 'category': '',
+                      'folder': '', 'preview': preview,
+                      'isPinned': bool(item.get('isPinned')), 'tags': item.get('tags') or [],
+                      'projectName': item.get('projectName') or item.get('displayName'),
+                      'projectPath': item.get('projectPath'),
+                      'updatedAt': item.get('updatedAt'), 'createdAt': item.get('createdAt'),
+                      'size': None})
+    return {'items': items, 'total': int(result.get('total') or len(items)),
+            'page': max(1, int(result.get('page') or page)),
+            'pageSize': max(1, int(result.get('pageSize') or page_size)),
+            'totalPages': max(1, int(result.get('totalPages') or 1)),
+            'scope': result.get('scope'), 'category': category or '', 'folder': folder or '',
+            'sort': sort, 'categories': [], 'directories': [], 'projects': [],
+            'legacy': True, 'generatedAt': time.time()}
+
+
+def detail(memory_id, scope=None):
+    if backend() != 'openviking':
+        raise ValueError('Memory detail requires the OpenViking backend')
+    return _backend_module().detail(memory_id, scope=scope)
+
+
+def activity():
+    if backend() != 'openviking':
+        raise ValueError('Memory activity requires the OpenViking backend')
+    return _backend_module().activity()
+
+
+def capacity():
+    if backend() != 'openviking':
+        raise ValueError('Memory capacity requires the OpenViking backend')
+    return _backend_module().capacity()
+
+
 def search(query, directory=None, page=1, page_size=20, tag=None):
     if backend() == 'openviking':
         return _backend_module().search(query, directory, page, page_size, tag=tag)

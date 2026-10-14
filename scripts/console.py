@@ -41,7 +41,7 @@ PUBLIC_ASSETS = {'login.js': 'text/javascript', 'style.css': 'text/css', 'i18n.j
 # Authenticated application assets are never served anonymously.
 PRIVATE_ASSETS = {'app.js': 'text/javascript', 'manage.js': 'text/javascript', 'i18n.js': 'text/javascript',
                   'setup.js': 'text/javascript', 'task-view.js': 'text/javascript',
-                  'host.js': 'text/javascript'}
+                  'host.js': 'text/javascript', 'memory.js': 'text/javascript'}
 MAX_LOGIN_BODY = 4096
 MAX_API_BODY = 65536
 # Long-lived streams and WebSockets re-check the server-side session this often
@@ -110,6 +110,41 @@ def quota_credential_refs():
                             for item in credentials.listing().get('credentials', [])
                             if item.get('name') in allowed or
                             re.fullmatch(r'bark-[a-z0-9][a-z0-9_.-]{0,58}', item.get('name', ''))]}
+
+
+_MEMORY_SESSIONS = {'at': 0.0, 'map': {}}
+
+
+def memory_session_link(session_id):
+    """Verify a memory's session id against real OpenCode sessions before linking.
+
+    A stale migrated id must stay plain provenance text: the console never
+    fabricates a session link, and cannot verify one while OpenCode is
+    unreachable.
+    """
+    if not isinstance(session_id, str) or not session_id:
+        return None
+    if not re.fullmatch(r'[A-Za-z0-9_.:-]{1,200}', session_id):
+        return {'id': session_id, 'verified': False, 'url': None}
+    now = time.time()
+    if now - _MEMORY_SESSIONS['at'] > 60:
+        try:
+            result = management.sessions({})
+            fresh = {}
+            for item in (result or {}).get('sessions') or []:
+                sid, directory = item.get('id'), item.get('directory')
+                if isinstance(sid, str) and isinstance(directory, str) and directory:
+                    fresh[sid] = directory
+            _MEMORY_SESSIONS['map'] = fresh
+            _MEMORY_SESSIONS['at'] = now
+        except Exception:
+            return {'id': session_id, 'verified': False, 'url': None}
+    directory = _MEMORY_SESSIONS['map'].get(session_id)
+    if not isinstance(directory, str) or not directory:
+        return {'id': session_id, 'verified': False, 'url': None}
+    encoded = base64.urlsafe_b64encode(directory.encode()).decode().rstrip('=')
+    return {'id': session_id, 'verified': True,
+            'url': '/' + encoded + '/session/' + urllib.parse.quote(session_id, safe='')}
 
 
 def state():
@@ -455,6 +490,34 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.reply(200, redact(history))
             return
+        if path in ('/console-api/memory/browse', '/console-api/memory/detail',
+                    '/console-api/memory/activity', '/console-api/memory/capacity'):
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            try:
+                memory = __import__('memory_manager')
+                if path.endswith('/browse'):
+                    result = memory.browse(category=query.get('category', [None])[0],
+                                           folder=query.get('folder', [None])[0],
+                                           project=query.get('project', [None])[0],
+                                           page=query.get('page', [1])[0],
+                                           page_size=query.get('pageSize', [25])[0],
+                                           sort=query.get('sort', ['newest'])[0],
+                                           query=query.get('q', [None])[0])
+                elif path.endswith('/detail'):
+                    result = memory.detail(query.get('id', [None])[0],
+                                           scope=query.get('project', [None])[0])
+                    if isinstance(result, dict) and result.get('sessionId'):
+                        result['session'] = memory_session_link(result['sessionId'])
+                elif path.endswith('/activity'):
+                    result = memory.activity()
+                else:
+                    result = memory.capacity()
+                self.reply(200, redact(result))
+            except (ValueError, TypeError, KeyError) as error:
+                self.reply(400, {'error': str(error)})
+            except (HttpFailure, OSError, RuntimeError) as error:
+                self.reply(503, {'error': 'Local memory service could not complete the request: ' + str(error)})
+            return
         if path in ('/console-api/models', '/console-api/settings', '/console-api/sessions',
                     '/console-api/workspaces', '/console-api/cleanup', '/console-api/usage-history',
                     '/console-api/credentials', '/console-api/stats', '/console-api/opencode-version',
@@ -575,6 +638,8 @@ class Handler(BaseHTTPRequestHandler):
                     result = memory.delete(body.get('id'))
                 elif action == 'bulk_delete':
                     result = memory.bulk_delete(body.get('ids') or [])
+                elif action == 'maintenance_run':
+                    result = memory.maintain(force=True)
                 else:
                     raise ValueError('Unknown memory action')
             elif path == '/console-api/settings':
