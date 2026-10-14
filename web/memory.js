@@ -172,6 +172,12 @@
     var selectedIds = new Set();
     var pollTimer = null;
     var controller = {};
+    var projectRestored = false;
+    var projectStorageKey = 'worker-desk.memory.project';
+
+    function rememberProject() {
+      try { root.localStorage.setItem(projectStorageKey, state.project); } catch (_error) { /* browsing also works without storage */ }
+    }
 
     function narrow() {
       return typeof matchMedia === 'function' && !matchMedia('(min-width: 1180px)').matches;
@@ -288,6 +294,12 @@
       try {
         var projects = await memoryRequest('/console-api/memory/projects');
         state.navProjects = Array.isArray(projects) ? projects : [];
+        if (!projectRestored) {
+          var saved = '';
+          try { saved = root.localStorage.getItem(projectStorageKey) || ''; } catch (_error) {}
+          if (state.navProjects.some(function (project) { return project.tag === saved; })) state.project = saved;
+          projectRestored = true;
+        }
       } catch (_error) { /* adding stays disabled with a clear message */ }
     }
 
@@ -389,7 +401,17 @@
       var html = '<div class="memory-nav-group">';
       html += navItem('all', !state.category && !state.folder && !state.project, 'data-nav-value=""',
         tr('memory.allMemories'), numberValue(state.totalRecords) ? number(state.totalRecords) : '');
-      html += '</div><div class="memory-nav-group"><div class="memory-nav-heading">' + esc(tr('memory.navCategories')) + '</div>';
+      html += '</div>';
+      var projects = state.projects || [];
+      html += '<div class="memory-nav-group"><div class="memory-nav-heading">' + esc(tr('memory.navProjects')) + '</div>';
+      if (!projects.length) html += '<p class="muted memory-nav-empty">' + esc(tr('memory.navEmpty')) + '</p>';
+      for (var p = 0; p < projects.length; p++) {
+        var project = projects[p];
+        html += navItem('project', state.project === project.tag,
+          'data-nav-value="' + esc(project.tag) + '"', project.name || project.tag, facetCount(project));
+      }
+      html += '</div>';
+      html += '<div class="memory-nav-group"><div class="memory-nav-heading">' + esc(tr('memory.navCategories')) + '</div>';
       var categories = state.categories || [];
       if (!categories.length) html += '<p class="muted memory-nav-empty">' + esc(tr('memory.navEmpty')) + '</p>';
       for (var i = 0; i < categories.length; i++) {
@@ -411,15 +433,6 @@
         }
         html += '</div>';
       }
-      var projects = state.projects || [];
-      html += '<div class="memory-nav-group"><div class="memory-nav-heading">' + esc(tr('memory.navProjects')) + '</div>';
-      if (!projects.length) html += '<p class="muted memory-nav-empty">' + esc(tr('memory.navEmpty')) + '</p>';
-      for (var p = 0; p < projects.length; p++) {
-        var project = projects[p];
-        html += navItem('project', state.project === project.tag,
-          'data-nav-value="' + esc(project.tag) + '"', project.name || project.tag, facetCount(project));
-      }
-      html += '</div>';
       nav.innerHTML = html;
     }
 
@@ -781,7 +794,9 @@
 
     function selectNav(kind, value, category) {
       if (kind === 'project') {
-        state.project = state.project === value ? '' : value;
+        state.project = value;
+        state.category = ''; state.folder = '';
+        rememberProject();
       } else if (kind === 'category') {
         state.category = state.category === value ? '' : value;
         state.folder = '';
@@ -790,6 +805,12 @@
         else { state.folder = value; state.category = category || (value || '').split('/')[0]; }
       } else {
         state.category = ''; state.folder = ''; state.project = '';
+        rememberProject();
+      }
+      if (kind === 'project' || kind === 'all') {
+        api.beginRequest(state, 'detail');
+        state.selected = null; state.detail = null; selectedIds.clear();
+        renderInspector({}); updateLayout();
       }
       state.page = 1;
       loadBrowse();
@@ -927,7 +948,8 @@
         await loadBrowse();
         return;
       }
-      await Promise.all([loadProjectsForAdd(), loadBrowse(), loadCapacity(), loadActivity()]);
+      await loadProjectsForAdd();
+      await Promise.all([loadBrowse(), loadCapacity(), loadActivity()]);
       renderNav();
     }
 

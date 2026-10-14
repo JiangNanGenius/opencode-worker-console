@@ -74,6 +74,9 @@ key server-side only.
 
 Semantics that the page must keep:
 
+- **Projects lead navigation.** The browser remembers the last explicitly selected
+  project and restores it only if it still exists. Switching projects clears the
+  previous detail; full content opens only after a record is selected.
 - **Lists are metadata-first.** One depth-aware native tree listing with per-file tags builds a
   short-lived navigation index; only the visible page reads bounded, server-
   sanitized previews. Full bodies are read (raw, server-parsed) only for the

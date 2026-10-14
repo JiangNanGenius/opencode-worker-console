@@ -270,3 +270,38 @@ for (const deleted of [0, 2]) test('maintenance failure remains visible with ' +
   assert.match(view.elements['memory-capacity-body'].innerHTML, /maintenancePartial/);
   assert.match(view.elements['memory-capacity-body'].innerHTML, /permission denied/);
 });
+
+for (const saved of ['opencode_project_x', 'removed-project']) test('restores only an existing remembered project: ' + saved, async t => {
+  global.localStorage = { getItem: () => saved, setItem: () => {} };
+  t.after(() => { delete global.localStorage; });
+  const view = withView(browsePages, []);
+  await view.controller.load();
+  assert.equal(view.controller.state.project, saved === 'opencode_project_x' ? saved : '');
+  const browse = view.calls.find(path => path.startsWith('/console-api/memory/browse'));
+  assert.equal(browse.includes('project=opencode_project_x'), saved === 'opencode_project_x');
+  assert.equal(view.pending.detail.length, 0);
+  const nav = view.elements['memory-nav'].innerHTML;
+  assert.ok(nav.indexOf('memory.navProjects') < nav.indexOf('memory.navCategories'));
+});
+
+test('changing projects remembers scope and discards the old in-flight inspector', async t => {
+  const saved = [];
+  global.localStorage = { getItem: () => '', setItem: (key, value) => saved.push(value) };
+  t.after(() => { delete global.localStorage; });
+  const view = withView(browsePages, []);
+  await view.controller.load();
+  const loading = view.controller.select('viking://user/default/memories/experiences/a.md');
+  await flush();
+  view.elements['memory-nav'].dispatch('click', {
+    target: { closest: selector => selector === '[data-nav-kind]' ? { dataset: { navKind: 'project', navValue: 'opencode_project_x' } } : null }
+  });
+  view.pending.detail[0].resolve({ kind: 'file', content: 'old project detail' });
+  await loading;
+  await flush();
+  assert.equal(view.controller.state.project, 'opencode_project_x');
+  assert.equal(view.controller.state.selected, null);
+  assert.equal(view.controller.state.detail, null);
+  assert.equal(view.elements['memory-layout'].classes.has('inspector-open'), false);
+  assert.deepEqual(saved, ['opencode_project_x']);
+  assert.doesNotMatch(view.elements['memory-inspector-body'].innerHTML, /old project detail/);
+});
