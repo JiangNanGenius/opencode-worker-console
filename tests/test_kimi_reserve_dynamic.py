@@ -244,6 +244,7 @@ class ReserveAdmissionTests(StateFixture):
         task = {'id': 'job-n', 'requested_profile': 'senior-code', 'tier': 'normal',
                 'complexity': 'normal', 'status': 'queued'}
         live = time.time()
+        self.write_demand(tasks_updated_at=live, quiet_since=live - 1801)
         self.assertEqual(quota.route(task, c, view(15.0, 42, now=live, sampled=live))[1],
                          'kimi_weekly_reserved_for_ultra')
         self.assertEqual(quota.route(task, c, view(20.0, 42, now=live, sampled=live))[0],
@@ -301,6 +302,7 @@ class ReserveAdmissionTests(StateFixture):
         c = config()
         self.write_demand()
         sample = time.time()
+        self.write_demand(tasks_updated_at=sample, quiet_since=sample - 1801)
         iso = datetime.fromtimestamp(sample + 42 * 3600, tz=timezone.utc).isoformat()
         acct = account(windows=[{'name': 'limit7d', 'kind': 'weekly', 'limit': 1,
                                  'remaining': 0.15, 'remaining_percent': 15.0,
@@ -324,6 +326,7 @@ class ReserveAdmissionTests(StateFixture):
         c = config()
         self.write_demand()
         live = time.time()
+        self.write_demand(tasks_updated_at=live, quiet_since=live - 1801)
         raw = {'kimi-for-coding': {
             'state': 'ok', 'stale': False, 'sampled_at': live, 'available': True,
             'windows': [dict(WEEK_5H), weekly_window(15.0, live + 42 * 3600)]}}

@@ -179,7 +179,7 @@ class PoolProxyTests(unittest.TestCase):
             patch.object(common, 'STATE', self.state),
             patch.object(common, 'CONFIG', self.config_path),
             patch.object(bailian_pool.providers, 'BAILIAN_BASE_URL', self.upstream.url),
-            patch.object(bailian_pool.keychain_secrets, 'get', side_effect=get_key),
+            patch.object(bailian_pool.keychain_secrets, 'get_bounded', side_effect=get_key, create=True),
             patch.object(bailian_pool, 'log', side_effect=self.logs.append),
         ]
         for item in self.patches:
@@ -369,7 +369,8 @@ class PoolProxyTests(unittest.TestCase):
         self.assertEqual(headers.get('content-type'), 'text/event-stream')
         self.assertEqual(body, b''.join(chunks))
         self.assertEqual(len(self.upstream.requests), 1)
-        self.assertEqual(self.slot('seat-1').get('state'), 'ok')
+        self.assertEqual(self.slot('seat-1').get('state'), 'exhausted')
+        self.assertEqual(self.slot('seat-1').get('kind'), 'balance')
 
     def test_all_slots_exhausted_returns_provider_failure(self):
         self.upstream.routes[self.keys['seat-1']] = _json_route(429, QUOTA)
@@ -393,10 +394,15 @@ class PoolProxyTests(unittest.TestCase):
         self.assertEqual(self.slot('seat-1').get('state'), 'exhausted')
         old_generation = self.slot('seat-1').get('generation')
         self.keys['seat-1'] = 'fake-seat-one-rotated-key-value'
-        self.upstream.routes[self.keys['seat-1']] = _json_route(200, {'seat': 'rotated'})
+        model = {'id': 'msg_rotation', 'type': 'message', 'role': 'assistant',
+                 'content': [{'type': 'text', 'text': 'rotated'}], 'stop_reason': 'end_turn'}
+        self.upstream.routes[self.keys['seat-1']] = _json_route(200, model)
         status, _, body = self.request()
         self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body), {'seat': 'rotated'})
+        self.assertEqual(json.loads(body), model)
+        deadline = time.monotonic() + 2
+        while self.slot('seat-1').get('probe_lease') and time.monotonic() < deadline:
+            threading.Event().wait(0.005)
         self.assertEqual(self.slot('seat-1').get('state'), 'ok')
         self.assertNotEqual(self.slot('seat-1').get('generation'), old_generation)
         self.assertEqual(self.stored().get('active'), 'seat-1')

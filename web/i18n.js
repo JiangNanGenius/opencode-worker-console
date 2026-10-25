@@ -17,6 +17,8 @@
 
   var MESSAGES = {
     en: {
+      "status.capacity_wait": "Waiting for model capacity",
+      "status.capacity_continuation": "Confirming continuation",
       "auth.passkeys": "Passkey / Secure sign-in",
       "codex.heading": "Codex tasks",
       "status.unknown": "Unknown",
@@ -514,6 +516,8 @@
       'setup.error.stale': 'Settings changed elsewhere. Reload the latest settings, review your choices, then apply again.'
     },
     'zh-CN': {
+      "status.capacity_wait": "等待模型额度",
+      "status.capacity_continuation": "正在确认续接",
       "auth.passkeys": "Passkey / 安全登录",
       "codex.heading": "Codex 任务",
       "status.unknown": "状态未知",
@@ -1011,6 +1015,8 @@
       'setup.error.stale': '设置已在别处更改。请重新读取最新设置，确认选择后再次应用。'
     },
     'zh-TW': {
+      "status.capacity_wait": "等待模型額度",
+      "status.capacity_continuation": "正在確認續接",
       'nav.stats': '資料統計', 'page.stats.desc': '查看任務量、Token、模型路由與額度趨勢。',
       'quota.estimatedAvailability': '預計可用時長', 'quota.balanceEstimateHint': '依近期真實餘額消耗估算',
       'stats.period': '統計範圍', 'stats.lastMonth': '近一個月', 'stats.allTime': '全部歷史',
@@ -1448,6 +1454,8 @@
       'setup.error.stale': '設定已在別處變更。請重新讀取最新設定，確認選擇後再次套用。'
     },
     ja: {
+      "status.capacity_wait": "モデルの利用枠を待機中",
+      "status.capacity_continuation": "継続処理を確認中",
       'nav.stats': 'データ統計', 'page.stats.desc': 'タスク数、Token、ルーティング、クォータ推移を確認します。',
       'quota.estimatedAvailability': '推定利用可能時間', 'quota.balanceEstimateHint': '最近の残高消費から推定',
       'stats.period': '集計期間', 'stats.lastMonth': '過去30日間', 'stats.allTime': '全期間',
@@ -1885,6 +1893,8 @@
       'setup.error.stale': '設定が別の場所で変更されました。最新の設定を読み込み直し、選択を確認してから再適用してください。'
     },
     ko: {
+      "status.capacity_wait": "모델 한도 대기 중",
+      "status.capacity_continuation": "작업 재개 확인 중",
       'nav.stats': '데이터 통계', 'page.stats.desc': '작업량, Token, 라우팅 및 할당량 추세를 확인합니다.',
       'quota.estimatedAvailability': '예상 사용 가능 시간', 'quota.balanceEstimateHint': '최근 실제 잔액 소진 속도로 추정',
       'stats.period': '통계 기간', 'stats.lastMonth': '최근 30일', 'stats.allTime': '전체 기록',

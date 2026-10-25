@@ -21,7 +21,7 @@ import quota
 import diagnostics
 import routing
 from workspace import conflicts, git_root, integrate, relative_scope
-from worker import run_task
+from worker import run_task, recovered_capacity_exclusions, capacity_resume_candidate
 
 WAIT_DEFAULT_SECONDS = {'fast': 300, 'normal': 1800, 'deep': 3600, 'ultra': 3600}
 TIERS = ('fast', 'normal', 'deep', 'ultra')
@@ -281,7 +281,11 @@ def submit(spec):
         parent_recovery = parent.get('recovery') if isinstance(parent.get('recovery'), dict) else {}
         blocked_provider = parent_recovery.get('blocked_provider')
         if requested_profile == 'auto' and isinstance(blocked_provider, str) and blocked_provider:
-            t['excluded_providers'] = [blocked_provider]
+            inherited = dict(parent, excluded_providers=[blocked_provider])
+            recovered = recovered_capacity_exclusions(
+                inherited, c, quota.view(read_json(STATE / 'quota.json', {})))
+            t['excluded_providers'] = recovered['excluded_providers']
+            t['_capacity_exclusions'] = parent.get('_capacity_exclusions') or {}
     # Block accidental delegation of known stored API keys before persisting prompt text.
     if redact(t) != t:
         raise ValueError('Task contains a credential-like value; remove it before submission')
@@ -292,7 +296,30 @@ def submit(spec):
     return coordinator_task(t)
 
 
-def choose_ready(all_tasks, c, q, admissions=None):
+def _capacity_admission_fingerprint(t):
+    """Only stable admission fields; observer timestamp updates do not invalidate it."""
+    return json.dumps({key: t.get(key) for key in (
+        'status', '_capacity_wait', '_capacity_exclusions', 'excluded_providers', 'excluded_profiles',
+        'profile', 'requested_profile', 'tier', 'capability_floor', 'tier_change',
+        'message_id', 'cancel_requested')}, sort_keys=True)
+
+
+def preview_capacity_admissions(all_tasks, c, q):
+    """Pool credential/generation checks happen BEFORE the scheduler state lock."""
+    views = {}
+    for t in all_tasks:
+        waiting = (t.get('_capacity_wait') or {}).get('phase') == 'waiting'
+        if t.get('status') == 'queued' or t.get('status') in ACTIVE and waiting:
+            if waiting:
+                candidate, profile, _ = capacity_resume_candidate(t, c, q)
+            else:
+                candidate, profile = recovered_capacity_exclusions(t, c, q), None
+            views[t['id']] = {'fingerprint': _capacity_admission_fingerprint(t),
+                              'candidate': candidate, 'resume_profile': profile}
+    return views
+
+
+def choose_ready(all_tasks, c, q, admissions=None, recovery_views=None):
     """Select dispatchable queued tasks.
 
     No global or per-provider concurrency caps: independent upstream-harness conversations run
@@ -310,17 +337,38 @@ def choose_ready(all_tasks, c, q, admissions=None):
     """
     if (STATE / 'maintenance.json').exists():
         return []
+    if recovery_views is None:
+        # Standalone previews/tests have no enclosing scheduler state lock.
+        recovery_views = preview_capacity_admissions(all_tasks, c, q)
+    def current_view(t):
+        view = recovery_views.get(t['id']) or {}
+        return view if view.get('fingerprint') == _capacity_admission_fingerprint(t) else {}
     active = [t for t in all_tasks if t['status'] in ACTIVE]
+    executing = []
+    for t in active:
+        if (t.get('_capacity_wait') or {}).get('phase') != 'waiting':
+            executing.append(t)
+        elif current_view(t).get('resume_profile'):
+            # Ready original work reserves the next execution slot before new
+            # queued work can fill it. Still-blocked waiters reserve no slot.
+            executing.append(dict(t, profile=current_view(t)['resume_profile']))
     choices = []
-    waiting = [t for t in all_tasks if t['status'] == 'queued']
+    waiting = sorted((t for t in all_tasks if t['status'] == 'queued'), key=lambda t: (
+        not bool(t.get('session_id') or (t.get('_retier') or {}).get('queued_checkpoint')),
+        t.get('created_at', 0)))
     cap = per_owner_cap(c)
     for t in waiting:
         if t.get('cancel_requested'):
             choices.append((t, None, 'cancelled'))
             continue
-        if sum(1 for a in active if owner_key(a) == owner_key(t)) >= cap:
+        if sum(1 for a in executing if owner_key(a) == owner_key(t)) >= cap:
             choices.append((t, None, 'owner_at_capacity'))
             continue
+        candidate = current_view(t).get('candidate')
+        if candidate:
+            # Merge only the computed exclusion decision. Never overwrite newer
+            # authority/progress/steering fields with an outside-lock snapshot.
+            t = dict(t, excluded_providers=candidate.get('excluded_providers', []))
         explicit = (t.get('requested_profile') or 'auto') != 'auto'
         profile, why = quota.route(t, c, q, admissions)
         if profile is None:
@@ -337,7 +385,7 @@ def choose_ready(all_tasks, c, q, admissions=None):
             low, remaining = quota.kimi_ultra_low_weekly(q, c)
             if low:
                 running = sum(
-                    1 for item in active
+                    1 for item in executing
                     if (c.get('profiles', {}).get(item.get('profile')) or {}).get('model')
                     == routing.KIMI_RESERVED_MODEL)
                 if running >= quota.kimi_ultra_limit(c):
@@ -360,16 +408,21 @@ def choose_ready(all_tasks, c, q, admissions=None):
                 admissions.commit()
         selected = dict(t, profile=profile, status='starting')
         active.append(selected)
+        executing.append(selected)
         choices.append((t, profile, why))
     return choices
 
 
 def daemon():
     init()
+    maintenance = read_json(STATE / 'maintenance.json', {}) or {}
+    if 'pool' in maintenance.get('paused_services', []):
+        return  # Direct CLI starts must honor the same barrier as service.start.
     lock = open(STATE / 'daemon.lock', 'a')
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
+        lock.close()
         return
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
@@ -387,6 +440,10 @@ def daemon():
     q = quota.view(read_json(STATE / 'quota.json', {}))
     while not stop.is_set():
         try:
+            maintenance = read_json(STATE / 'maintenance.json', {}) or {}
+            if 'pool' in maintenance.get('paused_services', []):
+                stop.set()
+                break  # Stop observing; preserve native sessions and checkpoints.
             c = config()
             if time.time() - update_launch_checked >= 60:
                 update_launch_checked = time.time()
@@ -439,7 +496,9 @@ def daemon():
             just_finished = any(not th.is_alive() for th in threads.values())
             needs_poll = any(t['status'] in ACTIVE | {'queued'} for t in all_tasks)
             has_queue = any(t['status'] == 'queued' for t in all_tasks)
-            if just_finished or (needs_poll and time.time() - last_refresh >= (60 if has_queue else 300)):
+            capacity_waiting = any(t.get('_capacity_wait') for t in all_tasks)
+            if just_finished or (needs_poll and time.time() - last_refresh >=
+                                 (60 if has_queue or capacity_waiting else 300)):
                 q, last_refresh = quota.refresh(), time.time()
                 try:
                     import notifications
@@ -447,10 +506,11 @@ def daemon():
                 except Exception:
                     pass  # Notifications are best-effort and never stop scheduling.
             threads = {k: th for k, th in threads.items() if th.is_alive()}
+            recovery_views = preview_capacity_admissions(all_tasks, c, q)
             with locked():
                 policy = routing.configured(c)
                 admissions = routing.Admissions.load(policy) if policy else None
-                for t, profile, reason in choose_ready(tasks(), c, q, admissions):
+                for t, profile, reason in choose_ready(tasks(), c, q, admissions, recovery_views):
                     if reason == 'cancelled':
                         t.update(status='cancelled', finished_at=time.time())
                     elif profile:
@@ -481,6 +541,7 @@ def daemon():
     deadline = time.time() + 10
     for th in threads.values():
         th.join(timeout=max(0, deadline - time.time()))
+    lock.close()
 
 
 def detect_wizard_lang():

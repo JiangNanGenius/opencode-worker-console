@@ -1791,10 +1791,12 @@ class WorkerWindowRecoveryTests(unittest.TestCase):
     def test_capacity_reroute_respects_explicit_model_pin(self):
         common.update('job-window', requested_profile='deep-research')
         with patch.object(worker, 'call') as call:
-            self.assertFalse(worker.reroute_after_capacity_stop(
+            self.assertTrue(worker.reroute_after_capacity_stop(
                 common.task('job-window'), 'kimi-for-coding', 'provider_usage_or_rate_limit'))
         call.assert_not_called()
         self.assertEqual(common.task('job-window')['profile'], 'deep-research')
+        self.assertEqual(common.task('job-window')['reason'], 'capacity_wait')
+        self.assertEqual(common.task('job-window')['_capacity_wait']['phase'], 'waiting')
 
     def test_generic_retry_keeps_waiting(self):
         status = {'ses_window': {'type': 'retry', 'message': 'Rate limit exceeded, retry later'}}

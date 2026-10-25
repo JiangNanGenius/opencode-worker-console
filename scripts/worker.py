@@ -382,6 +382,13 @@ def record_billing_success(t, messages):
                                   for p in message.get('parts', []))
     if finish_reason not in ('stop', 'tool-calls', 'length') or not has_output:
         return False
+    if provider == 'deepseek' and credential_identity(provider) == identity:
+        exclusions = dict(t.get('_capacity_exclusions') or {})
+        entry = exclusions.get(provider) or {}
+        if entry.get('identity') == identity and entry.get('reason') == 'provider_usage_or_rate_limit' and \
+                started > entry.get('at', float('inf')) and completed > entry.get('last_success_at', 0):
+            exclusions[provider] = dict(entry, last_success_at=completed)
+            update(t['id'], _capacity_exclusions=exclusions)
     return quota.observe_model_success(provider, identity, started, completed)
 
 
@@ -527,18 +534,331 @@ def reroute_after_capacity_stop(t, provider, trigger, messages=None, aborted=Fal
             if (t.get('tier_change') or {}).get('status') in ('pending', 'uncertain'):
                 # The tier continuation owns the next boundary.
                 return False
-        return _reroute_after_capacity_stop(t, provider, trigger)
+        return _reroute_after_capacity_stop(t, provider, trigger, messages)
 
 
-def _reroute_after_capacity_stop(t, provider, trigger):
+def _capacity_exclusion(t, provider, trigger):
+    records = dict(t.get('_capacity_exclusions') or {})
+    if provider:
+        identity, now = _dispatch_credential_identity(t, provider), time.time()
+        previous = records.get(provider) or {}
+        entry = {'identity': identity, 'at': now, 'reason': trigger}
+        if provider == 'deepseek' and trigger == 'provider_usage_or_rate_limit':
+            count = previous.get('retry_count', 0)
+            if isinstance(count, bool) or not isinstance(count, int) or count < 0 or \
+                    previous.get('identity') != identity or now - previous.get('at', 0) > 21600 or \
+                    previous.get('last_success_at', 0) > previous.get('at', 0):
+                count = 0
+            count = min(count + 1, 16)
+            entry.update(retry_count=count, retry_after=now + min(60 * 2 ** (count - 1), 3600))
+        records[provider] = entry
+    return records
+
+
+def _capacity_auth_rejection(raw):
+    """Gate policy failures keep their auth semantics even when wrapped as 429."""
+    if not isinstance(raw, dict):
+        return False
+    data = raw.get('data') if isinstance(raw.get('data'), dict) else raw
+    status = data.get('statusCode', raw.get('statusCode'))
+    text = str(data.get('message', raw.get('message', ''))).lower()
+    if status == 403 and (diagnostics.billing_kind(raw) or diagnostics.window_kind(raw)):
+        return False  # Explicit Kimi plan/window exhaustion can use HTTP 403.
+    return status in (401, 403) or any(marker in text for marker in (
+        'credential_rejected', 'authentication_error', 'invalid_api_key',
+        'invalid api key', 'unauthorized', 'permission denied', 'access denied'))
+
+
+def recovered_capacity_exclusions(t, c, q):
+    """Release quota exclusions only on current-key recovery, never an auth guess.
+
+    Legacy exclusions without provenance remain closed. A newer positive real
+    window can recover a window stop; durable circuits additionally need their
+    own verified release. Account aggregates never release a slot/key here.
+    """
+    excluded = list(t.get('excluded_providers') or [])
+    records = t.get('_capacity_exclusions') or {}
+    blocks = read_json(STATE / quota.BILLING, {})
+    for provider in list(excluded):
+        record = records.get(provider) or {}
+        block = blocks.get(provider) or {}
+        quota_hops = [hop for hop in t.get('route_history') or []
+                      if hop.get('from_provider') == provider and hop.get('trigger') in (
+                          'provider_usage_or_rate_limit', 'provider_billing_monthly_usage_limit',
+                          'provider_billing_insufficient_balance')]
+        if provider == BAILIAN_PROVIDER:
+            # Only a real quota stop has automatic recovery authority. A
+            # legacy hop supplies its stop time, never a guessed old key.
+            auth_reasons = ('credential_rejected', 'provider_billing_credential_rejected',
+                            'provider_authentication_blocked')
+            pool_hops = quota_hops + [hop for hop in t.get('route_history') or []
+                                     if hop.get('from_provider') == provider and
+                                     hop.get('trigger') in auth_reasons]
+            basis = record or (max(pool_hops, key=lambda hop: hop.get('at', 0)) if pool_hops else {})
+            reason = basis.get('reason', basis.get('trigger'))
+            after = basis.get('at')
+            if reason in ('provider_usage_or_rate_limit', 'provider_billing_monthly_usage_limit',
+                          'provider_billing_insufficient_balance', *auth_reasons) and \
+                    isinstance(after, (int, float)) and not isinstance(after, bool) and \
+                    math.isfinite(after) and after > 0:
+                try:
+                    import bailian_pool
+                    result = bailian_pool.recovery_available(c, after=after)
+                except Exception:
+                    result = None
+                eligible = isinstance(result, dict) and result.get('available') is True and (
+                    result.get('healthy') is True or result.get('authorized_probe') is True)
+                if reason in auth_reasons or (quota.billing_block(provider) or {}).get('reason') == quota.AUTH_REASON:
+                    # New actual key material is a new credential, not retrying
+                    # a rejected key. Generic due probes never relax auth.
+                    eligible = eligible and result.get('credential_rotated') is True
+                if eligible:
+                    candidate = dict(t, excluded_providers=[p for p in excluded if p != provider])
+                    profiles = [name for name, value in c.get('profiles', {}).items()
+                                if str(value.get('model', '')).split('/', 1)[0] == provider]
+                    if any(quota._allowed_profile(name, candidate, c, q)[1] for name in profiles):
+                        excluded.remove(provider)
+                        continue
+            if (c.get('bailian_pool') or {}).get('enabled') is True:
+                # A pool's explicit unknown/auth/no-candidate answer cannot be
+                # overridden by an old provider-level success or aggregate.
+                continue
+        if not record:
+            # Retained tasks may predate private exclusion provenance. Only a
+            # real current-key model success after a recorded quota hop can
+            # rehabilitate those; bare aggregate telemetry remains insufficient.
+            hops = quota_hops
+            if hops and block.get('released') == 'model_success':
+                hop = max(hops, key=lambda value: value.get('at', 0))
+                record = {'reason': hop['trigger'], 'at': hop.get('at', float('inf')),
+                          'identity': block.get('credential')}
+        reason, identity = record.get('reason'), record.get('identity')
+        if reason not in ('provider_usage_or_rate_limit',
+                          'provider_billing_monthly_usage_limit',
+                          'provider_billing_insufficient_balance') or not identity or \
+                credential_identity(provider) != identity:
+            continue
+        released = block.get('released')
+        proof = (block.get('credential') == identity and
+                 isinstance(block.get('cleared_at'), (int, float)) and
+                 block['cleared_at'] >= record.get('at', float('inf')) and
+                 released in ('model_success', 'quota', 'openapi_account_recovery',
+                              'snapshot_replenishment', 'scheduled_reset',
+                              'ark_official_afp_retry_authorization',
+                              'kimi_verified_monthly_pool_retry_authorization'))
+        sample = q.get(provider) or {}
+        sampled = sample.get('sampled_at')
+        fresh = (isinstance(sampled, (int, float)) and not isinstance(sampled, bool) and
+                 record.get('at', float('inf')) < sampled <= time.time() and
+                 time.time() - sampled <= 900 and sample.get('state') == 'ok' and
+                 sample.get('available') is True and sample.get('stale') is not True)
+        windows = sample.get('windows') or []
+        positive_windows = bool(windows) and all(
+            w.get('valid') is not False and
+            isinstance(w.get('remaining_percent'), (int, float)) and
+            not isinstance(w.get('remaining_percent'), bool) and
+            w['remaining_percent'] > 0 for w in windows)
+        if provider == BAILIAN_PROVIDER:
+            # Account Credits aggregate is not proof for an individual seat.
+            # The pool owns slot recovery; this provider exclusion only follows
+            # an exact-key model success or an already guarded circuit release.
+            positive_windows = positive_windows and proof
+        balance_retry = False
+        if provider == 'deepseek' and reason == 'provider_usage_or_rate_limit' and fresh and \
+                time.time() >= record.get('retry_after', record.get('at', float('inf')) + 60) and \
+                not sample.get('error') and not sample.get('live_error'):
+            balances = sample.get('balances') or []
+            balance_retry = bool(balances) and all(
+                isinstance(b, dict) and isinstance(b.get('remaining'), (int, float)) and
+                not isinstance(b.get('remaining'), bool) and math.isfinite(b['remaining']) and
+                b['remaining'] >= 0 for b in balances) and any(b['remaining'] > 0 for b in balances)
+        # A model success is exact-key evidence. A window retry otherwise needs
+        # a new positive window; a non-window block needs its guarded release.
+        recovered = proof and released == 'model_success' or \
+            fresh and positive_windows and (reason == 'provider_usage_or_rate_limit' or proof) or balance_retry
+        if not recovered or quota.billing_block(provider):
+            continue
+        candidate = dict(t, excluded_providers=[p for p in excluded if p != provider])
+        profiles = [name for name, value in c.get('profiles', {}).items()
+                    if str(value.get('model', '')).split('/', 1)[0] == provider]
+        if any(quota._allowed_profile(name, candidate, c, q)[1] for name in profiles):
+            excluded.remove(provider)
+    return dict(t, excluded_providers=excluded)
+
+
+def _capacity_checkpoint(t, messages):
+    done = []
+    for message in messages or []:
+        for part in message.get('parts') or []:
+            state = part.get('state') or {}
+            if part.get('type') == 'tool' and state.get('status') == 'completed':
+                done.append({'tool': str(part.get('tool') or '')[:100],
+                             'call_id': str(part.get('callID') or '')[:160]})
+    return {'done': done[-100:], 'remaining': t.get('objective', ''),
+            'do_not_repeat': 'Inspect prior conversation and current workspace. Never repeat completed '
+                             'edits, deployments, messages, payments or other external side effects.'}
+
+
+def _park_capacity_wait(t, provider, trigger, messages=None):
+    """Called only after the existing idle/confirmed-abort boundary."""
+    if not isinstance(provider, str) or not provider or trigger not in ('provider_usage_or_rate_limit',
+                       'provider_billing_monthly_usage_limit',
+                       'provider_billing_insufficient_balance'):
+        return False
+    if t.get('cancel_requested') or (t.get('tier_change') or {}).get('status') in retier.UNRESOLVED:
+        return False
+    prior_wait = t.get('_capacity_wait') or {}
+    if prior_wait.get('phase') == 'waiting' and prior_wait.get('source_message_id') == t.get('message_id'):
+        return True  # Re-observing one stop must not reset its retry cooldown.
+    waiting = {'phase': 'waiting', 'provider': provider, 'trigger': trigger,
+               'source_message_id': t.get('message_id'), 'created_at': time.time(),
+               'checkpoint': _capacity_checkpoint(t, messages)}
+    update(t['id'], status='running', reason='capacity_wait', _capacity_wait=waiting,
+           excluded_providers=sorted(set(t.get('excluded_providers') or []) | {provider}),
+           _capacity_exclusions=_capacity_exclusion(t, provider, trigger))
+    return True
+
+
+def capacity_resume_candidate(t, c, q):
+    """Read-only admission preview; pool generation checks may touch Keychain.
+
+    Scheduler callers must run this outside the global state lock. Dispatch
+    rechecks it at the existing control boundary before writing its intent.
+    """
+    waiting = t.get('_capacity_wait') or {}
+    if waiting.get('phase') != 'waiting' or t.get('cancel_requested') or \
+            (t.get('tier_change') or {}).get('status') in retier.UNRESOLVED:
+        return t, None, 'capacity_not_waiting'
+    candidate = recovered_capacity_exclusions(t, c, q)
+    profile, reason = quota.route(candidate, c, q)
+    if not profile or not quota.meets_capability_floor(profile, t, c):
+        return candidate, None, reason
+    if waiting.get('trigger') == 'preferred_route_restored' and \
+            (profile != waiting.get('preferred_profile') or profile == t.get('profile')):
+        return candidate, None, 'preferred_route_not_restored'
+    provider = c['profiles'][profile]['model'].split('/', 1)[0]
+    if provider in candidate.get('excluded_providers', []):
+        return candidate, None, 'continuation_excluded_provider'
+    if not quota.allowed(provider, q, t.get('complexity', 'normal'), retry_monthly=False)[0]:
+        return candidate, None, 'provider_still_blocked'
+    return candidate, profile, reason
+
+
+def resume_capacity_wait(t, messages, native_status):
+    """Durable at-most-once continuation; lost acknowledgements are observation-only."""
+    with locked('control-' + t['id']):
+        maintenance = read_json(STATE / 'maintenance.json', {}) or {}
+        if 'pool' in maintenance.get('paused_services', []):
+            return True
+        t = task(t['id'])
+        waiting = t.get('_capacity_wait')
+        if not isinstance(waiting, dict):
+            return False
+        if t.get('cancel_requested'):
+            return True  # run_task's cancellation path owns the abort/finish.
+        if (t.get('tier_change') or {}).get('status') in retier.UNRESOLVED:
+            return True
+        owned_message = (waiting.get('source_message_id') if waiting.get('phase') == 'waiting'
+                         else waiting.get('message_id'))
+        if t.get('message_id') != owned_message:
+            # An applied retier owns the continuation, not this old quota stop.
+            update(t['id'], _capacity_wait=None, reason=None)
+            return False
+        if waiting.get('phase') != 'waiting':
+            message_id = waiting.get('message_id')
+            if message_id and any(m.get('info', {}).get('role') == 'assistant' and
+                                  m.get('info', {}).get('parentID') == message_id for m in messages):
+                update(t['id'], _capacity_wait=None, status='running',
+                       reason=None, dispatch_acknowledged=True)
+                return False
+            # A visible USER message alone may still be queued. Do not let the
+            # previous assistant's terminal quota error finish/re-park it.
+            return True  # Includes intent persisted before a crash: never resend.
+        if native_status.get('type') != 'idle':
+            return True
+        c = config()
+        q = quota.view(read_json(STATE / 'quota.json', {}))
+        candidate, profile, reason = capacity_resume_candidate(t, c, q)
+        if not profile:
+            return True
+        provider, model = c['profiles'][profile]['model'].split('/', 1)
+        with locked('capacity-admission'):
+            import common
+            message_id = next_message_id()
+            now = time.time()
+            waiting = dict(waiting, phase='intent', message_id=message_id, attempted_at=now)
+            # Linearize against cancellation's state lock as well as retier's
+            # control lock. Cancellation before this intent always wins.
+            with locked():
+                current = task(t['id'])
+                if current.get('cancel_requested') or current.get('status') not in common.ACTIVE or \
+                        (current.get('tier_change') or {}).get('status') in retier.UNRESOLVED or \
+                        (current.get('_capacity_wait') or {}).get('phase') != 'waiting' or \
+                        current.get('message_id') != t.get('message_id'):
+                    return True
+                executing = [other for other in common.tasks()
+                             if other['id'] != t['id'] and other.get('status') in common.ACTIVE and
+                             (other.get('_capacity_wait') or {}).get('phase') != 'waiting']
+                owner = lambda item: item.get('owner_thread_id') or item.get('group_id') or item.get('source_dir')
+                owner_cap = c.get('max_parallel_per_owner', 4)
+                if isinstance(owner_cap, bool) or not isinstance(owner_cap, int) or not 1 <= owner_cap <= 16:
+                    owner_cap = 4
+                if sum(owner(other) == owner(t) for other in executing) >= owner_cap:
+                    return True
+                if c['profiles'][profile]['model'] == routing.KIMI_RESERVED_MODEL:
+                    low, _ = quota.kimi_ultra_low_weekly(q, c)
+                    if low and sum((c.get('profiles', {}).get(other.get('profile')) or {}).get('model')
+                                   == routing.KIMI_RESERVED_MODEL for other in executing) >= quota.kimi_ultra_limit(c):
+                        return True
+                current.update(_capacity_wait=waiting, profile=profile, message_id=message_id,
+                               dispatch_attempted_at=now, dispatch_acknowledged=False,
+                               excluded_providers=candidate.get('excluded_providers', []),
+                               _billing_dispatch={'provider': provider,
+                                                  'identity': credential_identity(provider), 'at': now},
+                               status='uncertain', reason='capacity_continuation_intent', updated_at=now)
+                history = list(current.get('route_history') or [])
+                history.append({'from_profile': t.get('profile'), 'to_profile': profile,
+                                'from_provider': waiting.get('provider'), 'to_provider': provider,
+                                'trigger': waiting['trigger'], 'route_reason': reason,
+                                'message_id': message_id, 'at': now})
+                current['route_history'] = history
+                if waiting['trigger'] == 'preferred_route_restored':
+                    current['_capacity_return_at'] = now
+                write_json(common.task_path(t['id']), current)
+                t = current
+        content = (instructions(t.get('auto_approve', c.get('auto_approve', True))) + '\n' +
+                   'Continue the SAME task from this checkpoint. Only finish the remaining goal; '
+                   'prior actions and authorization remain in the existing session. This is not a new task.\n' +
+                   json.dumps({'task_id': t['id'], **waiting['checkpoint']}, ensure_ascii=False))
+        cfg = c['profiles'][profile]
+        try:
+            call(t, '/prompt_async', 'POST', {
+                'messageID': message_id, 'agent': profile,
+                'model': {'providerID': provider, 'modelID': model},
+                **({'variant': cfg['variant']} if cfg.get('variant') else {}),
+                'parts': [{'type': 'text', 'text': content}]})
+            update(t['id'], _capacity_wait=dict(waiting, phase='sent'),
+                   status='running', reason='capacity_continuation_observing', dispatch_acknowledged=True)
+        except HttpFailure as error:
+            rejected = error.status and 400 <= error.status < 500
+            update(t['id'], _capacity_wait=dict(waiting, phase='blocked' if rejected else 'intent'),
+                   status='uncertain', reason='capacity_continuation_rejected' if rejected else
+                   'capacity_continuation_acknowledgement_unknown')
+        return True
+
+
+def _reroute_after_capacity_stop(t, provider, trigger, messages=None):
     t = task(t['id'])
     c = config()
-    if c.get('auto_reroute_on_quota_exhaustion', True) is not True:
+    assistants = [m for m in messages or [] if m.get('info', {}).get('role') == 'assistant']
+    if assistants and _capacity_auth_rejection(assistants[-1]['info'].get('error')):
         return False
+    if c.get('auto_reroute_on_quota_exhaustion', True) is not True:
+        return _park_capacity_wait(t, provider, trigger, messages)
     # A named-model request is an operator pin (often a controlled comparison).
     # Capacity automation applies only to bridge-owned automatic routing.
     if (t.get('requested_profile') or 'auto') != 'auto':
-        return False
+        return _park_capacity_wait(t, provider, trigger, messages)
     excluded = set(t.get('excluded_providers') or [])
     if provider:
         excluded.add(provider)
@@ -557,7 +877,7 @@ def _reroute_after_capacity_stop(t, provider, trigger):
         update(t['id'], errors=(t.get('errors') or []) + [diagnostics.exception(e, 'quota_reroute')])
         return False
     if not profile or profile == t.get('profile'):
-        return False
+        return _park_capacity_wait(t, provider, trigger, messages)
     cfg = c['profiles'][profile]
     next_provider, model = cfg['model'].split('/', 1)
     message_id = next_message_id()
@@ -570,6 +890,7 @@ def _reroute_after_capacity_stop(t, provider, trigger):
                 'dispatch_attempted_at': t.get('dispatch_attempted_at'),
                 '_billing_dispatch': t.get('_billing_dispatch')}
     fields = {'profile': profile, 'route_reason': reason, 'route_history': history,
+              '_capacity_exclusions': _capacity_exclusion(t, provider, trigger),
               'excluded_providers': sorted(excluded), 'message_id': message_id,
               'dispatch_attempted_at': now, 'dispatch_acknowledged': False,
               '_billing_dispatch': {'provider': next_provider,
@@ -615,7 +936,7 @@ def _reroute_after_capacity_stop(t, provider, trigger):
         return True
 
 
-def proactive_reroute_if_needed(t, native_status):
+def proactive_reroute_if_needed(t, native_status, messages=None):
     """Queue a model change at the next OpenCode message boundary for a long task.
 
     The current turn is never aborted.  OpenCode accepts the continuation in the
@@ -629,12 +950,60 @@ def proactive_reroute_if_needed(t, native_status):
     semantic retier can never queue competing continuations.
     """
     with locked('control-' + t['id']):
-        return _proactive_reroute_if_needed(task(t['id']), native_status)
+        t = task(t['id'])
+        if _return_to_preferred_if_ready(t, native_status, messages):
+            return True
+        return _proactive_reroute_if_needed(t, native_status)
+
+
+def _return_to_preferred_if_ready(t, native_status, messages):
+    """Stage a checkpoint return only at an owned idle turn, never a live stream."""
+    if t.get('status') != 'running' or t.get('_capacity_wait') or t.get('cancel_requested') or \
+            t.get('requested_profile', 'auto') != 'auto' or native_status.get('type') != 'idle' or \
+            (t.get('tier_change') or {}).get('status') in retier.UNRESOLVED or not messages:
+        return False
+    assistants = [m for m in messages if m.get('info', {}).get('role') == 'assistant']
+    if not assistants:
+        return False
+    last = assistants[-1]
+    if last['info'].get('parentID') != t.get('message_id') or last['info'].get('error') or \
+            not (last['info'].get('time') or {}).get('completed'):
+        return False
+    text = '\n'.join(p.get('text', '') for p in last.get('parts') or [] if p.get('type') == 'text')
+    if parse_report(text):
+        return False  # Finished bounded deliverables are collected, never restarted.
+    c = config()
+    stages = (routing.configured(c) or {}).get(quota.tier_of(t)) or []
+    def rank(profile):
+        return next((i for i, stage in enumerate(stages)
+                     if any(item['profile'] == profile for item in stage)), len(stages))
+    history = t.get('route_history') or []
+    temporary = t.get('fallback_used') or any(hop.get('trigger') in ('provider_usage_or_rate_limit',
+                    'provider_billing_monthly_usage_limit', 'provider_billing_insufficient_balance') or
+                    hop.get('queued_boundary_switch') for hop in history)
+    if not stages or not temporary or time.time() - max(
+            t.get('_capacity_return_at') or 0,
+            max((hop.get('at', 0) for hop in history), default=0)) < 60:
+        return False
+    q = quota.view(read_json(STATE / 'quota.json', {}))
+    candidate = recovered_capacity_exclusions(t, c, q)
+    profile, _ = quota.route(candidate, c, q)
+    if not profile or rank(profile) >= rank(t.get('profile')) or \
+            not quota.meets_capability_floor(profile, t, c):
+        return False
+    waiting = {'phase': 'waiting', 'provider': str((c['profiles'].get(t.get('profile')) or {})
+               .get('model', '')).split('/', 1)[0], 'trigger': 'preferred_route_restored',
+               'preferred_profile': profile,
+               'source_message_id': t.get('message_id'), 'created_at': time.time(),
+               'checkpoint': _capacity_checkpoint(t, messages)}
+    update(t['id'], _capacity_wait=waiting, reason='capacity_wait_preferred_return',
+           excluded_providers=candidate.get('excluded_providers', []))
+    return True
 
 
 def _proactive_reroute_if_needed(t, native_status):
     c = config()
-    if c.get('proactive_long_task_reroute', True) is not True or \
+    if t.get('_capacity_wait') or c.get('proactive_long_task_reroute', True) is not True or \
             (t.get('requested_profile') or 'auto') != 'auto' or \
             native_status.get('type') != 'busy':
         return False
@@ -832,7 +1201,10 @@ def _finish(t, messages, forced_status=None, reason=None):
     kind = diagnostics.billing_kind(raw_error) if raw_error else None
     window_error = None if kind or not raw_error else diagnostics.window_kind(raw_error)
     if raw_error and not forced_status:
-        if kind:
+        if _capacity_auth_rejection(raw_error):
+            status = 'failed'
+            reason = 'provider_authentication_blocked'
+        elif kind:
             status = 'failed'
             reason = 'provider_billing_' + kind
         elif window_error:
@@ -954,12 +1326,15 @@ def run_task(task_id, shutdown):
                 seen = any(m.get('info', {}).get('id') == t['message_id'] for m in messages)
                 native_status = api('/session/status', t['directory']).get(t['session_id'], {'type': 'idle'})
                 is_idle = native_status.get('type') == 'idle'
-                if proactive_reroute_if_needed(t, native_status):
+                if proactive_reroute_if_needed(t, native_status, messages):
                     continue
                 # Entering Ultra opens a clean model session once the previous
                 # turn is confirmed idle: the new model receives only the explicit
                 # checkpoint, never the old model's chain of thought.
                 if retier.materialize_new_session(t, native_status) is not t:
+                    continue
+                if resume_capacity_wait(t, messages, native_status):
+                    shutdown.wait(3)
                     continue
                 observed_errors = diagnostics.from_messages(messages)
                 record_billing_errors(t, observed_errors)
@@ -1007,7 +1382,7 @@ def run_task(task_id, shutdown):
                             # behind the completion gate and never replayed.
                             t = retier.resolve_before_stop_recovery(t, messages, aborted=True)
                             if _reroute_after_capacity_stop(t, provider,
-                                                            'provider_usage_or_rate_limit'):
+                                                            'provider_usage_or_rate_limit', messages):
                                 continue
                             return _finish(t, messages, 'needs_attention',
                                            'provider_usage_window_limit')

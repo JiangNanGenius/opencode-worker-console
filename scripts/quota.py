@@ -339,7 +339,9 @@ def trip(provider, message='', message_id=None, occurred_at=None, reason=None,
         ids = b.get('message_ids', [])
         if message_id and message_id in ids:
             return  # Already recorded; never relatch from a historical error.
-        if occurred_at and b.get('cleared_at') and occurred_at <= b['cleared_at']:
+        watermark = max(_epoch(b.get('cleared_at')) or 0,
+                        _epoch(b.get('recovery_watermark')) or 0)
+        if occurred_at and watermark and occurred_at <= watermark:
             return  # Predates the recovery watermark.
         if not b.get('cleared_at') and b.get('credential') == ident and \
                 REASON_SEVERITY.get(b.get('reason'), 0) > REASON_SEVERITY[reason]:
@@ -350,6 +352,15 @@ def trip(provider, message='', message_id=None, occurred_at=None, reason=None,
         blocks[provider] = {'credential': ident, 'opened_at': time.time(),
                             'message': redact(str(message))[:400], 'message_ids': ids,
                             'reason': reason}
+        if b.get('credential') == ident:
+            # Rejection after an authorized recovery attempt must retain its
+            # backoff; a fresh positive telemetry sample is not permission to
+            # reopen the same failed attempt every sampler tick.
+            for name in ('recovery_retry_count', 'recovery_retry_at', 'recovery_retry_after'):
+                if name in b:
+                    blocks[provider][name] = b[name]
+            if watermark:
+                blocks[provider]['recovery_watermark'] = watermark
         write_json(STATE / BILLING, blocks)
 
 
@@ -388,6 +399,8 @@ def clear(provider, sampled_since=None, identity=None, evidence='quota', evidenc
         b = blocks.get(provider)
         if not b or b.get('cleared_at'):
             return False
+        if b.get('reason') == AUTH_REASON and evidence != 'manual_retry':
+            return False  # Account telemetry does not prove model-key permission.
         # Prepaid capacity is cash-like and its account aggregate may include a
         # different seat than the one behind the current inference key. A manual
         # retry, a genuine key-file change (which detaches the credential-bound
@@ -409,6 +422,55 @@ def clear(provider, sampled_since=None, identity=None, evidence='quota', evidenc
                             'message_ids': b.get('message_ids', []), 'reason': b.get('reason'),
                             'opened_at': b.get('opened_at'), 'message': b.get('message'),
                             'released': evidence}
+        write_json(STATE / BILLING, blocks)
+        return True
+
+
+def apply_provider_retry_evidence(provider, reading, query_started_at, query_completed_at,
+                                 inference_identity, control_identity=None, now=None):
+    """Authorize a bounded real-work retry; never label telemetry as key success.
+
+    The evidence predicate is provider-specific. State is re-read under the
+    billing lock so a rotated key or a newer rejection wins. Retry metadata
+    survives another rejection and bounds persistent telemetry/data-plane
+    disagreement to 5/10/20/40/60 minute intervals.
+    """
+    if provider not in (ARK_PROVIDER, KIMI_PROVIDER):
+        return False
+    import provider_recovery
+    now = time.time() if now is None else now
+    with locked('billing'):
+        blocks = read_json(STATE / BILLING, {})
+        block = blocks.get(provider)
+        if not isinstance(block, dict) or block.get('cleared_at'):
+            return False
+        current = credential_identity(provider)
+        kwargs = dict(captured_inference_identity=inference_identity,
+                      current_inference_identity=current,
+                      query_started_at=query_started_at, query_completed_at=query_completed_at,
+                      now=now, prepaid=provider_is_prepaid(provider))
+        if provider == ARK_PROVIDER:
+            proof = provider_recovery.ark_retry_evidence(
+                block, reading, captured_control_identity=control_identity,
+                current_control_identity=_telemetry_identity(provider),
+                official_query=True, **kwargs)
+        else:
+            proof = provider_recovery.kimi_monthly_retry_evidence(block, reading, **kwargs)
+        if not proof.get('allowed'):
+            return False
+        opened = _epoch(block.get('opened_at'))
+        after = _epoch(block.get('recovery_retry_after')) or 0
+        if opened is None or now < max(opened + 300, after):
+            return False
+        prior_at = _epoch(block.get('recovery_retry_at')) or 0
+        count = block.get('recovery_retry_count', 0)
+        count = count if isinstance(count, int) and not isinstance(count, bool) and count >= 0 else 0
+        if now - prior_at > 21600:
+            count = 0
+        count = min(count + 1, 16)
+        blocks[provider] = dict(block, cleared_at=now, released=proof['evidence_kind'],
+                                recovery_retry_count=count, recovery_retry_at=now,
+                                recovery_retry_after=now + min(300 * 2 ** count, 3600))
         write_json(STATE / BILLING, blocks)
         return True
 
@@ -1235,6 +1297,12 @@ def refresh(force=False):
                         if value.get('source') == bailian_quota.SOURCE_LIVE:
                             account_api_recovery(p, value.get('sampled_at'),
                                                  inference_identities[p], identities[p], value=value)
+                    elif p == ARK_PROVIDER:
+                        # The signed account query and the inference request
+                        # use different credentials. Validate both generations
+                        # and authorize only a bounded real-work retry.
+                        apply_provider_retry_evidence(
+                            p, value, now, time.time(), inference_identities[p], identities[p])
                     else:
                         # Fresh positive account query recovers; a query started before a
                         # concurrent trip must never clear that newer circuit.
@@ -1243,8 +1311,12 @@ def refresh(force=False):
             # The authenticated account reading is add-only: it never replaces the
             # inference-key provider windows, never invents a missing month pool and
             # never reports a failed fetch as a fresh successful sample.
+            account_started = time.time()
             result[KIMI_PROVIDER]['account'] = _kimi_account_snapshot(
                 result[KIMI_PROVIDER].get('account'))
+            apply_provider_retry_evidence(
+                KIMI_PROVIDER, result[KIMI_PROVIDER]['account'], account_started, time.time(),
+                inference_identities.get(KIMI_PROVIDER))
         # Manual snapshots are merged here so every consumer of the cached quota
         # file sees them, while their freshness stays explicit in view().
         for provider, record in snapshots.items():
@@ -1320,6 +1392,23 @@ def view(values):
             v['stale'] = v.get('state') != 'ok' or time.time() - v.get('sampled_at', 0) > 900
         if p == BAILIAN_PROVIDER and isinstance(v.get('live_error'), dict):
             v['stale'] = True
+        if p == BAILIAN_PROVIDER:
+            # Resolve current slot generations outside scheduling's admission lock.
+            # This is callable/probe metadata, never account Credits or healthy proof.
+            try:
+                import bailian_pool
+                pool = bailian_pool.recovery_available(
+                    config(), after=(billing_block(p) or {}).get('opened_at'))
+                if pool.get('configured'):
+                    v['inference_pool'] = dict(pool, sampled_at=time.time())
+            except Exception:
+                # Configured-but-unreadable pools must not look callable.
+                try:
+                    if config().get('bailian_pool', {}).get('enabled') is True:
+                        v['inference_pool'] = {'configured': True, 'admission_available': False,
+                                               'available': False, 'sampled_at': time.time()}
+                except Exception:
+                    pass
         if p in (ARK_PROVIDER, BAILIAN_PROVIDER):
             # Safe metadata only: the credential source label, never a value or
             # identity. No AK/SK, hash or reference path leaves this boundary.
@@ -1358,7 +1447,7 @@ def view(values):
                 reserve_config, {KIMI_PROVIDER: v})
             account = v.get('account')
             if isinstance(account, dict):
-                age = time.time() - account.get('sampled_at', 0)
+                age = time.time() - (_epoch(account.get('sampled_at')) or 0)
                 account['stale'] = account.get('state') != 'ok' or age > KIMI_ACCOUNT_MAX_AGE
             v['account_total'] = kimi_account_total_state({KIMI_PROVIDER: v})
         v['workload'] = loads.get(p, {})
@@ -1423,9 +1512,25 @@ def allowed(provider, q, complexity, threshold=0, retry_monthly=False, prepaid=N
         expired = any(w.get('expired') is True for w in windows)
         if expired and not usable:
             return False, 'quota_exhausted_or_account_unavailable'
+    pool = v.get('inference_pool') if provider == BAILIAN_PROVIDER else None
+    pool_fresh = (isinstance(pool, dict) and pool.get('configured') is True and
+                  isinstance(pool.get('sampled_at'), (int, float)) and
+                  0 <= time.time() - pool['sampled_at'] <= 90)
+    if isinstance(pool, dict) and pool.get('configured') and (
+            not pool_fresh or pool.get('admission_available') is not True):
+        return False, 'bailian_slots_waiting_or_unavailable'
     block = billing_block(provider)
-    if block and not (retry_monthly and block.get('reason') == MONTHLY_REASON):
+    # A real same-key model success or a leased-at-dispatch due probe can pass an
+    # old quota/balance provider circuit. Never clear it here or bypass auth,
+    # genuine account zero, expiry, or other providers' policies.
+    pool_retry = (pool_fresh and pool.get('available') is True and
+                  (pool.get('healthy') is True or pool.get('authorized_probe') is True) and
+                  block and (block.get('reason') in (MONTHLY_REASON, BALANCE_REASON) or
+                             block.get('reason') == AUTH_REASON and pool.get('credential_rotated') is True))
+    if block and not pool_retry and not (retry_monthly and block.get('reason') == MONTHLY_REASON):
         return False, 'provider_billing_blocked'
+    if pool_retry:
+        return True, 'bailian_current_slot_recovery_or_due_probe'
     fresh_enough = time.time() - v.get('sampled_at', 0) <= 900
     # The former provider-level Kimi reserve is retired: the weekly allowance is
     # now protected per MODEL (the reserved k3.1-pro Ultra model keeps the last
@@ -1781,11 +1886,10 @@ def _clean_account_record(record):
     if not isinstance(record, dict):
         return None
     sampled = record.get('sampled_at')
-    if isinstance(sampled, bool) or not isinstance(sampled, (int, float)):
-        sampled = time.time()
+    sampled = _epoch(sampled)  # Missing/invalid sample time must never become fresh.
     cleaned = {
         'state': record.get('state') if record.get('state') in ('ok', 'unavailable') else 'unavailable',
-        'source': record.get('source') if isinstance(record.get('source'), str) else 'kimi_code_account',
+        'source': record.get('source') if isinstance(record.get('source'), str) else 'unknown',
         'sampled_at': sampled,
         'windows': [dict(w) for w in record.get('windows') or [] if isinstance(w, dict)][:8],
         'weekly_applicability': record.get('weekly_applicability')
@@ -1801,6 +1905,18 @@ def _clean_account_record(record):
     error = record.get('error')
     if isinstance(error, str) and error:
         cleaned['error'] = error[:120]
+    elif error:
+        cleaned['error'] = 'account_reading_error'
+    if 'stale' in record:
+        cleaned['stale'] = record['stale'] is not False
+    if record.get('live_error'):
+        cleaned['live_error'] = {'state': 'unavailable'}
+    if 'http_status' in record:
+        status = number(record['http_status'])
+        if status is None or isinstance(record['http_status'], bool):
+            cleaned['stale'] = True
+        else:
+            cleaned['http_status'] = status
     return cleaned
 
 

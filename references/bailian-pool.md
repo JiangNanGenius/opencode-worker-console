@@ -79,9 +79,9 @@ runtime overlay.
   host, scheme and path are fixed; caller-supplied absolute URLs are rejected.
   A query string is forwarded to the same fixed path so Anthropic beta
   semantics are preserved.
-- Selects the first eligible slot in configured order. A slot stays selected
-  until it has a confirmed blocking error for the current credential
-  generation.
+- Selects unblocked slots in configured order before any due recovery probe.
+  A healthy secondary is never delayed by a primary seat probe. Only a real
+  waiting `/messages` request probes recovery; there are no idle model calls.
 - For an explicit pre-response quota/balance rejection (HTTP 400/402/403/429
   with a recognised quota/balance code or message), marks that slot exhausted
   and retries the same exact buffered request with the next eligible slot.
@@ -128,9 +128,49 @@ The generation is a non-reversible digest of the slot id and current key value.
 A blocking state is bound to that generation: a rotated Keychain value or file
 automatically becomes eligible again on the next request. A late success from
 an already-dispatched request cannot clear a block for the same generation.
-Only a changed generation (or deliberate operator reset of the private state)
-clears it. No key value, Authorization header, request body or upstream error
-body is stored.
+Quota/balance exhaustion becomes probe-eligible after five minutes. Confirmed
+rejections double that cooldown up to one hour. Eligibility is not health: one
+process-safe durable lease (attempt id, epoch, generation, expiry) admits a real
+`/messages` request, and only a complete successful model response clears it.
+The lease covers the configured upstream timeout plus 60 seconds and renews on
+stream activity; a stalled downstream has a 30-second socket timeout. An expired
+lease can be reclaimed after a crash. Late old-epoch/old-lease/rotated-key results
+cannot reopen a newer rejection. Temporary/transport/incomplete probe results
+remain blocked with a five-minute cooldown and are never replayed.
+
+Authentication has no time-based probe. A physical key rotation authorizes a
+new verification attempt; a configured generation label alone is not evidence
+for bypassing an old provider authentication circuit. Independent non-reversible
+physical-key generation metadata preserves that distinction. A new-key auth
+rejection removes its rotation permission. Legacy records without physical-key
+provenance cannot invent rotation proof and may need an explicit operator retry.
+No key value, Authorization header, request body or upstream error body is stored.
+
+`/messages/count_tokens` never claims a blocked/rotated verification lease and
+never supplies model-success evidence. Recovery requires a complete Anthropic
+JSON message with real nonempty text/thinking or a structurally valid tool call
+(an empty object input is valid), or the equivalent fully closed SSE content
+blocks and message-stop. Empty/malformed blocks, HTTP 200 alone, truncation,
+stream errors and uninspectable encoded success bodies do not recover a seat.
+The observer uses bounded memory (one MiB); larger responses still relay but do
+not assert recovery. Application bytes are unchanged. A complete explicit SSE
+quota/auth error is recorded before it is forwarded, even if the SDK disconnects
+immediately; that started stream is never replayed.
+
+When one seat is quota-blocked and another is auth-blocked, the aggregate failure
+remains quota/retry rather than promoting the single auth seat to provider-wide
+auth failure. A pool with only auth rejections remains hard-auth blocked.
+
+`recovery_available(config, after=...)` is read-only and validates currently
+loaded key generations. `healthy` requires a complete model success after the
+supplied time; `authorized_probe` permits a due leased-at-dispatch attempt or a
+new credential, without claiming health. `credential_rotated` requires physical
+key evidence. An unknown/default `ok` slot or positive account Credits alone is
+not old-exclusion recovery proof. `admission_available` separately describes
+ordinary request eligibility. Quota views expose a short-lived safe snapshot;
+scheduling consumes that snapshot without Keychain I/O under admission locks.
+Real zero/expiry and unchanged authentication guards remain mandatory. The
+read-only status endpoint does not claim a probe or clear a block.
 
 Buffered upstream error bodies are relayed only after the resolved slot key and
 its common representations are replaced with `<redacted>`; the outgoing
@@ -149,7 +189,8 @@ python3 scripts/bailian_pool.py check    # validate config and list slot sources
 ```
 
 The authenticated `GET /health` endpoint returns the same safe snapshot
-(`enabled`, `port`, `active`, per-slot `state`/`kind`), with no references.
+(`enabled`, `port`, `active`, per-slot `state`/`kind`, quota `retry_at`,
+`probe_due`, `probe_in_flight`), with no references or lease/generation values.
 
 ## Lifecycle
 

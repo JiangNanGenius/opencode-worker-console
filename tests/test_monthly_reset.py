@@ -44,6 +44,9 @@ class MonthlyResetTests(unittest.TestCase):
         self.ident = IDENT
         self.patchers = [patch.object(common, 'STATE', self.state), patch.object(quota, 'STATE', self.state),
                          patch.object(common, 'CONFIG', self.config),
+                         # These cases test usage-window telemetry/schedules,
+                         # not the host's separately authenticated month pool.
+                         patch.object(quota, '_kimi_account_snapshot', return_value=None),
                          patch.object(quota, 'credential_identity',
                                       lambda p: self.ident if p == 'kimi-for-coding' else 'cred-ds'),
                          # Historical profile names here stand in for two ordinary

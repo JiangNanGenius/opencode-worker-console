@@ -32,6 +32,8 @@ import ssl
 import sys
 import time
 import urllib.parse
+import uuid
+import math
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -196,7 +198,8 @@ def _write_state(value):
 
 def _record(state, slot_id):
     slots = state.get('slots')
-    return slots.get(slot_id) if isinstance(slots, dict) else None
+    record = slots.get(slot_id) if isinstance(slots, dict) else None
+    return record if isinstance(record, dict) else None
 
 
 def _slot_is_blocked(record, generation):
@@ -207,6 +210,11 @@ def _slot_is_blocked(record, generation):
     # generation is a new credential and can be tested; a missing generation
     # cannot prove a rotation, so fail closed and keep the block.
     return not stored or stored == generation
+
+
+def _physical_generation(slot, key):
+    return 'p1_' + hashlib.sha256(b'bailian-pool-physical\x00' + slot['id'].encode() +
+                                 b'\x00' + key).hexdigest()[:32]
 
 
 def _effective_generation(slot, key):
@@ -227,7 +235,7 @@ class SlotCredentialError(Exception):
 def _load_key(slot):
     if slot['source'] == 'keychain':
         try:
-            raw = keychain_secrets.get(slot['service'], slot['account'])
+            raw = keychain_secrets.get_bounded(slot['service'], slot['account'])
         except Exception:
             raise SlotCredentialError() from None
     else:
@@ -264,76 +272,212 @@ def _load_key(slot):
     return key, _effective_generation(slot, key)
 
 
-def _claim(slot, generation):
-    """Mark the slot active and reset a stale generation-bound block."""
-    now = time.time()
-    claimed = {'value': False}
+RETRY_BASE_SECONDS = 300
+RETRY_MAX_SECONDS = 3600
 
-    def mutate(state):
+
+def _number(value, default=0):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else default
+
+
+def _retry_at(record):
+    return _number(record.get('retry_at'), _number(record.get('blocked_at'),
+                   _number(record.get('updated_at'))) + RETRY_BASE_SECONDS)
+
+
+def _probe_due(record, now=None):
+    now = time.time() if now is None else now
+    lease = record.get('probe_lease') or {}
+    return (record.get('state') == 'exhausted' and _retry_at(record) <= now and
+            _number(lease.get('until')) <= now)
+
+
+def _claim_attempt(slot, generation, timeout=DEFAULT_TIMEOUT_SECONDS, allow_probe=True, allow_rotation=True):
+    """CAS one durable half-open lease; normal traffic shares the block epoch."""
+    try:
+        loaded_key, loaded_generation = _load_key(slot)
+        if loaded_generation != generation:
+            return None
+        physical = _physical_generation(slot, loaded_key)
+    except SlotCredentialError:
+        return None
+    with common.locked('bailian-pool'):
+        state = read_state()
         slots = state.setdefault('slots', {})
         if not isinstance(slots, dict):
             slots = {}
             state['slots'] = slots
-        record = slots.get(slot['id'])
-        if _slot_is_blocked(record, generation):
-            return
-        fresh = dict(record) if isinstance(record, dict) else {}
-        fresh.update({'state': 'ok', 'generation': generation, 'updated_at': now})
-        fresh.pop('kind', None)
-        fresh.pop('last_error', None)
-        fresh.pop('http_status', None)
+        record = _record(state, slot['id']) or {}
+        if not allow_rotation and (record.get('state') in BLOCK_STATES or
+                                   record.get('generation') and record['generation'] != generation):
+            return None
+        blocked = _slot_is_blocked(record, generation)
+        physical_rotated = bool(record.get('key_generation') and record['key_generation'] != physical)
+        probe = blocked and record.get('state') == 'exhausted' or allow_probe and physical_rotated
+        if blocked and (not allow_probe or not _probe_due(record)):
+            return None
+        if record.get('generation') and record['generation'] != generation:
+            previous_physical = record.get('key_generation')
+            record = {'epoch': int(_number(record.get('epoch'))) + 1}
+            if probe and physical_rotated:
+                record.update(state='exhausted', kind='credential_rotation', retry_at=time.time(),
+                              rotation_from=previous_physical)
+        fresh = dict(record)
+        epoch = int(_number(record.get('epoch')))
+        attempt = {'epoch': epoch, 'probe': probe, 'id': uuid.uuid4().hex}
+        if probe:
+            epoch += 1
+            attempt['epoch'] = epoch
+            fresh['probe_lease'] = {'id': attempt['id'], 'until': time.time() + timeout + 60,
+                                    'generation': generation, 'epoch': epoch}
+        else:
+            fresh.update(state='ok')
+            for k in ('kind', 'last_error', 'http_status', 'probe_lease'):
+                fresh.pop(k, None)
+        fresh.update(generation=generation, key_generation=physical,
+                     configured_generation=slot.get('generation'), epoch=epoch, updated_at=time.time())
         slots[slot['id']] = fresh
         state['active'] = slot['id']
-        claimed['value'] = True
+        _write_state(state)
+        return attempt
 
+
+def _claim(slot, generation):
+    """Compatibility admission; only proxy /messages may claim a half-open probe."""
+    return _claim_attempt(slot, generation, allow_probe=False) is not None
+
+
+def _attempt_matches(record, attempt):
+    if attempt is None:
+        return True
+    if _number(record.get('epoch')) != attempt['epoch']:
+        return False
+    return not attempt['probe'] or (record.get('probe_lease') or {}).get('id') == attempt['id']
+
+
+def _mark(slot, generation, state_name, kind=None, http_status=None, last_error=None,
+          attempt=None, verified_model=False):
+    """Result CAS: epoch + lease + actual current credential; never header-only success."""
+    try:
+        loaded_key, loaded_generation = _load_key(slot)
+        if loaded_generation != generation:
+            return False
+        physical = _physical_generation(slot, loaded_key)
+    except SlotCredentialError:
+        return False
+    now = time.time()
     with common.locked('bailian-pool'):
         state = read_state()
-        mutate(state)
-        if claimed['value']:
-            _write_state(state)
-    return claimed['value']
-
-
-def _mark(slot, generation, state_name, kind=None, http_status=None, last_error=None):
-    """Persist a safe slot result, ignoring a result from a rotated credential."""
-    now = time.time()
-
-    def mutate(state):
         slots = state.setdefault('slots', {})
         if not isinstance(slots, dict):
             slots = {}
             state['slots'] = slots
-        record = slots.get(slot['id'])
-        stored = record.get('generation') if isinstance(record, dict) else None
-        if stored and stored != generation:
-            return
-        current = record.get('state') if isinstance(record, dict) else None
-        if state_name == 'ok' and current in BLOCK_STATES:
-            # A late success from an already-dispatched request must not reopen
-            # a slot that a concurrent confirmed 402/auth rejection exhausted
-            # for this same credential generation. Only _claim with a changed
-            # generation (or an explicit operator reset of private state) may
-            # clear the block.
-            if isinstance(record, dict):
-                fresh = dict(record)
+        record = _record(state, slot['id']) or {}
+        if record.get('generation') and record['generation'] != generation or not _attempt_matches(record, attempt):
+            return False
+        fresh = dict(record)
+        fresh.update(key_generation=physical, configured_generation=slot.get('generation'))
+        if state_name == 'ok':
+            if not verified_model:
                 fresh['last_success_at'] = now
-                fresh['updated_at'] = now
-                slots[slot['id']] = fresh
-            return
-        fresh = dict(record) if isinstance(record, dict) else {}
-        fresh.update({'state': state_name, 'generation': generation, 'updated_at': now})
-        for key, value in (('kind', kind), ('http_status', http_status),
-                           ('last_error', last_error)):
-            if value is None:
-                fresh.pop(key, None)
-            else:
-                fresh[key] = value
+                if record.get('state') in BLOCK_STATES:
+                    slots[slot['id']] = fresh
+                    _write_state(state)
+                    return False
+            if record.get('state') in BLOCK_STATES and not (attempt and attempt['probe'] and verified_model):
+                return False
+            if verified_model:
+                fresh.update(last_model_success_at=now, success_generation=generation,
+                             success_epoch=int(_number(record.get('epoch'))))
+            fresh.update(state='ok', generation=generation, updated_at=now)
+            for k in ('probe_lease', 'retry_at', 'failure_count', 'kind', 'last_error', 'http_status'):
+                fresh.pop(k, None)
+        else:
+            count = min(16, int(_number(record.get('failure_count'))) + 1)
+            fresh.update(state=state_name, generation=generation, updated_at=now,
+                         epoch=int(_number(record.get('epoch'))) + 1, blocked_at=now,
+                         failure_count=count)
+            fresh.pop('probe_lease', None)
+            if state_name == 'auth':
+                fresh.pop('rotation_from', None)
+            if state_name == 'exhausted':
+                fresh['retry_at'] = now + min(RETRY_MAX_SECONDS, RETRY_BASE_SECONDS * 2 ** (count - 1))
+            for k, v in (('kind', kind), ('http_status', http_status), ('last_error', last_error)):
+                if v is not None:
+                    fresh[k] = v
         slots[slot['id']] = fresh
+        _write_state(state)
+        return True
 
+
+def _renew_probe(slot, generation, attempt, timeout):
+    if not attempt['probe']:
+        return
     with common.locked('bailian-pool'):
         state = read_state()
-        mutate(state)
-        _write_state(state)
+        record = _record(state, slot['id']) or {}
+        if record.get('generation') == generation and _attempt_matches(record, attempt):
+            lease = record['probe_lease']
+            if lease['until'] - time.time() < timeout + 30:
+                lease['until'] = time.time() + timeout + 60
+                _write_state(state)
+
+
+def _finish_probe(slot, generation, attempt):
+    """Ambiguous/temporary/incomplete result: no replay, stay exhausted with cooldown."""
+    if not attempt['probe']:
+        return
+    with common.locked('bailian-pool'):
+        state = read_state()
+        record = _record(state, slot['id']) or {}
+        if record.get('generation') == generation and _attempt_matches(record, attempt):
+            record.pop('probe_lease', None)
+            record['retry_at'] = time.time() + RETRY_BASE_SECONDS
+            _write_state(state)
+
+
+def recovery_available(config, after=None):
+    """Read-only current-key proof or due real-request probe authorization.
+
+    Default/aggregate health is not recovery proof for old provider exclusions.
+    Does not acquire a probe, clear a circuit, write state or make network calls.
+    """
+    result = {'available': False, 'healthy': False, 'authorized_probe': False,
+              'last_success_at': None, 'configured': False, 'admission_available': False,
+              'credential_rotated': False}
+    settings = pool_settings(config)
+    if not settings:
+        return result
+    result['configured'] = True
+    state = read_state()
+    for slot in settings['slots']:
+        try:
+            loaded_key, generation = _load_key(slot)
+            physical = _physical_generation(slot, loaded_key)
+        except SlotCredentialError:
+            continue
+        record = _record(state, slot['id']) or {}
+        match = record.get('generation') == generation
+        blocked = _slot_is_blocked(record, generation)
+        due = blocked and _probe_due(record)
+        if not blocked or due:
+            result['admission_available'] = True
+        success = _number(record.get('last_model_success_at'))
+        proven = (match and not blocked and record.get('state') == 'ok' and
+                  record.get('success_generation') == generation and _number(after) < success <= time.time() and
+                  record.get('success_epoch') == int(_number(record.get('epoch'))))
+        rotated = bool(record.get('generation') and not match)
+        if proven:
+            result['healthy'] = True
+            result['last_success_at'] = max(result['last_success_at'] or 0, success)
+        if record.get('key_generation') and (record['key_generation'] != physical or
+                record.get('generation') == generation and record.get('rotation_from') and
+                record['rotation_from'] != physical):
+            result['credential_rotated'] = True
+        if due or rotated:
+            result['authorized_probe'] = True
+    result['available'] = result['healthy'] or result['authorized_probe']
+    return result
 
 
 def _record_issue(slot, generation, code, http_status=None):
@@ -388,6 +532,10 @@ def status_snapshot(config):
         if slot_state not in BLOCK_STATES:
             available += 1
         item = {'id': slot['id'], 'state': slot_state}
+        if slot_state == 'exhausted':
+            item['retry_at'] = _retry_at(record)
+            item['probe_due'] = _probe_due(record)
+            item['probe_in_flight'] = _number((record.get('probe_lease') or {}).get('until')) > time.time()
         for key in ('kind', 'last_error', 'http_status', 'updated_at'):
             if record.get(key) is not None:
                 item[key] = record[key]
@@ -572,10 +720,154 @@ class RequestError(Exception):
         super().__init__(message)
 
 
+def _content_block_valid(block):
+    if not isinstance(block, dict):
+        return False
+    kind = block.get('type')
+    if kind in ('text', 'thinking'):
+        value = block.get(kind)
+        return isinstance(value, str) and bool(value.strip())
+    if kind == 'tool_use':
+        return (isinstance(block.get('id'), str) and bool(block['id'].strip()) and
+                isinstance(block.get('name'), str) and bool(block['name'].strip()) and
+                isinstance(block.get('input'), dict))
+    return False
+
+
+class _ModelResponseProof:
+    """Bounded observer only: preserves wire bytes; HTTP 200/empty blocks are not proof."""
+    def __init__(self, response):
+        self.stream = 'text/event-stream' in (response.getheader('Content-Type') or '').lower()
+        self.length = response.getheader('Content-Length')
+        self.encoding = (response.getheader('Content-Encoding') or '').lower()
+        self.received = 0
+        self.buffer = b''
+        self.valid = self.encoding in ('', 'identity')
+        self.started = self.stopped = self.stop_reason = False
+        self.error_classification = None
+        self.blocks = {}
+        self.closed_blocks = set()
+
+    def _event(self, value):
+        if not isinstance(value, dict):
+            self.valid = False
+            return
+        kind = value.get('type')
+        if kind == 'error':
+            decision = _classification(400, json.dumps(value).encode())
+            error = value.get('error') or {}
+            if decision[0] == 'other' and error.get('type') in ('rate_limit_error', 'overloaded_error'):
+                decision = ('temporary', 'temporary')
+            self.error_classification = decision
+            self.valid = False
+            return
+        if self.stopped:
+            self.valid = False
+            return
+        if kind == 'message_start':
+            message = value.get('message') or {}
+            if self.started:
+                self.valid = False
+            self.started = bool(isinstance(message.get('id'), str) and message['id'].strip() and
+                                message.get('type') == 'message' and message.get('role') == 'assistant')
+            if not self.started:
+                self.valid = False
+        elif kind in ('content_block_start', 'content_block_delta', 'content_block_stop'):
+            if not self.started:
+                self.valid = False
+                return
+            index = value.get('index')
+            if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < 1024:
+                self.valid = False
+                return
+            if kind == 'content_block_start':
+                block = value.get('content_block')
+                if not isinstance(block, dict) or index in self.blocks or block.get('type') not in ('text', 'thinking', 'tool_use'):
+                    self.valid = False
+                    return
+                self.blocks[index] = dict(block)
+            elif index not in self.blocks or index in self.closed_blocks:
+                self.valid = False
+            elif kind == 'content_block_stop':
+                block = self.blocks[index]
+                partial = block.pop('_partial_json', None)
+                if partial is not None:
+                    try:
+                        block['input'] = json.loads(partial)
+                    except ValueError:
+                        self.valid = False
+                if not _content_block_valid(block):
+                    self.valid = False
+                self.closed_blocks.add(index)
+            else:
+                block = self.blocks[index]
+                delta = value.get('delta') or {}
+                field = {'text_delta': 'text', 'thinking_delta': 'thinking',
+                         'input_json_delta': '_partial_json'}.get(delta.get('type'))
+                if field is None:
+                    if delta.get('type') != 'signature_delta':
+                        self.valid = False
+                    return
+                expected = {'text': 'text', 'thinking': 'thinking', '_partial_json': 'tool_use'}[field]
+                text = delta.get('partial_json' if field == '_partial_json' else field)
+                if block.get('type') != expected or not isinstance(text, str):
+                    self.valid = False
+                    return
+                block[field] = block.get(field, '') + text
+                if len(block[field]) > ERROR_BODY_LIMIT:
+                    self.valid = False
+        elif kind == 'message_delta':
+            reason = (value.get('delta') or {}).get('stop_reason')
+            self.stop_reason = isinstance(reason, str) and bool(reason)
+        elif kind == 'message_stop':
+            self.stopped = True
+
+    def feed(self, chunk):
+        self.received += len(chunk)
+        if self.received > ERROR_BODY_LIMIT:
+            self.valid = False
+        if not self.valid:
+            return
+        self.buffer += chunk
+        if len(self.buffer) > ERROR_BODY_LIMIT:
+            self.valid = False
+            self.buffer = b''
+            return
+        if self.stream:
+            self.buffer = self.buffer.replace(b'\r\n', b'\n')
+            while b'\n\n' in self.buffer:
+                event, self.buffer = self.buffer.split(b'\n\n', 1)
+                lines = [line[5:].lstrip() for line in event.split(b'\n') if line.startswith(b'data:')]
+                if not lines:
+                    continue
+                try:
+                    self._event(json.loads(b'\n'.join(lines)))
+                except (ValueError, UnicodeDecodeError, TypeError, AttributeError):
+                    self.valid = False
+
+    def complete(self):
+        if not self.valid or self.length is not None and str(self.received) != self.length:
+            return False
+        if self.stream:
+            return (self.started and bool(self.blocks) and len(self.closed_blocks) == len(self.blocks) and
+                    self.stop_reason and self.stopped and not self.buffer.strip())
+        try:
+            value = json.loads(self.buffer)
+            return (isinstance(value, dict) and value.get('type') == 'message' and
+                    value.get('role') == 'assistant' and isinstance(value.get('id'), str) and bool(value['id'].strip()) and
+                    isinstance(value.get('content'), list) and bool(value['content']) and
+                    all(_content_block_valid(b) for b in value['content']) and
+                    isinstance(value.get('stop_reason'), str) and bool(value['stop_reason']) and
+                    not value.get('error'))
+        except (ValueError, UnicodeDecodeError):
+            return False
+
+
 class ProxyHandler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
     server_version = 'BailianPool/1'
     settings = None
+    timeout = 30  # A stalled downstream cannot outlive the renewable probe lease.
 
     def _log_method(self):
         command = getattr(self, 'command', None)
@@ -707,19 +999,36 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return
         headers = self._forward_headers()
         last_rejection = None
+        recoverable_rejection = False
+        saw_recoverable = False
+        saw_auth = False
         saw_blocked = False
         saw_unavailable = False
         attempted = False
+        # Healthy/currently unblocked slots first; a due primary probe must not
+        # delay a healthy secondary. Claims still CAS against fresh state.
+        initial = read_state()
+        loaded = []
         for slot in settings['slots']:
             try:
                 key, generation = _load_key(slot)
+                record = _record(initial, slot['id']) or {}
+                blocked = (_slot_is_blocked(record, generation) or
+                           bool(record.get('key_generation') and
+                                record['key_generation'] != _physical_generation(slot, key)))
+                loaded.append((blocked, slot, key, generation))
             except SlotCredentialError:
                 saw_unavailable = True
                 _record_issue(slot, None, 'credential_unavailable')
                 log('slot ' + slot['id'] + ' credential unavailable')
-                continue
-            if not _claim(slot, generation):
+        for _, slot, key, generation in sorted(loaded, key=lambda item: item[0]):
+            attempt = _claim_attempt(slot, generation, settings['timeout'],
+                                     allow_probe=path == '/messages', allow_rotation=path == '/messages')
+            if attempt is None:
                 saw_blocked = True
+                current = _record(read_state(), slot['id']) or {}
+                saw_recoverable = saw_recoverable or current.get('state') == 'exhausted'
+                saw_auth = saw_auth or current.get('state') == 'auth'
                 continue
             attempted = True
             connection = None
@@ -754,7 +1063,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             return
                     decision, kind = _classification(status, prefix)
                     if decision in ('quota', 'balance'):
-                        _mark(slot, generation, 'exhausted', kind=kind, http_status=status)
+                        saw_recoverable = True
+                        recoverable_rejection = True
+                        _mark(slot, generation, 'exhausted', kind=kind, http_status=status, attempt=attempt)
                         log('slot ' + slot['id'] + ' ' + kind + ' exhaustion (HTTP ' + str(status) + ')')
                         if complete:
                             last_rejection = (
@@ -765,15 +1076,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             last_rejection = None
                         continue
                     if decision == 'auth':
-                        _mark(slot, generation, 'auth', kind='auth', http_status=status)
+                        saw_auth = True
+                        _mark(slot, generation, 'auth', kind='auth', http_status=status, attempt=attempt)
                         log('slot ' + slot['id'] + ' authentication rejection (HTTP ' + str(status) + ')')
-                        if complete:
-                            last_rejection = (
-                                status, _redact_key_text(reason, key),
-                                _safe_error_headers(_response_headers(response), key, decoded_encoding),
-                                _redact_key_bytes(prefix, key))
-                        else:
-                            last_rejection = None
+                        if not recoverable_rejection:
+                            if complete:
+                                last_rejection = (
+                                    status, _redact_key_text(reason, key),
+                                    _safe_error_headers(_response_headers(response), key, decoded_encoding),
+                                    _redact_key_bytes(prefix, key))
+                            else:
+                                last_rejection = None
                         continue
                     if not complete:
                         # A partial error body cannot be safely redacted; never
@@ -791,11 +1104,27 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         _safe_error_headers(_response_headers(response), key, decoded_encoding),
                         _redact_key_bytes(prefix, key))
                     return
-                if 200 <= status < 300:
-                    _mark(slot, generation, 'ok')
-                else:
+                proof = _ModelResponseProof(response) if path == '/messages' and status == 200 else None
+                error_recorded = {'done': False}
+                def observe(chunk):
+                    _renew_probe(slot, generation, attempt, settings['timeout'])
+                    if proof is not None:
+                        proof.feed(chunk)
+                        if proof.error_classification and not error_recorded['done']:
+                            # Persist a complete explicit SSE error BEFORE writing it to
+                            # the SDK. A disconnect/truncated stream cannot lose the block.
+                            error_recorded['done'] = True
+                            decision, kind = proof.error_classification
+                            if decision in ('quota', 'balance', 'auth'):
+                                _mark(slot, generation, 'auth' if decision == 'auth' else 'exhausted',
+                                      kind=kind, http_status=status, attempt=attempt)
+                            else:
+                                _record_issue(slot, generation, 'temporary_429' if decision == 'temporary' else 'upstream_error', status)
+                self._relay(response, status, reason, b'', False, observer=observe)
+                if proof is not None and proof.complete():
+                    _mark(slot, generation, 'ok', attempt=attempt, verified_model=True)
+                elif not 200 <= status < 300:
                     _record_issue(slot, generation, 'upstream_error', status)
-                self._relay(response, status, reason, b'', False)
                 return
             except Exception:
                 if self._response_started:
@@ -810,6 +1139,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                  'Upstream transport failed; request was not replayed')
                 return
             finally:
+                _finish_probe(slot, generation, attempt)
                 if response is not None:
                     try:
                         response.close()
@@ -820,18 +1150,25 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         connection.close()
                     except Exception:
                         pass
+        if saw_recoverable and not recoverable_rejection:
+            # One seat's auth failure must not turn another seat's recoverable
+            # quota cooldown into a permanent provider-level authentication block.
+            self._json_error(429, 'rate_limit_error', 'Alibaba credential pool quota exhausted; retry after cooldown')
+            return
         if last_rejection is not None:
             status, reason, headers, body = last_rejection
             self._send_buffered(status, reason, headers, body)
             return
-        if saw_unavailable and not attempted:
+        if saw_auth and not saw_recoverable and not saw_unavailable:
+            self._json_error(401, 'authentication_error', 'Alibaba credential pool authentication rejected')
+        elif saw_unavailable and not attempted:
             self._json_error(503, 'api_error', 'Alibaba credential pool unavailable')
         elif saw_blocked or attempted:
             self._json_error(429, 'rate_limit_error', 'Alibaba credential pool exhausted')
         else:
             self._json_error(503, 'api_error', 'Alibaba credential pool unavailable')
 
-    def _relay(self, response, status, reason, prefix, prefix_complete):
+    def _relay(self, response, status, reason, prefix, prefix_complete, observer=None):
         headers = _response_headers(response)
         self.send_response(status, reason)
         for name, value in headers:
@@ -845,6 +1182,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self._response_started = True
         if self.command == 'HEAD':
             return
+        relayed = len(prefix)
         if prefix:
             self.wfile.write(prefix)
         if not prefix_complete:
@@ -852,9 +1190,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 chunk = response.read1(65536) if hasattr(response, 'read1') else response.read(65536)
                 if not chunk:
                     break
+                relayed += len(chunk)
+                if observer is not None:
+                    observer(chunk)
                 self.wfile.write(chunk)
                 self.wfile.flush()
         self.wfile.flush()
+        length = response.getheader('Content-Length')
+        if length is not None and str(relayed) != length:
+            # read1 may reach EOF without raising IncompleteRead. Do not leave
+            # the downstream waiting on a keep-alive socket for missing bytes.
+            self.close_connection = True
 
     def _send_buffered(self, status, reason, headers, body):
         self.send_response(status, reason)

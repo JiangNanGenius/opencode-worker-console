@@ -200,8 +200,10 @@ execute. Cancellation is only for `user_requested`, `superseded`, `wrong_scope`,
 
 A confirmed model-origin 429, window exhaustion, 402/insufficient balance or monthly exhaustion
 may trigger automatic same-session fallback. Keep waiting; route changes are progress. If no
-route remains, rerouting is disabled or acknowledgement is uncertain, read `recovery` and existing
-work before a deliberate same-tier `profile=auto` continuation with `--parent-task-id`. Auth,
+legal route remains, the original task retains its authority and checkpoint and waits for
+admission to recover. Explicit pins wait for the same profile. Do not create a duplicate task.
+Temporary fallbacks return to a recovered preferred route at a confirmed idle checkpoint;
+finished tasks stay finished. Auth,
 transport and ordinary model errors do not trigger automatic rerouting. A transport failure may
 follow accepted dispatch: observe, never blindly replay the prompt or completed side effects.
 

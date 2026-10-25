@@ -3,6 +3,9 @@ import argparse
 import ctypes
 import getpass
 import sys
+import json
+from pathlib import Path
+import subprocess
 
 
 class KeychainError(RuntimeError):
@@ -95,6 +98,36 @@ def put(service, account, value):
 
 def get(service, account):
     return _operate(service, account)
+
+
+def get_bounded(service, account, timeout=5):
+    """Isolate Security.framework from callers and bound an unavailable keychain.
+
+    Only item metadata enters stdin. Secret bytes return through a private pipe,
+    never argv, environment, stderr or a persistent helper file. In particular,
+    a console interpreter cannot hang its request thread inside SecItemCopyMatching.
+    """
+    if sys.platform != 'darwin':
+        raise KeychainError('macOS Keychain is unavailable on this platform')
+    if any(not isinstance(v, str) or not v or len(v) > 2048 for v in (service, account)):
+        raise KeychainError('Keychain item metadata is invalid')
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= 30:
+        raise KeychainError('Keychain timeout is invalid')
+    code = (
+        'import sys,json; sys.path.insert(0,sys.argv[1]); import keychain_secrets as k; '
+        'd=json.load(sys.stdin); v=k.get(d["service"],d["account"]); '
+        'assert isinstance(v,bytes) and 0 < len(v) <= 65536; sys.stdout.buffer.write(v)')
+    try:
+        result = subprocess.run(
+            ['/usr/bin/python3', '-I', '-c', code, str(Path(__file__).resolve().parent)],
+            input=json.dumps({'service': service, 'account': account}).encode(),
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout,
+            check=False, close_fds=True)
+    except (OSError, subprocess.SubprocessError):
+        raise KeychainError('Keychain read unavailable') from None
+    if result.returncode or not 0 < len(result.stdout) <= 65536:
+        raise KeychainError('Keychain read unavailable')
+    return result.stdout
 
 
 if __name__ == '__main__':

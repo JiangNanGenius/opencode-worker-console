@@ -454,8 +454,8 @@ class StopLifecycleTests(RetierTests):
 
         real_reroute = worker._reroute_after_capacity_stop
 
-        def reroute_spy(t2, provider, trigger):
-            result = real_reroute(t2, provider, trigger)
+        def reroute_spy(t2, provider, trigger, messages=None):
+            result = real_reroute(t2, provider, trigger, messages)
             shutdown.set()  # end the loop after exactly one recovery pass
             return result
         with patch.object(worker, 'api', side_effect=api), \
@@ -481,16 +481,19 @@ class StopLifecycleTests(RetierTests):
         self.assertTrue(any('tier_continuation_aborted_before_ack' in str(e)
                             for e in t['errors']))
 
-    def test_window_stop_without_route_finishes_never_stranded(self):
+    def test_window_stop_without_route_preserves_task_waiting_after_retier_settles(self):
         change, seen_calls = self._run_window((None, 'all_stages_blocked'))
         t = common.task('job-run')
-        self.assertEqual(t['status'], 'needs_attention')
+        self.assertEqual(t['status'], 'running')
+        self.assertEqual(t['reason'], 'capacity_wait')
+        self.assertEqual(t['_capacity_wait']['phase'], 'waiting')
+        self.assertEqual(t['session_id'], 'ses_run')
+        self.assertEqual(t['message_id'], 'msg_orig')
         self.assertEqual(t['tier'], 'deep')
-        # The forced terminal result is only reached because the tier change was
-        # already settled under the same lock: nothing pending behind a forced
-        # finish, and the accepted continuation is audit-retained, not forgotten.
+        # The accepted tier intent is audit-retained and settled before the
+        # same-task capacity wait; no competing continuation or terminal result.
         self.assertEqual(t['tier_change']['status'], 'rejected')
-        self.assertTrue((common.artifact_dir('job-run') / 'result.json').exists())
+        self.assertFalse((common.artifact_dir('job-run') / 'result.json').exists())
         self.assertFalse(any(s == '/prompt_async' for s, m, d in seen_calls))
 
 

@@ -242,10 +242,18 @@ OpenCode session. This preserves transcript, workspace and partial work. The con
 the new model to inspect existing state and not repeat completed edits, deployments, messages,
 payments, destructive operations or other external side effects. It never replays the original
 prompt. Authentication failures, network failures and ordinary model errors do not trigger this
-transition. If no route is suitable, rerouting is disabled, or acknowledgement is uncertain, the
-task surfaces recovery guidance instead.
-Fresh telemetry also permits later use of a replenished account. Queue status records
-the reason. Unknown quota is not a promise of availability.
+transition. If no route is suitable or rerouting is disabled, the original task stays active
+with a capacity-wait reason and a durable checkpoint. It retains scope/resource ownership but
+does not occupy an execution slot while merely waiting. Explicit model pins wait for that
+profile. Once admission recovers, original waiting tasks and maintenance checkpoints take
+priority over new work for the same owner's execution slots. Recovery rechecks current
+admission, capability floors and execution concurrency before
+persisting one continuation intent and message ID. A lost acknowledgement is observed, never
+replayed. Authentication and permission failures remain explicit blockers.
+After verified recovery, a temporary automatic fallback can return to a higher-priority route
+at a confirmed idle checkpoint, with a debounce and route-history reason. Busy streams/tools,
+explicit pins and finished tasks are left alone. Fresh telemetry is not evidence that another
+seat's inference key recovered; the provider/credential-specific recovery gates still apply.
 
 Alibaba Token Plan prepaid seats add key-specific operations. With Bark quota transitions
 enabled, a fresh positive Credits reading at or below 10% warns once to prepare the next seat;
@@ -268,10 +276,11 @@ whose message says the monthly usage limit was reached and the quota refreshes n
 That error is authoritative even while `/coding/v1/usages` reports available windows
 (`available: true`, remaining 5-hour/overall percentages), because neither window proves the
 monthly cycle was restored. For Kimi, the recorded monthly circuit blocks both automatic routing and explicitly named
-profiles. To authorize a new attempt, first run `delegate-opencode quota --retry-provider kimi-for-coding`,
-then submit the task; selecting a profile alone no longer releases the circuit. This release is
-authorization to try, not proof of capacity. A verified successful reply can also clear the flag. A fresh positive query never clears it, the plan usage
-endpoint is never parsed as a monthly reset, and `quota.view` presents the provider as
+profiles. Selecting a profile alone never releases the circuit. Automatic recovery may authorize
+a bounded retry from a fresh, verified same-account month total; an explicit local
+`quota --retry-provider kimi-for-coding` remains available for operator-directed attempts.
+Neither path proves model-key health. Weekly/5-hour telemetry never clears the monthly flag,
+and its reset is never inferred as a monthly reset. While blocked, `quota.view` presents it as
 `billing_blocked` with `billing.reason`, `monthly_plan_exhausted: true` and the authentic window
 telemetry unhidden. The block is provider-wide, so Kimi K2.8 and K3.1 Pro share it and can never be
 alternatives to each other while it is open. No model probe loop is started.
@@ -292,9 +301,10 @@ still block.
 
 Quota endpoint exhaustion is a hard availability verdict: profile selection, explicit local retry release, a monthly schedule, or a successful model response never overrides an endpoint reporting zero allowance or an unavailable account. For Kimi this includes a real zero in the five-hour window or the verified account total. Only the hidden monthly-error flag is retryable; wait for a refreshed positive endpoint sample before dispatching against confirmed empty quota.
 
-Kimi monthly blocks are released by exactly three provenance-guarded paths, none inferred from
-window telemetry: an explicit local retry authorization, a configured schedule, or a verified
-completed model success. The optional schedule is stored as `kimi_monthly_reset`
+Kimi monthly blocks have provenance-guarded recovery paths: an explicit local retry, a
+configured schedule, a verified completed model success, or bounded retry authorization from a
+fresh official same-account `month_total` (and every present `month_code`). Weekly/5-hour
+telemetry never substitutes for these real month pools. The optional schedule is stored as `kimi_monthly_reset`
 (`{enabled, day 1-31, time HH:MM, timezone IANA}`; generic defaults are disabled, day 1,
 12:00, Asia/Shanghai). Day 29-31 clamps to the month's last day, and the boundary is computed in
 the configured IANA zone, independent of host local time and DST. On quota refresh, including a
@@ -304,7 +314,7 @@ late check time - so a genuine post-boundary error re-blocks for the rest of the
 stale pre-boundary errors and repeated message IDs can never relatch. Releasing is an
 authorization to try, never proof the provider recovered; it never touches another reason or a
 block bound to a different credential, and an invalid legacy schedule fails closed to disabled.
-With the default disabled schedule the old sticky monthly behavior is unchanged.
+The schedule is optional; real month-pool recovery does not require waiting for that date.
 
 A genuinely finished, error-free model response can clear a monthly block through
 `quota.observe_model_success(provider, identity, started_at, completed_at)`: the bridge passes
@@ -318,17 +328,23 @@ current-key success may clear it; for a prepaid provider the proof may also clea
 message IDs and the credential binding. Pending, empty, failed, unattributed or older replies
 never clear anything.
 
-`status`, `wait` and `collect` expose `route_history` for successful in-session transitions and
-recovery guidance when no automatic transition occurred. In the latter case,
-`automatic_fallback: false` describes that terminal recovery result, while
-`autonomous_reselection: true` plus `autonomous_next_action` tells the coordinator to create a
-same-tier continuation without asking the user or waiting for quota. Candidates and automatic
-continuations retain the configured reasoning `variant`. For a Kimi monthly blockage, release the recorded circuit with
-`delegate-opencode quota --retry-provider kimi-for-coding` before submitting a new task. A profile
-pin alone cannot bypass it. Other providers retain their existing explicit-profile retry policy;
-automatic routes and alternatives continue to avoid blocked providers. Inspect partial work before creating any deliberate
-continuation linked by `--parent-task-id`. Keep healthy non-capacity waits alive, but act on a
-confirmed quota or rate-limit stop.
+`status`, `wait` and `collect` retain routing history and show capacity waits. A confirmed
+capacity stop with no valid route keeps the original task/session, authority and checkpoint
+alive; recovery resumes the remaining goal exactly once. Lost dispatch acknowledgement is
+observed, never replayed. Explicit pins remain on their profile; Ultra never silently
+falls back. Temporary fallbacks may return to the preferred route only at an owned idle
+checkpoint, after fresh guarded recovery/admission and a cooldown. Completed tasks are never
+restarted simply to change their historical model.
+
+Ark's signed account query uses a different credential from inference. Both captured identities
+must remain current. Fresh official positive evidence from all four AFP windows authorizes a
+bounded retry, not an inference-success claim; cash/auth/prepaid blocks are not released this
+way. Kimi requires the verified real month pool above. These automatic evidence retries wait at
+least five minutes after rejection, then back off through 10/20/40/60 minutes when new failures
+persist. New rejections keep the counters, IDs and recovery watermark; stale in-flight queries
+or old errors cannot reopen or clear newer state. Zero, unknown, expired, mismatched and rotated
+readings fail closed. The Alibaba account aggregate cannot release an individual seat/key;
+its independent pool owns actual-request probes and credential-generation checks.
 
 For a future actual recovery, the narrow manual path is
 `delegate-opencode quota --retry-provider PROVIDER`. It is labeled as a manual retry
@@ -339,7 +355,8 @@ reinterpret telemetry or reset timestamps. Monthly classification requires exhau
 wording (`reached`/`exhausted`/`refreshed in the next cycle`, and similar), so a 403 such as
 "you do not have permission to view monthly quota" or a stated monthly allowance never
 trips the circuit. Historical recovery guidance honors only `manual_retry`, `scheduled_reset`,
-`model_success`, `snapshot_replenishment` and `openapi_account_recovery` releases; a positive
+`model_success`, `snapshot_replenishment`, `openapi_account_recovery`,
+`ark_official_afp_retry_authorization` and `kimi_verified_monthly_pool_retry_authorization` releases; a positive
 window sample alone never proves recovery. `openapi_account_recovery` is Alibaba-only: the
 official Model Studio `GetSubscriptionStats` account query returned a fresh, complete,
 strictly positive and unexpired Credits reading whose request started after the circuit
