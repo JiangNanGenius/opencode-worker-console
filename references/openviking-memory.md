@@ -61,7 +61,7 @@ cutover, not an automatic return to the subscription after renewal.
 
 ## Runtime upgrades
 
-The managed server is verified with OpenViking **0.5.1.1**. Stage official binary
+The managed server is verified with OpenViking **0.5.2**. Stage official binary
 wheels in a versioned virtualenv, drain background memory tasks, stop the memory
 server, and snapshot the complete local data directory before switching the
 stable `runtime/openviking/venv` link. Keep both the previous runtime and data
@@ -74,6 +74,11 @@ batch writes. The bridge retains `wait` and applies timeouts only to HTTP calls.
 Verify `doctor`, existing-memory retrieval, and a temporary write/read/search/delete
 through the bridge after every upgrade. Agent plugins are separate packages;
 updating the Python server does not update an already loaded plugin.
+
+The installed 0.5.1.1 and 0.5.2 runtimes both default
+`enable_working_memory` to false. The existing plugin commits raw turns and
+extracts long-term memories without opting into working-memory summaries; this
+upgrade preserves that behavior and does not require restarting active tasks.
 
 ## Components
 
