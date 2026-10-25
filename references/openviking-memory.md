@@ -23,6 +23,58 @@ in `~/.local/state/delegate-opencode/openviking` on the internal disk.
 - **Client config:** `~/.openviking/ovcli.conf` (owner-only) stores the URL and
   an `${OPENVIKING_API_KEY}` reference the loader expands; no key is persisted.
 
+## Temporary Ark pay-as-you-go embedding cutover
+
+Memory embeddings can use an independently registered local credential reference:
+
+```json
+{
+  "memory": {
+    "embedding_api_url": "https://ark.cn-beijing.volces.com/api/v3",
+    "embedding_model": "doubao-embedding-vision-251215",
+    "embedding_dimensions": 2048,
+    "openviking": {
+      "embedding_credential_ref": "volcengine-payg-api-key",
+      "embedding_provider": "volcengine",
+      "embedding_input": "multimodal"
+    }
+  }
+}
+```
+
+Register the reference through the credential manager before selecting it. The
+resolved key is injected into the child environment only; an unavailable explicit
+reference fails rather than silently reusing the exhausted plan credential.
+The pay-as-you-go model uses `/embeddings/multimodal`; changing only the base URL
+of the plan's OpenAI embeddings adapter is insufficient. Verify the plan's actual
+model version, vector dimensions and retrieval compatibility before switching;
+equal dimensions alone do not prove compatibility. Keep the local workspace and
+journal unchanged. Run `doctor`, drain background work, restart only OpenViking,
+and check authenticated search plus a temporary write/read/delete. OpenViking also
+checks the stored provider/model identity, not only dimensions. For a verified
+same-model alias/adapter transition, back up collection metadata and use the
+official `embedding.allow_metadata_override` option for that one startup only,
+then remove it. Never enable this permanently or use it to bypass a genuinely
+different embedding model; such a model requires reindexing. Existing
+OpenCode task execution does not require an OpenCode restart. This is an explicit
+cutover, not an automatic return to the subscription after renewal.
+
+## Runtime upgrades
+
+The managed server is verified with OpenViking **0.5.1.1**. Stage official binary
+wheels in a versioned virtualenv, drain background memory tasks, stop the memory
+server, and snapshot the complete local data directory before switching the
+stable `runtime/openviking/venv` link. Keep both the previous runtime and data
+snapshot: storage format changes can require restoring data as well as Python
+packages during rollback. Do not restart native OpenCode execution merely to
+update this separate memory service.
+
+OpenViking 0.5.1+ rejects the removed server-side `timeout` field on content and
+batch writes. The bridge retains `wait` and applies timeouts only to HTTP calls.
+Verify `doctor`, existing-memory retrieval, and a temporary write/read/search/delete
+through the bridge after every upgrade. Agent plugins are separate packages;
+updating the Python server does not update an already loaded plugin.
+
 ## Components
 
 | Piece | Path | Role |

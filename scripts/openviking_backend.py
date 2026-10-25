@@ -654,7 +654,9 @@ def _category(memory_type):
 
 
 def write(uri, content, fields=None, tags=None, mode='replace', wait=True, timeout=120):
-    body = {'uri': uri, 'content': content, 'mode': mode, 'wait': bool(wait), 'timeout': timeout}
+    # OpenViking 0.5.1+ rejects server-side wait timeout fields.
+    # Keep the operation deadline exclusively on the HTTP client.
+    body = {'uri': uri, 'content': content, 'mode': mode, 'wait': bool(wait)}
     clean = [tag for tag in (sanitize_tag(t) for t in (tags or [])) if tag]
     if clean:
         body['tags'] = clean

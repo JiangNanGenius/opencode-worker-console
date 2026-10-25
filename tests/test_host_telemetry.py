@@ -214,6 +214,10 @@ class BoardAndTaskTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name).resolve()
+        # Shared quota refreshes must read fixture state, never this host's cache.
+        state_patch = patch.object(ht, 'STATE', self.root)
+        state_patch.start()
+        self.addCleanup(state_patch.stop)
         (self.root / 'tasks').mkdir()
         common.write_json(self.root / 'tasks' / 'job-1.json',
                           {'id': 'job-1', 'title': 'Build', 'status': 'running', 'created_at': 1,
@@ -277,6 +281,70 @@ class BoardAndTaskTests(unittest.TestCase):
                          ['codex', 'kimi-for-coding', 'volcengine-agent-plan', 'deepseek'])
         ark['windows'][0]['remaining_percent'] = 0
         self.assertEqual(self.collector.latest_quotas[2]['windows'][0]['remaining_percent'], 2.48)
+
+    def test_alibaba_quota_row_uses_compact_alias_with_snapshot_freshness(self):
+        quota = {'id': 'bailian-token-plan', 'state': 'ok', 'sampled_at': 1234,
+                 'windows': [{'label': '每月', 'remaining_percent': 99.9, 'resets_at': 1795553999.0}],
+                 'balances': [], 'snapshot': {'captured_at': 1234, 'fresh_for_minutes': 1440,
+                                              'freshness': 'fresh'}}
+        self.collector.latest_quotas = [quota]
+        board = self.collector.board_payload()
+        self.assertEqual([q['id'] for q in board['quotas']], ['aliyun'])
+        self.assertEqual(board['quotas'][0]['windows'][0]['remaining_percent'], 99.9)
+        # Additive snapshot metadata survives the compact alias unchanged.
+        self.assertEqual(board['quotas'][0]['snapshot']['freshness'], 'fresh')
+        # The web snapshot keeps the canonical provider ID.
+        self.assertEqual([q['id'] for q in self.collector.snapshot()['quotas']],
+                         ['bailian-token-plan'])
+
+    def test_normalize_worker_marks_stale_snapshot_and_keeps_window_amount(self):
+        record = {'state': 'ok', 'sampled_at': 1000.0,
+                  'windows': [{'name': 'CreditsPool', 'valid': True, 'duration_minutes': 43200,
+                               'remaining_percent': 99.9, 'remaining': 99926.94, 'limit': 100000.0,
+                               'resets_at': '2026-11-16T10:00:00+00:00'}],
+                  'balances': [],
+                  'available': None,
+                  'snapshot': {'captured_at': '2026-10-16T18:21:54+00:00',
+                               'fresh_for_minutes': 60, 'freshness': 'stale', 'expired': False}}
+        row = ht.normalize_worker('bailian-token-plan', record)
+        self.assertEqual(row['id'], 'bailian-token-plan')
+        self.assertEqual(row['name'], '阿里百炼')
+        self.assertEqual(row['windows'][0]['label'], '每月')
+        self.assertEqual(row['windows'][0]['remaining'], 99926.94)
+        self.assertEqual(row['windows'][0]['unit'], 'credits')
+        self.assertTrue(row['stale'])
+        self.assertEqual(row['snapshot']['freshness'], 'stale')
+        fresh = dict(record, snapshot=dict(record['snapshot'], freshness='fresh'))
+        fresh_row = ht.normalize_worker('bailian-token-plan', fresh)
+        self.assertNotIn('stale', fresh_row)
+        self.assertEqual(fresh_row['available'], None)
+        # Absolute freshness: the snapshot horizon, capped by the plan reset.
+        captured = ht.epoch(record['snapshot']['captured_at'])
+        self.assertEqual(fresh_row['valid_until'], captured + 60 * 60)
+        capped = dict(record, snapshot=dict(record['snapshot'], freshness='fresh',
+                                            resets_at=record['snapshot']['captured_at']))
+        self.assertEqual(ht.normalize_worker('bailian-token-plan', capped)['valid_until'], captured)
+        # A reset-expired snapshot propagates expiration instead of age-only freshness.
+        expired = dict(record, windows=[dict(record['windows'][0], valid=False, expired=True)],
+                       snapshot=dict(record['snapshot'], freshness='stale', expired=True))
+        expired_row = ht.normalize_worker('bailian-token-plan', expired)
+        self.assertTrue(expired_row['snapshot']['expired'])
+        self.assertTrue(expired_row['stale'])
+        self.assertEqual(expired_row['windows'], [])
+
+    def test_normalize_worker_reports_billing_exhaustion_and_availability(self):
+        record = {'state': 'billing_blocked', 'sampled_at': 1000.0, 'available': False,
+                  'billing': {'reason': 'monthly_usage_limit', 'monthly_exhausted': True,
+                              'message': 'private text must not leak'},
+                  'windows': [{'valid': True, 'remaining_percent': 10, 'duration_minutes': 10080,
+                               'resets_at': '2026-10-20T00:00:00Z'}], 'balances': []}
+        row = ht.normalize_worker('kimi-for-coding', record)
+        self.assertEqual(row['valid_until'], 1000.0 + ht.LIVE_QUOTA_VALID_SECONDS)
+        self.assertFalse(row['available'])
+        self.assertTrue(row['billing']['monthly_exhausted'])
+        self.assertEqual(row['billing']['reason'], 'monthly_usage_limit')
+        self.assertNotIn('message', row['billing'])
+        self.assertEqual(row['windows'][0]['remaining_percent'], 10.0)
 
 
 class TaskCollectionTests(unittest.TestCase):
@@ -350,7 +418,9 @@ class QuotaCollectionTests(unittest.TestCase):
         codex = json.dumps({'usage': {'primary': {'usedPercent': 30, 'windowMinutes': 300,
                                                    'resetsAt': '2026-10-13T18:00:00Z'}}})
         completed = subprocess_completed(codex)
+        import quota
         with patch.object(ht, 'STATE', self.root), \
+                patch.object(quota, 'STATE', self.root), \
                 patch.object(ht.subprocess, 'run', return_value=completed):
             quotas = ht.collect_quotas(now=1000.0)
         by_id = {q['id']: q for q in quotas}

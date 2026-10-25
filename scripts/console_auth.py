@@ -358,7 +358,7 @@ def _token_digest(token):
     return hashlib.sha256(token.encode('utf-8')).hexdigest()
 
 
-def _issue_session_locked(account, root=None):
+def _issue_session_locked(account, root=None, method='password', user_verified=False, credential_id=None):
     """Create a random 256-bit token bound to the account revision. Caller holds lock."""
     token = secrets.token_urlsafe(32)
     digest = _token_digest(token)
@@ -372,7 +372,9 @@ def _issue_session_locked(account, root=None):
         for key, _ in oldest[:len(sessions) - MAX_SESSIONS + 1]:
             sessions.pop(key, None)
     sessions[digest] = {'username': account['username'], 'account': fingerprint,
-                        'created_at': now, 'expires_at': now + SESSION_TTL_SECONDS}
+                        'created_at': now, 'expires_at': now + SESSION_TTL_SECONDS,
+                        'auth_method': method, 'user_verified': user_verified,
+                        'credential_id': credential_id, 'authenticated_at': now}
     _write_sessions(sessions, root)
     return token
 
@@ -415,7 +417,7 @@ def authenticate(username, password, root=None):
         return _issue_session_locked(account, root)
 
 
-def session_username(token, root=None):
+def _validated_session(token, root=None):
     """Return the username for a live session token, or None.
 
     The stored session must still match the current account fingerprint. A
@@ -445,7 +447,29 @@ def session_username(token, root=None):
         return None
     if not secrets.compare_digest(stored, _account_fingerprint(account)):
         return None
-    return username
+    return entry
+
+
+def session_username(token, root=None):
+    entry = _validated_session(token, root)
+    return entry['username'] if entry else None
+
+
+def session_context(token, root=None, require_passkey=False):
+    """Validated session identity and assurance, shared by HTTP and stream guards."""
+    entry = _validated_session(token, root)
+    if not entry:
+        return None
+    username = entry['username']
+    method = entry.get('auth_method', 'password')
+    if method == 'webauthn':
+        import console_webauthn
+        if entry.get('user_verified') is not True or not console_webauthn.credential_active(
+                entry.get('credential_id'), username, root):
+            return None
+    elif method != 'password' or require_passkey:
+        return None
+    return dict(entry, username=username, auth_method=method)
 
 
 def revoke_session(token, root=None):
@@ -827,6 +851,7 @@ def main(argv=None):
     setter.add_argument('--username', required=True)
     setter.add_argument('--password-stdin', action='store_true',
                         help='Read the password from stdin instead of an interactive prompt')
+    sub.add_parser('enrollment-grant', help='Local recovery: print a one-use 10-minute HTTPS registration URL')
     configure_parser = sub.add_parser('configure', help='Set console bind, allowed origins and trusted proxies')
     configure_parser.add_argument('--bind', help='127.0.0.1 (default), 0.0.0.0 or a local IPv4 address')
     configure_parser.add_argument('--origin', action='append', default=[],
@@ -839,6 +864,9 @@ def main(argv=None):
     try:
         if args.action == 'set-user':
             result = set_user(args.username, _read_password(args.password_stdin))
+        elif args.action == 'enrollment-grant':
+            import console_webauthn
+            result = {'enrollment_url': console_webauthn.create_grant()}
         else:
             result = configure(args.bind, args.origin, args.trust_proxy or None,
                                args.clear_trusted_proxies)

@@ -162,6 +162,9 @@ class RunTests(MigrationTestCase):
 
         def fake_request(path, method='GET', data=None, timeout=60):
             if 'batch-write' in path:
+                # 0.5.1+ rejects this removed wait parameter with HTTP 422.
+                if 'timeout' in data:
+                    raise ValueError('HTTP 422: extra field timeout is forbidden')
                 calls['batch'].append(data)
                 return {}
             if 'set_tags' in path:

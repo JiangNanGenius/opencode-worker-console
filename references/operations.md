@@ -5,6 +5,9 @@ The entrypoint is `~/.local/bin/delegate-opencode`. The skill also works via
 
 ## Submit and retrieve
 
+The following is a command catalog, not a startup sequence. Ordinary handoffs submit directly;
+quota/tier-guidance commands are operator diagnostics, and `notify` is for a verified milestone.
+
 ```sh
 delegate-opencode doctor
 delegate-opencode quota
@@ -13,7 +16,7 @@ delegate-opencode notify --title 'Release ready' --body 'TestFlight processing c
 delegate-opencode console --open
 delegate-opencode submit --directory /absolute/repo --tier normal \
   --title 'Map configuration' 'Locate configuration loading and summarize precedence with file/line evidence.'
-delegate-opencode submit --directory /absolute/repo --mode write --scope src/parser.py \
+delegate-opencode submit --directory /absolute/repo --mode write --scope src/parser.py --tier normal \
   --profile auto --command 'python3 -m unittest -v tests.test_parser' \
   --acceptance 'Preserve all existing behavior except the specified empty-input fix.' \
   'Fix the already-identified empty-input parser failure and run the authorized tests.'
@@ -22,6 +25,8 @@ delegate-opencode wait JOB_ID
 delegate-opencode collect JOB_ID
 delegate-opencode cancel JOB_ID --reason user_requested
 delegate-opencode stats
+delegate-opencode quota --import-snapshot /private/path/snapshot.json
+delegate-opencode usage-report --windows 1,24,48
 ```
 
 For substantial, continuing or complex work, follow the
@@ -33,9 +38,9 @@ pair of shell single quotes, and pass it to `--spec-urlencoded`. This encoding a
 raw task text as shell code. Independent specs may be submitted with `Promise.allSettled`; inspect
 every result and wait only on successfully returned job IDs. Use a private file for very large
 specifications. Fields: `directory`, `objective`, `title`, `acceptance` (string array),
-`tier` (`fast`/`normal`/`deep`), `profile` (`auto` for ordinary use), `profile_reason`
+`tier` (`fast`/`normal`/`deep`/`ultra`), `profile` (`auto` for ordinary use), `profile_reason`
 (required for the exceptional explicit profile), `capability_floor` (optional
-`fast`/`normal`/`deep`, never higher than `tier`) with a required nonempty
+`fast`/`normal`/`deep`/`ultra`, never higher than `tier`) with a required nonempty
 `capability_reason` of 1-500 characters; see [routing](routing.md), `mode` (`read`/`write`),
 `scopes` (literal relative path array, repository-local),
 `targets` (operational target array such as `ssh:example.com:nginx`),
@@ -59,30 +64,46 @@ expands scope, authority or any other capability.
 Use `group_title` for a readable main-task name, `group_id` to override the current upstream-harness
 task ID, and `parent_task_id` for a child of an existing delegated task in the same group.
 
-Prefer one coherent assignment that owns an outcome, such as investigation, bounded
-implementation, checks and a concise report. Use `steer` for refinements to that outcome
-instead of creating a sequence of microtasks. Split tasks when deliverables or writable
-scopes are genuinely independent.
+The coordinator owns the overall plan and integration. Hand off coherent work packages with
+their necessary checks; split substantial goals at useful decision or delivery boundaries.
+Independent packages may run concurrently, while dependent stages consume verified outputs
+sequentially. Serialize overlapping writes/resources. Do not split into individual searches or
+commands, and do not send the whole project to Deep merely because one part is uncertain.
+Use `steer` for refinements and `task retier` when the same outcome's remaining reasoning needs
+or concrete latency value changes.
 
 Choose one tier from the uncertainty the worker must resolve and keep `--profile auto`:
-Fast is the capable default for a bounded, concrete outcome with a firm direction and clear
-acceptance; Normal when a concrete outcome needs broader investigation, synthesis or several
-interdependent judgments; Deep for an abstract or unclear objective, an unresolved system-wide
-root cause, architecture trade-offs or unusually complex logic. Fast can own complete features,
-known fixes, tests, documentation and routine deployment. Large context, many files, long runtime
-and importance alone do not make a task Deep, and genuinely Deep work has no separate task-count
-limit.
+Normal is the default for ordinary executable work — a bounded, concrete outcome with a firm
+direction and clear acceptance, including investigation, tests, documentation, deployment and
+finalization; known direction or low uncertainty alone is not a reason to select or switch Fast.
+Fast is the latency-priority tier when direction, constraints and acceptance are clear AND faster
+model work is reasonably expected to materially advance a concrete near-term milestone: an
+explicitly urgent delivery or deadline, or a coordinator-identified dependent task or phase that
+is actually ready and currently blocked by this work. A routine serial dependency — someone
+will eventually need the output — or mere ownership of a critical resource is not by itself a
+Fast trigger, and queueing, compilation, external CI/test execution or pure waiting is not sped
+up by faster model output; keep Normal unless the remaining model-driven work is itself the
+consequential current blocker. Fast can own complete features, known fixes, tests, documentation
+and routine
+deployment; it is not weak or simple-only, and it does not need a line-by-line prescription or a
+fully pre-read repository. Deep handles complex reasoning; Ultra handles especially difficult
+architecture, stubborn root causes, long-horizon reasoning and checkpoint-reviewed escalation
+after two rounds without material progress. Large context, many
+files, long runtime and importance alone do not make a task Deep, urgency alone cannot bypass
+unresolved reasoning needs, and genuinely Deep work has no separate task-count limit.
 The optional `capability_floor` deliberately prevents conservation or fallback from serving the
 task below that tier (CLI: `--capability-floor` plus `--capability-reason`); it is for deliberate
 no-downgrade requirements, never a routine tier upgrade, and continuations inherit it.
+Deep and Ultra enforce a floor at their own tier even when the field is omitted or weaker.
 The first available policy stage wins; members in that stage share actual admissions by
 weight. See [routing and plan efficiency](routing.md) for quota guidance, bounded
 quota-aware ratios, fallbacks and configuration. A direct user requirement for a named model or
 a controlled comparison may pin one model with an explicit profile and `--profile-reason`;
 ordinary coordination never chooses a profile.
 
-Ordinary coordinators choose Fast, Normal or Deep solely from task uncertainty and keep
-`profile=auto`; they do not inspect quota or provider state. `quota --tier-guidance --compact`
+Ordinary coordinators choose Fast, Normal, Deep or Ultra solely from task uncertainty and concrete
+latency value, defaulting to Normal, and keep `profile=auto`; they do not inspect quota or provider
+state. `quota --tier-guidance --compact`
 returns only that stable contract. The verbose `quota --tier-guidance` and `quota` views are
 operator diagnostics for the console, configuration and incident investigation.
 
@@ -92,14 +113,30 @@ examples and names do not limit job roles. Do not split a coherent investigation
 fast lookups. Use `stats` to assess actual distribution without manufacturing tasks to hit a
 quota. Task counts are not token or cost ratios.
 
-Routine UI work is eligible for delegation. Workers may implement a specified interface and
-verify source/DOM structure, localization coverage, build/lint output and an existing headless
-browser test command. OpenCode does not have Computer Use; do not ask it to improvise macOS
-GUI control with AppleScript, screenshot utilities or similar terminal workarounds. Prefer
-the upstream harness for complex real interface operation, visual direction and subtle aesthetic judgment;
-workers can contribute proposals and analysis. This allocation reflects available tools and
-strengths, not a category ban. The upstream harness owns final acceptance; worker static evidence alone is
-not final UI proof.
+## Interface operation boundary
+
+Interface work is eligible for delegation; decide each step by actual tools, uncertainty and
+feedback rather than treating every UI task as upstream-only. Workers can implement and verify
+source/DOM structure, localization, builds and headless behavior. With reliable tools already
+available in their runtime, they can also perform structured-element operations, lightweight
+clicks/input and state checks. A dedicated desktop-control MCP is not assumed, nor is the upstream
+harness's authenticated browser/device session available merely because the harness can use it.
+
+Delegate interaction when the goal is clear, the path is stable, results can be observed and a
+failed step is recoverable without uncertain side effects. A longer deterministic flow can be
+lighter than a short flow requiring repeated visual interpretation; there is no click-count rule.
+Prefer established DOM/accessibility locators, existing automation drivers or verified scripts.
+A screenshot capture can be evidence when supported; it does not by itself provide control.
+Do not improvise blind coordinate/terminal GUI workarounds or install a new interface tool solely
+to force delegation. Existing authorization and platform confirmation requirements still apply.
+
+The upstream harness (Codex in this workflow) handles complex device/cross-application operation,
+ambiguous popups, sustained visual interpretation, aesthetic direction and final experience
+judgment. Transfer only those steps, retaining the worker's supported implementation, build,
+deployment and verification package. If a light flow becomes ambiguous or lacks a reliable tool,
+return completed actions, current state, observations/screenshots, artifact locations, remaining
+goal and uncertain side effects. Continue supported independent work; do not restart the whole
+assignment. The upstream harness owns final acceptance, and static evidence is not UI proof.
 
 ## Operational targets and remote systems
 
@@ -183,20 +220,20 @@ data for 15 minutes with a stale marker; older data is unknown. Invalid credenti
 exhausted quota block dispatch; unknown telemetry does not impose a shared concurrency cap.
 Plan allowance is preferred for all automatically routed work; `fallback` is the direct paid
 DeepSeek fallback in the Agent Plan preset, not a task tier or a small-task shortcut.
-The optional Kimi deep-task reserve defaults to 0%, so ordinary
-tasks can use available plan allowance. If configured higher, it holds ordinary tasks below
-that percentage while allowing deep work. Before dispatch, an automatic task skips unavailable
-stages and the bridge chooses the next configured stage. It records fallback use and route history
-for the operator console, statistics and incident diagnosis. Ordinary submit, status, wait and
-collect results omit these internal choices for automatically routed tasks.
+Kimi base / maximum weekly protection defaults to 30%. Dynamic release is enabled by
+`kimi_weekly_reserve_dynamic` (default `true`): idle final-half-cycle protection declines toward
+min(base, 5)% by the real weekly reset; Ultra demand or unknown/stale quota, reset or demand
+signals keep the base. Disable it for fixed base protection. Below the effective threshold only
+K3.1 Pro can consume the reserve; explicit old-model pins cannot bypass it. A fresh named
+weekly/overall signal is separate from the five-hour limit and account total. Missing or stale
+weekly data pauses ordinary Kimi admissions; an account whose official plan has no weekly
+window is marked not applicable. In-flight requests may finish, so this is a scheduling reserve.
 
-The separate low-weekly guard defaults to 5% and one native-K3 slot. It uses a fresh valid Kimi
-`overall` aggregate, falling back only to an exact seven-day window; the five-hour window is not
-a weekly proxy. At or below the threshold, automatic Normal tasks exclude every Kimi profile.
-Automatic Deep tasks may use a Kimi profile in the first Deep stage only while fewer than the
-configured global native-K3 slot count are active. Other Deep tasks choose the Ark peer or a
-later stage. Explicit profile requests remain an operator override. Both settings are editable.
-
+When the weekly remainder is at or below 5% and cannot last until reset, Ultra concurrency is
+limited to one. Ultra waits when its required model has no usable quota; it never silently
+falls back. Account total quota comes only from a real logged-in account reading; never infer it
+as four weekly windows. Missing monthly data stays unknown. OAuth/account identity must match
+the inference key before account quota can govern that key.
 After dispatch, a model-origin HTTP 429, explicit usage-window exhaustion, insufficient balance
 or unequivocal monthly-plan exhaustion is a confirmed capacity stop. When automatic quota
 rerouting is enabled, the bridge confirms the old attempt has stopped, excludes its provider,
@@ -210,6 +247,18 @@ task surfaces recovery guidance instead.
 Fresh telemetry also permits later use of a replenished account. Queue status records
 the reason. Unknown quota is not a promise of availability.
 
+Alibaba Token Plan prepaid seats add key-specific operations. With Bark quota transitions
+enabled, a fresh positive Credits reading at or below 10% warns once to prepare the next seat;
+an authoritative zero or a confirmed model 402/insufficient-balance/monthly exhaustion warns
+immediately to open/assign the next seat and replace the Token Plan inference API Key; and a
+confirmed model 401 emits a separate check/replace inference Key alert. Deduplication is per
+opaque inference credential identity, so a later seat/key re-arms; titles and bodies never
+contain the identity. While the current key's circuit is active, positive whole-account
+telemetry never re-arms the exhausted-key edge, so later failure scans stay deduplicated.
+Native 429 remains transient capacity and never asks for a purchase. These are
+edge-triggered pushes, not a recurring reminder schedule. A control-plane
+`GetSubscriptionStats` AK/SK failure is unknown telemetry, not an inference-key failure.
+
 An unequivocal model billing error blocks further provider dispatch even if the cached balance
 was positive. Two reasons are distinguished. `insufficient_balance` (HTTP 402 or an explicit
 balance message) is replenishable: a fresh successful account check clears it after top-up, as
@@ -218,16 +267,30 @@ before, and it stays an absolute block even for an explicitly requested profile.
 whose message says the monthly usage limit was reached and the quota refreshes next cycle.
 That error is authoritative even while `/coding/v1/usages` reports available windows
 (`available: true`, remaining 5-hour/overall percentages), because neither window proves the
-monthly cycle was restored. Monthly exhaustion is advisory rather than an absolute dispatch
-prohibition: automatic routing and candidate alternatives keep avoiding the exhausted provider,
-but a task submitted with this provider as an explicit `requested_profile` may still try, and a
-verified successful reply clears the flag. A fresh positive query never clears it, the plan usage
+monthly cycle was restored. For Kimi, the recorded monthly circuit blocks both automatic routing and explicitly named
+profiles. To authorize a new attempt, first run `delegate-opencode quota --retry-provider kimi-for-coding`,
+then submit the task; selecting a profile alone no longer releases the circuit. This release is
+authorization to try, not proof of capacity. A verified successful reply can also clear the flag. A fresh positive query never clears it, the plan usage
 endpoint is never parsed as a monthly reset, and `quota.view` presents the provider as
 `billing_blocked` with `billing.reason`, `monthly_plan_exhausted: true` and the authentic window
-telemetry unhidden. The block is provider-wide, so Kimi K2.8 and K3 share it and can never be
+telemetry unhidden. The block is provider-wide, so Kimi K2.8 and K3.1 Pro share it and can never be
 alternatives to each other while it is open. No model probe loop is started.
 
-Quota endpoint exhaustion is a hard availability verdict: an explicit profile retry, monthly schedule, or successful model response never overrides an endpoint reporting zero allowance or an unavailable account. Only the hidden monthly-error flag is retryable; wait for a refreshed positive endpoint sample before dispatching against confirmed empty quota.
+A confirmed model-origin HTTP 401 from Alibaba is a separate `credential_rejected` circuit bound
+to the inference key: it is not a billing reason, never uses the quota-query AK/SK pair, and its
+alert asks for the inference Key only. A recorded dispatch identity that no longer matches the
+current key is stale: a late old-key 402/401 neither trips nor alerts the new key, while legacy
+tasks without matching provenance keep the existing current-credential behavior. A provider marked
+`prepaid` also refuses aggregate
+account-API or imported-snapshot release of a confirmed balance, auth or monthly block, because the
+Alibaba `GetSubscriptionStats` Credits value is a multi-seat group aggregate that may describe a
+different seat. A genuine inference-key file identity change detaches the credential-bound block;
+a verified completed response on the current key or `quota --retry-provider` can also release it.
+A failed control query remains stale/unknown telemetry and, in prepaid mode, does not by itself
+disable otherwise usable inference; confirmed zero, expiry and the active inference-key circuit
+still block.
+
+Quota endpoint exhaustion is a hard availability verdict: profile selection, explicit local retry release, a monthly schedule, or a successful model response never overrides an endpoint reporting zero allowance or an unavailable account. For Kimi this includes a real zero in the five-hour window or the verified account total. Only the hidden monthly-error flag is retryable; wait for a refreshed positive endpoint sample before dispatching against confirmed empty quota.
 
 Kimi monthly blocks are released by exactly three provenance-guarded paths, none inferred from
 window telemetry: an explicit local retry authorization, a configured schedule, or a verified
@@ -248,18 +311,22 @@ A genuinely finished, error-free model response can clear a monthly block throug
 the privately captured request credential identity and times, and the clear applies only when
 the request started strictly after the block opened, completion is not earlier than the start,
 all timestamps are positive and finite, and the identity still equals the provider's current
-credential. It persists `released: model_success` with the completion time as the watermark and
-preserves message IDs and the credential binding. Pending, empty, failed, unattributed or older
-replies never clear anything.
+credential. A `credential_rejected` block is credential-specific in every mode and the same
+current-key success may clear it; for a prepaid provider the proof may also clear a confirmed
+`insufficient_balance` block. Other block reasons keep monthly-only behavior. It persists
+`released: model_success` with the completion time as the watermark and preserves
+message IDs and the credential binding. Pending, empty, failed, unattributed or older replies
+never clear anything.
 
 `status`, `wait` and `collect` expose `route_history` for successful in-session transitions and
 recovery guidance when no automatic transition occurred. In the latter case,
 `automatic_fallback: false` describes that terminal recovery result, while
 `autonomous_reselection: true` plus `autonomous_next_action` tells the coordinator to create a
 same-tier continuation without asking the user or waiting for quota. Candidates and automatic
-continuations retain the configured reasoning `variant`. For a monthly blockage, an explicitly
-requested profile on the blocked provider is advisory and may still be submitted to try;
-automatic routes and alternatives avoid it. Inspect partial work before creating any deliberate
+continuations retain the configured reasoning `variant`. For a Kimi monthly blockage, release the recorded circuit with
+`delegate-opencode quota --retry-provider kimi-for-coding` before submitting a new task. A profile
+pin alone cannot bypass it. Other providers retain their existing explicit-profile retry policy;
+automatic routes and alternatives continue to avoid blocked providers. Inspect partial work before creating any deliberate
 continuation linked by `--parent-task-id`. Keep healthy non-capacity waits alive, but act on a
 confirmed quota or rate-limit stop.
 
@@ -271,8 +338,22 @@ watermark, and rejects unknown providers. It does not enforce a single attempt a
 reinterpret telemetry or reset timestamps. Monthly classification requires exhaustion
 wording (`reached`/`exhausted`/`refreshed in the next cycle`, and similar), so a 403 such as
 "you do not have permission to view monthly quota" or a stated monthly allowance never
-trips the circuit. Historical recovery guidance honors only `manual_retry`, `scheduled_reset`
-and `model_success` releases; a positive window sample alone never proves recovery.
+trips the circuit. Historical recovery guidance honors only `manual_retry`, `scheduled_reset`,
+`model_success`, `snapshot_replenishment` and `openapi_account_recovery` releases; a positive
+window sample alone never proves recovery. `openapi_account_recovery` is Alibaba-only: the
+official Model Studio `GetSubscriptionStats` account query returned a fresh, complete,
+strictly positive and unexpired Credits reading whose request started after the circuit
+opened, bound to unchanged inference and control credential identities; because it reports
+whole-subscription Credits it may clear monthly exhaustion, a permission window telemetry
+never grants other providers. In `prepaid` mode this aggregate path is disabled entirely so a
+second seat can never mask a current-key exhaustion or auth rejection. `snapshot_replenishment`
+is an imported manual console reading
+(for example an Alibaba baseline before the first live reading): it must be positive, from its
+still-current period, within its freshness horizon and newer than both the last import and the
+block, so an expired-period, stale or out-of-order reading can never clear a depletion latch or
+billing circuit. `usage-report` returns timestamped per-response token windows (1 h / 24 h /
+48 h) with estimated Alibaba Credits; records without timestamped events are reported separately
+as coarse lifetime counters and never contaminate the timestamped headline.
 
 No automatic recharge or booster setting changes. Account-wide before/after quota is not
 attributed as an exact task charge. `stats` reports observed mixed task latency, not a benchmark.
@@ -346,6 +427,10 @@ No sudo or global package replacement is used. Provider login remains with OpenC
 
 ```sh
 delegate-opencode steer JOB_ID 'Check this edge case before finishing.' --request-id investigation-2
+delegate-opencode task retier JOB_ID --tier normal --reason 'Root cause and acceptance are now known; the remaining work is ordinary bounded implementation.' \
+  --handoff-file /private/checkpoint.json --request-id implementation-phase
+delegate-opencode task retier JOB_ID --tier fast --reason 'The identified fix has an explicit deadline tonight and its output is the ready, currently blocked input of the dependent packaging task.' \
+  --handoff-file /private/checkpoint.json --request-id expedite-release-fix
 delegate-opencode sessions --search parser
 delegate-opencode session bind SESSION_ID --directory /absolute/project
 delegate-opencode session delete SESSION_ID --yes
@@ -360,6 +445,22 @@ and delays normal task completion until a reply to the latest guidance is observ
 acceptance is not proof that the model followed the instruction. Unknown delivery is retained
 and not automatically replayed. OpenCode 1.18.32 picks up the new user message in its running
 session loop; it does not expose a separate delivery-mode field in its local OpenAPI schema.
+
+`task retier` and authenticated `POST /console-api/task/{id}/retier` change the capability tier
+without replacing the task or native session. The HTTP body is `{tier, reason, handoff, request_id}`;
+the CLI reads `handoff` from an owner-only (`0600`) JSON file outside the repository. Its `done`, `remaining`, `decisions`,
+`evidence` and `do_not_repeat` fields accept text or arrays of text. `remaining` explains the
+concrete work still needed. See [the checkpoint example](handoff.md#same-task-tier-checkpoint).
+
+Queued tasks apply the tier before dispatch. Running tasks queue a context-preserving continuation
+at a safe boundary without aborting current tools or turns. `tier` reports the effective tier,
+`requested_tier` the requested target, `tier_change` the latest request and `tier_history` its
+audit trail. Request states are `pending`, `applied`, `rejected` or `uncertain`; only observed
+continuation execution proves application, even when routing selects the same model. A pending or
+uncertain request prevents another change. Identical request IDs with identical content are
+idempotent; conflicting reuse is rejected and ambiguous sends are never blindly replayed.
+Capability floors, explicit model pins, scopes and permissions remain binding; terminal or
+cancelled tasks cannot be reclassified. A tier change never resets usage or marks a task done.
 
 Workspace binding uses `/experimental/control-plane/move-session`, with `moveChanges: false`.
 It changes the native session directory and preserves the task's original workspace/evidence.
@@ -419,7 +520,10 @@ A model billing error also carries `billing: true` and `billing_reason`
 (`insufficient_balance` or `monthly_usage_limit`). Only a model origin qualifies: transport
 text, tool output containing the same phrase, ordinary HTTP 403 authorization failures and
 429 rate limits never trip the durable billing circuit, but a model-origin 429 is a confirmed
-capacity stop eligible for same-session routing continuation. Historical compact billing errors inform
+capacity stop eligible for same-session routing continuation. An Alibaba model 401 additionally
+carries `auth: true` and `auth_reason: credential_rejected`; that inference-key circuit is
+created only for Alibaba, and a control-plane quota-query AK/SK rejection is never reported as
+a model auth error. Historical compact billing errors inform
 `recovery` read-only and never re-arm or clear a circuit by themselves.
 Errors from earlier failed tool attempts can coexist with a successfully completed report.
 A transport error after dispatch means the prompt may have been accepted: observe the

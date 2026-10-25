@@ -13,8 +13,10 @@ import uuid
 from common import (STATE, HttpFailure, api, artifact_dir, config, read_json, redact,
                     task, update, write_json, locked, credential_identity, message_id as next_message_id)
 from workspace import collect_changes, prepare
+from providers import BAILIAN_PROVIDER
 import diagnostics
 import quota
+import retier
 import routing
 import task_activity
 
@@ -29,6 +31,10 @@ RESULT_SCHEMA = {
     },
     'required': ['outcome', 'summary', 'evidence', 'tests', 'unresolved'],
 }
+# Bounded prose scan for a report object: only up to this many "{" positions
+# are tried with JSONDecoder.raw_decode, so a pathological message cannot turn
+# report extraction into an unbounded parse.
+MAX_REPORT_SCAN_ATTEMPTS = 256
 
 WORKER_INSTRUCTIONS = """You are a capable general-purpose execution agent reporting to an upstream harness.
 Own the complete authorized outcome: investigate, choose methods, execute, repair and verify.
@@ -159,28 +165,102 @@ def valid_report(candidate):
             all(isinstance(x, str) for x in candidate[k]) for k in ('evidence', 'tests', 'unresolved'))
 
 
-def parse_report(text):
-    """Accept exactly one valid JSON report: bare, or a single fenced block amid prose.
+def _valid_report_candidates(probe):
+    """Valid report candidates from one exact probe; malformed text yields none."""
+    if not isinstance(probe, str) or not probe:
+        return []
+    try:
+        candidate = json.loads(probe)
+    except (ValueError, TypeError):
+        # Some otherwise capable models occasionally render the requested
+        # object with Python-style single quotes. literal_eval accepts only
+        # data literals and never executes model text.
+        try:
+            candidate = ast.literal_eval(probe)
+        except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+            return []
+    return [candidate] if valid_report(candidate) else []
 
-    Multiple valid reports are ambiguous and rejected; invalid candidates are ignored.
+
+def parse_report(text):
+    """Accept exactly one valid JSON report: bare, fenced, or an object amid prose.
+
+    Prose before or after the object (for example "Review complete. Final
+    report:" followed by the JSON, or a trailing sentence) is ignored by a
+    bounded scan that only calls json.JSONDecoder.raw_decode on ``{`` positions;
+    no model text is ever evaluated as code. Fenced blocks and the whole message
+    keep their historic single-candidate semantics. Multiple distinct valid
+    reports remain ambiguous and are rejected; malformed candidates are ignored.
     """
-    probes = [b.strip() for b in re.findall(r'```[^\n]*\n(.*?)```', text, re.S)]
-    probes.append(text)
+    if not isinstance(text, str) or not text.strip():
+        return None
+    probes = [block.strip() for block in re.findall(r'```[^\n]*\n(.*?)```', text, re.S)]
+    probes.append(text.strip())
     valid = []
     for probe in probes:
-        try:
-            candidate = json.loads(probe)
-        except (ValueError, TypeError):
-            # Some otherwise capable models occasionally render the requested
-            # object with Python-style single quotes. literal_eval accepts only
-            # data literals and never executes model text.
-            try:
-                candidate = ast.literal_eval(probe)
-            except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+        valid.extend(_valid_report_candidates(probe))
+    if not valid:
+        decoder = json.JSONDecoder()
+        seen = set()
+        attempts = 0
+        for index, char in enumerate(text):
+            if char != '{':
                 continue
-        if valid_report(candidate):
+            attempts += 1
+            if attempts > MAX_REPORT_SCAN_ATTEMPTS:
+                break
+            try:
+                candidate, _ = decoder.raw_decode(text, index)
+            except ValueError:
+                continue
+            if not valid_report(candidate):
+                continue
+            try:
+                key = json.dumps(candidate, sort_keys=True)
+            except (TypeError, ValueError):
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
             valid.append(candidate)
     return valid[0] if len(valid) == 1 else None
+
+
+def _dispatch_credential_identity(t, provider):
+    """Opaque inference credential that owned the failing dispatch, when recorded."""
+    provenance = t.get('_billing_dispatch') or {}
+    identity = provenance.get('identity')
+    if provenance.get('provider') == provider and isinstance(identity, str) and identity:
+        return identity
+    return credential_identity(provider)
+
+
+def _failure_credential_current(t, provider):
+    """False for a recorded Alibaba dispatch identity that has since been replaced.
+
+    A late transcript error from the old key must neither bind the new key nor
+    notify about it. Legacy tasks without matching dispatch provenance keep the
+    existing current-credential behavior.
+    """
+    provenance = t.get('_billing_dispatch') or {}
+    old = provenance.get('identity')
+    if provenance.get('provider') != provider or not isinstance(old, str) or not old:
+        return True
+    current = credential_identity(provider)
+    return current is not None and old == current
+
+
+def _notify_provider_failure(t, provider, reason, identity=None):
+    """Best-effort direct push hook; notification failure never affects the task."""
+    if provider != BAILIAN_PROVIDER:
+        return
+    try:
+        import notifications
+        notifications.observe_provider_failure(
+            config(), provider, reason,
+            identity=identity or _dispatch_credential_identity(t, provider))
+    except Exception:
+        pass
 
 
 def record_billing_errors(t, errors):
@@ -189,7 +269,8 @@ def record_billing_errors(t, errors):
     Tool text and transport failures never reach this; diagnostics marks only model
     error payloads and carries the reason kind. Dedup by message ID means a historical
     error cannot relatch a recovered circuit. Returns True when a billing error was
-    recorded.
+    recorded. Alibaba confirmations also invoke the bounded direct notification hook,
+    so an exhausted seat/key does not wait for the daemon's next idle refresh.
     """
     c = config()
     hits = [e for e in errors if isinstance(e, dict) and e.get('source') == 'model' and
@@ -202,6 +283,7 @@ def record_billing_errors(t, errors):
     default_provider = c['profiles'][profile]['model'].split('/', 1)[0]
     known = {str(p.get('model', '')).split('/', 1)[0] for p in c['profiles'].values()
              if '/' in str(p.get('model', ''))}
+    recorded = False
     for e in hits:
         # Actual provider attribution wins when it names a configured provider. An
         # explicitly different, unconfigured provider is never silently charged to the
@@ -209,9 +291,59 @@ def record_billing_errors(t, errors):
         actual = e.get('provider')
         if actual and actual not in known:
             continue
-        quota.trip(actual or default_provider, e.get('message', ''), e.get('message_id'),
-                   e.get('occurred_at'), e.get('billing_reason'))
-    return True
+        provider = actual or default_provider
+        reason = e.get('billing_reason') or quota.GENERIC_REASON
+        identity = None
+        if provider == BAILIAN_PROVIDER:
+            # Bind Alibaba failures to the dispatch key when provenance exists.
+            # An old-key error observed after a genuine key replacement is stale:
+            # it must not trip or alert on the new key.
+            if not _failure_credential_current(t, provider):
+                continue
+            identity = _dispatch_credential_identity(t, provider)
+        quota.trip(provider, e.get('message', ''), e.get('message_id'),
+                   e.get('occurred_at'), reason, identity=identity)
+        _notify_provider_failure(t, provider, reason, identity=identity)
+        recorded = True
+    return recorded
+
+
+def record_auth_errors(t, errors):
+    """Trip an Alibaba inference-key circuit on a confirmed model 401.
+
+    The scope is deliberately narrow: a control-plane quota-query AK/SK rejection
+    never reaches model errors, and other providers keep their existing behavior.
+    The circuit is credential-bound, so replacing the inference key detaches it; a
+    verified current-key success or explicit retry can also release it. Alerting is
+    best-effort and isolated from task execution.
+    """
+    hits = [e for e in errors if isinstance(e, dict) and e.get('source') == 'model' and
+            (e.get('auth') or e.get('auth_reason'))]
+    if not hits:
+        return False
+    c = config()
+    profile = t.get('profile')
+    if not profile or profile not in c['profiles']:
+        return False
+    default_provider = c['profiles'][profile]['model'].split('/', 1)[0]
+    known = {str(p.get('model', '')).split('/', 1)[0] for p in c['profiles'].values()
+             if '/' in str(p.get('model', ''))}
+    recorded = False
+    for e in hits:
+        actual = e.get('provider')
+        if actual and actual not in known:
+            continue
+        provider = actual or default_provider
+        if provider != BAILIAN_PROVIDER:
+            continue
+        if not _failure_credential_current(t, provider):
+            continue
+        identity = _dispatch_credential_identity(t, provider)
+        quota.trip(provider, e.get('message', ''), e.get('message_id'),
+                   e.get('occurred_at'), quota.AUTH_REASON, identity=identity)
+        _notify_provider_failure(t, provider, quota.AUTH_REASON, identity=identity)
+        recorded = True
+    return recorded
 
 
 def record_billing_success(t, messages):
@@ -321,6 +453,14 @@ def observe_live_models_and_switches(t, messages):
     changed = current_model != t.get('current_model') or current_variant != t.get('current_variant') or \
         actual_models != (t.get('actual_models') or []) or usage != t.get('usage') or \
         latest_activity != t.get('last_activity') or recent_activity != t.get('recent_activity')
+    if messages:
+        # Responses complete over time: capture their timestamped counters now so
+        # rolling windows stay exact even while the task is still running.
+        try:
+            import usage_ledger
+            usage_ledger.record_events(t['id'], task_activity.usage_events_from_messages(messages))
+        except Exception:
+            pass
     message_positions = {
         message.get('info', {}).get('id'): index
         for index, message in enumerate(messages)
@@ -362,13 +502,35 @@ def observe_live_models_and_switches(t, messages):
     return t
 
 
-def reroute_after_capacity_stop(t, provider, trigger):
+def reroute_after_capacity_stop(t, provider, trigger, messages=None, aborted=False):
     """Continue a confirmed quota/capacity stop in the same session on the next route.
 
-    The old provider is excluded, the low-weekly Kimi guard is applied again, and
-    the existing conversation/workspace is retained. Intent is persisted before I/O;
-    an ambiguous acknowledgement is observed rather than replayed.
+    Serialized behind the per-task control lock so a capacity fallback and a
+    semantic tier change can never queue competing continuations. An
+    unresolved tier change is first settled against the confirmed-idle
+    evidence: acknowledged means applied, provably-not-run means rejected with
+    the original tier and dispatch intact; a delivered-but-unrun continuation
+    is retained and observed and this recovery pass yields to it. Nothing is
+    forgotten, and an ambiguous acknowledgement is still observed, never
+    replayed.
     """
+    with locked('control-' + t['id']):
+        t = task(t['id'])
+        if (t.get('tier_change') or {}).get('status') in ('pending', 'uncertain'):
+            if messages is None:
+                try:
+                    messages = call(t, '/message')
+                except HttpFailure:
+                    messages = None
+            if messages is not None:
+                t = retier.resolve_before_stop_recovery(t, messages, aborted=aborted)
+            if (t.get('tier_change') or {}).get('status') in ('pending', 'uncertain'):
+                # The tier continuation owns the next boundary.
+                return False
+        return _reroute_after_capacity_stop(t, provider, trigger)
+
+
+def _reroute_after_capacity_stop(t, provider, trigger):
     t = task(t['id'])
     c = config()
     if c.get('auto_reroute_on_quota_exhaustion', True) is not True:
@@ -390,16 +552,12 @@ def reroute_after_capacity_stop(t, provider, trigger):
             # Old retained task records may predate ordering metadata. The current
             # task is enough to keep the guard conservative until migration/save.
             active = [t]
-        route_task, guard = quota.apply_kimi_low_weekly_guard(
-            route_task, c, q, active)
         profile, reason = quota.route(route_task, c, q)
     except Exception as e:
         update(t['id'], errors=(t.get('errors') or []) + [diagnostics.exception(e, 'quota_reroute')])
         return False
     if not profile or profile == t.get('profile'):
         return False
-    if guard:
-        reason += ':kimi_low_weekly_guard_' + str(round(guard['remaining_percent'], 3)) + 'pct'
     cfg = c['profiles'][profile]
     next_provider, model = cfg['model'].split('/', 1)
     message_id = next_message_id()
@@ -465,11 +623,30 @@ def proactive_reroute_if_needed(t, native_status):
     retained.  Automatic task tiers participate; operator pins remain stable. Capability
     floors remain mandatory for every destination. Level 1 can use only the configured bounded spillover target,
     while Level 2 can move Normal work into the configured Fast source pool.
+
+    The decision and its durable write happen behind the same per-task control
+    lock the steering and tier-change paths use, so a conservation switch and a
+    semantic retier can never queue competing continuations.
     """
+    with locked('control-' + t['id']):
+        return _proactive_reroute_if_needed(task(t['id']), native_status)
+
+
+def _proactive_reroute_if_needed(t, native_status):
     c = config()
     if c.get('proactive_long_task_reroute', True) is not True or \
             (t.get('requested_profile') or 'auto') != 'auto' or \
             native_status.get('type') != 'busy':
+        return False
+    # Ultra is the reserved-capability tier: conservation and pay-as-you-go
+    # shedding never preempt it. Provider exhaustion still surfaces through the
+    # gate/preflight stop path without a silent downgrade.
+    if t.get('tier') == 'ultra' or quota.tier_of(t) == 'ultra':
+        return False
+    # Serialize with an unresolved tier change: at most one queued
+    # continuation may own the next safe boundary, and a pending tier change
+    # must never be double-continued or forgotten by conservation reroutes.
+    if (t.get('tier_change') or {}).get('status') in ('pending', 'uncertain'):
         return False
     after = c.get('proactive_reroute_after_seconds', 900)
     if isinstance(after, bool) or not isinstance(after, (int, float)):
@@ -479,10 +656,17 @@ def proactive_reroute_if_needed(t, native_status):
     q = quota.view(read_json(STATE / 'quota.json', {}))
     guidance = quota.tier_guidance(c, q)
     current_provider = str((c['profiles'].get(t.get('profile')) or {}).get('model', '')).split('/')[0]
-    level = max(int(guidance.get('conservation_level') or 0),
-                int((guidance.get('provider_conservation_level') or {}).get(current_provider) or 0))
+    source_level = int((guidance.get('provider_conservation_level') or {}).get(current_provider) or 0)
+    level = max(int(guidance.get('conservation_level') or 0), source_level)
     if level <= 0:
         return False
+    # Prepaid capacity is neutral/healthy for control. Pressure from a renewable
+    # plan elsewhere must not proactively downgrade a still-admitted prepaid
+    # stage; actual zero/expiry/credential gates have already run in admission.
+    if quota.provider_is_prepaid(current_provider, c) and source_level == 0:
+        _, admitted, _ = quota._allowed_profile(t.get('profile'), t, c, q)
+        if admitted:
+            return False
     policy = routing.configured(c)
     spill = routing.configured_spillover(c, policy)
     # Conservation may shed more work, never promote a cash fallback back into
@@ -589,8 +773,15 @@ def finish(t, messages, forced_status=None, reason=None):
         t = task(t['id'])
         if not forced_status:
             import steering
+            # Apply an acknowledged tier change from the same evidence the
+            # completion gate reads: completion must wait for the requested
+            # continuation, and steering supersession is judged against the
+            # just-observed boundary, never a bare HTTP acceptance.
+            t = retier.observe(t, messages)
             if not steering.settled(t, messages):
                 return update(t['id'], status='uncertain', reason='guidance_response_pending')
+            if not retier.settled(t, messages):
+                return update(t['id'], status='uncertain', reason='tier_change_continuation_pending')
         return _finish(t, messages, forced_status, reason)
 
 
@@ -599,6 +790,13 @@ def _finish(t, messages, forced_status=None, reason=None):
     messages = redact(messages)
     write_json(art / 'messages.json', messages)
     evidence = summarize_messages(messages)
+    # Timestamped per-response events survive task cleanup for exact rolling
+    # accounting windows; dedup by message ID makes this idempotent.
+    try:
+        import usage_ledger
+        usage_ledger.record_events(t['id'], task_activity.usage_events_from_messages(messages))
+    except Exception:
+        pass
     # Persist accurate usage (cache and cost included) so the task list can show
     # retained evidence without re-reading the transcript or querying sessions.
     usage = task_activity.usage_from_messages(messages)
@@ -626,6 +824,7 @@ def _finish(t, messages, forced_status=None, reason=None):
     info = evidence.pop('last_info')
     observed = diagnostics.from_messages(messages)
     billing = record_billing_errors(t, observed)
+    record_auth_errors(t, observed)
     record_billing_success(t, messages)
     window = any(isinstance(e, dict) and e.get('usage_window') for e in observed) or \
         any(isinstance(e, dict) and e.get('usage_window') for e in t.get('errors') or [])
@@ -712,14 +911,19 @@ def run_task(task_id, shutdown):
             message_id = next_message_id()
             # Persist intent before I/O. On a lost acknowledgement, observe rather than replay.
             dispatched_at = time.time()
+            # A pre-dispatch retier checkpoint is consumed by the FIRST prompt:
+            # the first turn must follow its Remaining/Do-not-repeat items, not
+            # just carry the new tier. The checkpoint itself stays private.
+            first_prompt = prompt(t) + retier.dispatch_note(t)
             t = update(task_id, message_id=message_id, dispatch_attempted_at=dispatched_at,
+                       _retier=None,
                        _billing_dispatch={'provider': provider, 'identity': credential_identity(provider),
                                           'at': dispatched_at})
             try:
                 call(t, '/prompt_async', 'POST', {
                     'messageID': message_id, 'agent': t['profile'],
                     'model': {'providerID': provider, 'modelID': model}, **({'variant': cfg['variant']} if cfg.get('variant') else {}),
-                    'parts': [{'type': 'text', 'text': prompt(t)}]})
+                    'parts': [{'type': 'text', 'text': first_prompt}]})
                 t = update(task_id, status='running', dispatch_acknowledged=True)
             except HttpFailure as e:
                 t = update(task_id, errors=[diagnostics.exception(e, 'dispatch', dispatched=not (e.status and 400 <= e.status < 500))])
@@ -744,13 +948,22 @@ def run_task(task_id, shutdown):
                     continue
                 messages = call(t, '/message')
                 t = observe_live_models_and_switches(t, messages)
+                # Apply an acknowledged tier change on observed assistant evidence;
+                # the compact tier fields then reflect the effective continuation.
+                t = retier.observe(t, messages)
                 seen = any(m.get('info', {}).get('id') == t['message_id'] for m in messages)
                 native_status = api('/session/status', t['directory']).get(t['session_id'], {'type': 'idle'})
                 is_idle = native_status.get('type') == 'idle'
                 if proactive_reroute_if_needed(t, native_status):
                     continue
+                # Entering Ultra opens a clean model session once the previous
+                # turn is confirmed idle: the new model receives only the explicit
+                # checkpoint, never the old model's chain of thought.
+                if retier.materialize_new_session(t, native_status) is not t:
+                    continue
                 observed_errors = diagnostics.from_messages(messages)
                 record_billing_errors(t, observed_errors)
+                record_auth_errors(t, observed_errors)
                 record_billing_success(t, messages)
                 window = None
                 if native_status.get('type') == 'retry':
@@ -772,19 +985,34 @@ def run_task(task_id, shutdown):
                                                 next_retry=native_status.get('next')))
                 update(task_id, errors=observed_errors)
                 if window:
-                    if stop(t):
-                        try:
-                            messages = call(t, '/message')
-                        except HttpFailure:
-                            messages = []  # The observed window error already proves the stop.
-                        current = config()['profiles'].get(t.get('profile'), {})
-                        provider = str(current.get('model', '')).split('/', 1)[0] or None
-                        if reroute_after_capacity_stop(t, provider, 'provider_usage_or_rate_limit'):
-                            continue
-                        return finish(t, messages, 'needs_attention',
-                                      'provider_usage_window_limit')
-                    # Abort unconfirmed: retain ownership and keep observing, never replay.
-                    update(task_id, status='uncertain', reason='window_exhausted_abort_not_confirmed')
+                    # Hold the per-task control lock across the whole
+                    # stop -> tier settle -> reroute sequence: a retier accepted
+                    # between the old snapshot and the abort must never have its
+                    # new continuation silently killed, and it must never race a
+                    # second continuation into the same boundary. _finish (not
+                    # finish) is used inside the lock so nothing nests flocks.
+                    with locked('control-' + task_id):
+                        t = task(task_id)
+                        if stop(t):
+                            try:
+                                messages = call(t, '/message')
+                            except HttpFailure:
+                                messages = []  # The observed window error already proves the stop.
+                            current = config()['profiles'].get(t.get('profile'), {})
+                            provider = str(current.get('model', '')).split('/', 1)[0] or None
+                            # Settle any accepted tier continuation against the
+                            # post-abort evidence: acknowledged means applied,
+                            # otherwise definitively rejected with the original
+                            # tier and dispatch intact. It is never stranded
+                            # behind the completion gate and never replayed.
+                            t = retier.resolve_before_stop_recovery(t, messages, aborted=True)
+                            if _reroute_after_capacity_stop(t, provider,
+                                                            'provider_usage_or_rate_limit'):
+                                continue
+                            return _finish(t, messages, 'needs_attention',
+                                           'provider_usage_window_limit')
+                        # Abort unconfirmed: retain ownership and keep observing, never replay.
+                        update(task_id, status='uncertain', reason='window_exhausted_abort_not_confirmed')
                     shutdown.wait(3)
                     continue
                 if seen:
@@ -800,7 +1028,7 @@ def run_task(task_id, shutdown):
                                 (str(current.get('model', '')).split('/', 1)[0] or None)
                             trigger = ('provider_billing_' + billing_kind if billing_kind else
                                        'provider_usage_or_rate_limit')
-                            if reroute_after_capacity_stop(t, provider, trigger):
+                            if reroute_after_capacity_stop(t, provider, trigger, messages):
                                 continue
                         return finish(t, messages)
                     if is_idle and time.time() - t['dispatch_attempted_at'] > 45 and not assistants:

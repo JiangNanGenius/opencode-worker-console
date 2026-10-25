@@ -238,5 +238,51 @@ class EconomicsTests(unittest.TestCase):
         self.assertFalse(economics.deepseek_peak(holiday_friday))
 
 
+class AlibabaCreditsTests(unittest.TestCase):
+    def test_verified_rates_price_all_four_components(self):
+        usage = {'input': 1_000_000, 'cache_read': 500_000, 'output': 100_000,
+                 'reasoning': 20_000, 'cache_write': 10_000}
+        result = economics.alibaba_credits_cost(usage, 'bailian-token-plan/qwen3.8-max')
+        # 1200 + 50 + 3600*0.12 + 1500*0.01 = 1693 Credits for these amounts.
+        self.assertEqual(result['precision'], 'complete')
+        self.assertFalse(result['underestimate'])
+        self.assertAlmostEqual(result['credits'], 1200 + 100 * 0.5 + 3600 * 0.12 + 1500 * 0.01, places=6)
+        self.assertEqual(result['rates_credits_per_million']['cached_input'], 100.0)
+        flash = economics.alibaba_credits_cost(usage, 'bailian-token-plan/qwen3.8-flash')
+        self.assertAlmostEqual(flash['credits'], 80 + 10 * 0.5 + 270 * 0.12 + 125 * 0.01, places=6)
+        self.assertEqual(flash['evidence']['captured_at'], '2026-10-17')
+        self.assertEqual(flash['rate_provenance']['cache_write'], 'observed_bill')
+
+    def test_unmeasured_component_is_partial_not_silent_zero(self):
+        usage = {'input': 1_000_000, 'cache_read': 500_000, 'output': 100_000}
+        from unittest.mock import patch
+        with patch.dict(economics.ALI_CREDIT_HONESTY,
+                        {'qwen3.8-max': dict(economics.ALI_CREDIT_HONESTY['qwen3.8-max'],
+                                             cached_input='unmeasured_treated_zero')}):
+            result = economics.alibaba_credits_cost(usage, 'bailian-token-plan/qwen3.8-max',
+                                                    {'ali_max_cache_read_credits_per_m': 0})
+        self.assertEqual(result['precision'], 'partial')
+        self.assertTrue(result['underestimate'])
+        self.assertEqual(result['unpriced_components'], ['cached_input'])
+        self.assertEqual(result['unpriced_tokens'], 500_000)
+
+    def test_non_alibaba_or_unknown_model_has_no_credit_estimate(self):
+        usage = {'input': 1000, 'total': 1000}
+        self.assertIsNone(economics.alibaba_credits_cost(usage, 'deepseek/deepseek-flash'))
+        self.assertIsNone(economics.alibaba_credits_cost(usage, 'bailian-token-plan/auto'))
+        self.assertIsNone(economics.alibaba_credits_cost({'total': 0}, 'bailian-token-plan/qwen3.8-max'))
+
+    def test_credit_rates_are_zero_friendly_in_validation(self):
+        body = {key: economics.DEFAULTS[key] for key in ('afp_cny_per_unit', 'kimi_plan_cny',
+                                                         'ark_auto_afp_per_m', 'ark_evolving_afp_per_m',
+                                                         'ark_k3_afp_per_m')}
+        body.update({key: 0.0 for key in economics.DEFAULTS if key.endswith('_credits_per_m')})
+        validated = economics.validate(body)
+        self.assertEqual(validated['ali_max_cache_write_credits_per_m'], 0.0)
+        with self.assertRaises(ValueError):
+            bad = dict(body, ali_flash_input_credits_per_m=-1)
+            economics.validate(bad)
+
+
 if __name__ == '__main__':
     unittest.main()

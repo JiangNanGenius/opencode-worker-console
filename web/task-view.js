@@ -3,6 +3,31 @@
   'use strict';
   const numeric = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
   const fields = ['total', 'input', 'output', 'reasoning', 'cache_read', 'cache_write'];
+  const tiers = new Set(['fast', 'normal', 'deep', 'ultra']);
+  const tierStates = new Set(['pending', 'applied', 'rejected', 'uncertain']);
+  function tierLabel(value, tr) { return tiers.has(value) ? tr('tier.' + value) : ''; }
+  function tierChangeHTML(task, { tr, esc }) {
+    const change = task.tier_change;
+    if (!change || !tierStates.has(change.status) || !tiers.has(change.to_tier)) return '';
+    return `<span class="task-tier-change ${change.status}"${change.status === 'pending' || change.status === 'uncertain' ? ' role="status"' : ''}>${esc(tr('tier.change.' + change.status, { tier: tierLabel(change.to_tier, tr) }))}</span>`;
+  }
+  function tierHTML(task, options) {
+    const current = tierLabel(task.tier, options.tr);
+    return (current ? `<span class="task-tier-current">${options.esc(options.tr('tier.current', { tier: current }))}</span>` : '') + tierChangeHTML(task, options);
+  }
+  function tierHistoryHTML(task, { tr, esc, clock }) {
+    const latest = task.tier_change;
+    const history = Array.isArray(task.tier_history) ? task.tier_history : [];
+    const records = [...(latest ? [latest] : []), ...history.slice().reverse()];
+    const seen = new Set();
+    const rows = records.filter(item => {
+      if (!item || !tierStates.has(item.status) || !tiers.has(item.to_tier)) return false;
+      if (item.request_id && seen.has(item.request_id)) return false;
+      if (item.request_id) seen.add(item.request_id);
+      return true;
+    }).map(item => `<li><div class="tier-history-heading"><strong>${esc(tierLabel(item.from_tier, tr))} → ${esc(tierLabel(item.to_tier, tr))}</strong><span>${esc(tr('tier.state.' + item.status))}</span><time>${esc(clock(item.applied_at || item.created_at))}</time></div>${item.reason ? `<p>${esc(item.reason)}</p>` : ''}</li>`).join('');
+    return rows ? `<details class="task-evidence task-tier-history" data-section="tiers"><summary>${esc(tr('tier.history'))}</summary><ol>${rows}</ol></details>` : '';
+  }
   function currentModel(task, profiles = {}) {
     const model = task.current_model || (task.actual_models?.length === 1 ? task.actual_models[0] : null);
     if (!model) return '';
@@ -88,7 +113,16 @@
     }
     return { open, close, refresh, state, cache };
   }
-  const api = { currentModel, numeric, usageOf, aggregate, usageHTML, activityHTML, createController };
+  function epochSeconds(value) {
+    // Accepts an ISO string, epoch seconds or epoch milliseconds; null when unknown.
+    if (typeof value === 'number' && Number.isFinite(value)) return value > 1e12 ? value / 1000 : value;
+    if (typeof value === 'string' && value) {
+      const parsed = Date.parse(value);
+      if (Number.isFinite(parsed)) return parsed / 1000;
+    }
+    return null;
+  }
+  const api = { currentModel, numeric, usageOf, aggregate, usageHTML, activityHTML, epochSeconds, createController, tierHTML, tierChangeHTML, tierHistoryHTML };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.TaskView = api;
 })(typeof window !== 'undefined' ? window : globalThis);

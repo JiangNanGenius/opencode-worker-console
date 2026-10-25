@@ -414,7 +414,8 @@ class ConsoleHttpTests(unittest.TestCase):
         self.start_server()
         anonymous = self.call('GET', '/console-api/auth/status')
         self.assertEqual(anonymous['status'], 200)
-        self.assertEqual(json.loads(anonymous['body']), {'authenticated': False})
+        self.assertFalse(json.loads(anonymous['body'])['authenticated'])
+        self.assertEqual(json.loads(anonymous['body'])['allowed_methods'], ['password'])
         good = self.login()
         self.assertEqual(good['status'], 200)
         self.assertEqual(json.loads(good['body']), {'authenticated': True, 'username': 'admin'})
@@ -429,9 +430,10 @@ class ConsoleHttpTests(unittest.TestCase):
             self.assertEqual(json.loads(bad['body'])['error'], 'Invalid username or password')
             self.assertNotIn('admin', bad['body'].decode())
         status = self.call('GET', '/console-api/auth/status', headers={'Cookie': cookie})
-        self.assertEqual(json.loads(status['body']), {'authenticated': True, 'username': 'admin'})
+        self.assertTrue(json.loads(status['body'])['authenticated'])
+        self.assertEqual(json.loads(status['body'])['username'], 'admin')
         lowered = status['body'].decode().lower()
-        for secret in ('hash', 'salt', 'token', 'password', 'settings', 'allowed_origins', 'console_bind'):
+        for secret in ('hash', 'salt', 'token', 'settings', 'allowed_origins', 'console_bind'):
             self.assertNotIn(secret, lowered)
 
     def test_console_exposes_builtin_and_bark_reference_metadata_only(self):
@@ -589,14 +591,14 @@ class ConsoleHttpTests(unittest.TestCase):
         self.assertEqual(json.loads(logout['body']), {'authenticated': False})
         self.assertIn('Max-Age=0', logout['headers']['set-cookie'])
         after = self.call('GET', '/console-api/auth/status', headers={'Cookie': cookie})
-        self.assertEqual(json.loads(after['body']), {'authenticated': False})
+        self.assertFalse(json.loads(after['body'])['authenticated'])
 
     def test_password_rotation_invalidates_http_session(self):
         self.start_server()
         cookie = self.cookie(self.login())
         console_auth.set_user('admin', 'rotated-pass', self.state)
         status = self.call('GET', '/console-api/auth/status', headers={'Cookie': cookie})
-        self.assertEqual(json.loads(status['body']), {'authenticated': False})
+        self.assertFalse(json.loads(status['body'])['authenticated'])
         self.assertEqual(self.login(password='synthetic-pass')['status'], 401)
         self.assertEqual(self.login(password='rotated-pass')['status'], 200)
 
@@ -658,8 +660,8 @@ class ConsoleHttpTests(unittest.TestCase):
         self.assertIn('Max-Age=0', response['headers']['set-cookie'])
         # No false success: the server-side session was not revoked.
         status = self.call('GET', '/console-api/auth/status', headers={'Cookie': cookie})
-        self.assertEqual(json.loads(status['body']),
-                         {'authenticated': True, 'username': 'admin'})
+        self.assertTrue(json.loads(status['body'])['authenticated'])
+        self.assertEqual(json.loads(status['body'])['username'], 'admin')
 
     def test_malformed_unicode_login_is_generic(self):
         self.start_server()

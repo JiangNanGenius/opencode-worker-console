@@ -22,7 +22,9 @@ class ArkProviderTests(unittest.TestCase):
         self.assertEqual(ark['npm'], '@ai-sdk/openai')
         self.assertEqual(ark['options'], {'baseURL': 'https://ark.cn-beijing.volces.com/api/plan/v3'})
         self.assertEqual(ark['models']['ark-code-latest']['limit']['context'], 1024000)
-        self.assertEqual(ark['models']['kimi-k3']['limit']['context'], 1024000)
+        # The retired Ark K3 entry is no longer a runtime catalog model.
+        self.assertNotIn('kimi-k3', ark['models'])
+        self.assertNotIn('ark-k3', overlay['agent'])
         self.assertEqual(ark['models']['doubao-seed-evolving']['limit']['context'], 1024000)
         self.assertEqual(ark['models']['deepseek-v4.1-flash']['limit']['context'], 1024000)
         self.assertNotIn('apiKey', json.dumps(overlay))

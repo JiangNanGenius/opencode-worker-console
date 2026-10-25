@@ -175,14 +175,28 @@ class ProactiveRerouteTests(unittest.TestCase):
             self.assertFalse(worker.proactive_reroute_if_needed(common.task('job-long'), {'type': 'busy'}))
         call.assert_not_called()
 
-    def test_deep_task_can_leave_constrained_provider(self):
-        common.update('job-long', tier='deep')
+    def test_normal_task_can_leave_constrained_provider(self):
+        # Provider-level conservation reroutes Normal work to the configured
+        # cash peer. A Deep task may never take that downgrade (see below), so
+        # this mechanism test uses its natural Normal tier.
         with patch.object(quota, 'tier_guidance', return_value={
                 'conservation_level': 0, 'provider_conservation_level': {'ark': 2}}), \
              patch.object(quota, 'route', return_value=('fallback', 'source_level2')), \
              patch.object(worker, 'call', return_value={}):
             self.assertTrue(worker.proactive_reroute_if_needed(common.task('job-long'), {'type': 'busy'}))
+        self.assertEqual(common.task('job-long')['tier'], 'normal')
+
+    def test_deep_task_never_downgrades_to_cash_on_provider_pressure(self):
+        common.update('job-long', tier='deep')
+        with patch.object(quota, 'tier_guidance', return_value={
+                'conservation_level': 0, 'provider_conservation_level': {'ark': 2}}), \
+             patch.object(quota, 'route', return_value=('fallback', 'source_level2')), \
+             patch.object(worker, 'call', return_value={}) as call:
+            self.assertFalse(worker.proactive_reroute_if_needed(common.task('job-long'),
+                                                                {'type': 'busy'}))
+            call.assert_not_called()
         self.assertEqual(common.task('job-long')['tier'], 'deep')
+        self.assertEqual(common.task('job-long')['profile'], 'senior-code')
 
     def test_same_level_source_pressure_rechecks_after_cooldown(self):
         common.update('job-long', profile='ark-auto', proactive_reroute_levels=[2],

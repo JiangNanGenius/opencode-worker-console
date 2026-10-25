@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Passkeys · Worker Desk</title><link rel="stylesheet" href="/console-assets/passkeys.css">
+<script src="/console-assets/i18n.js" defer></script><script src="/console-assets/passkeys.js" defer></script></head>
+<body><main id="passkey-manager"><header><a class="brand" href="/console">Worker Desk</a><label class="language-picker"><span data-pk-text="language">Language</span><select data-language-select aria-label="Language"></select></label></header><h1 data-pk-text="title">Passkeys</h1>
+<p class="intro" data-pk-text="intro">Unlock your device to sign in on the public site. Username and password remain available on the LAN.</p>
+<p id="pk-message" role="status" aria-live="polite">Checking sign-in options…</p><button id="pk-retry" type="button" data-pk-text="retry" hidden>Try again</button>
+<section id="pk-lan" hidden><h2 data-pk-text="firstTitle">Connect your first passkey</h2><p data-pk-text="firstHelp">Re-enter your password for a one-use registration link, valid for 10 minutes. Complete device verification on the HTTPS site.</p>
+<form id="pk-grant-form"><label for="pk-password" data-pk-text="password">Current password</label><input type="password" id="pk-password" autocomplete="current-password" required maxlength="1024"><button type="submit" data-pk-text="createLink">Create registration link</button></form>
+<p id="pk-link-container" hidden><a id="pk-enrollment-link" rel="noreferrer" data-pk-text="openLink">Open HTTPS registration page</a></p></section>
+<section id="pk-register" hidden><h2 data-pk-text="addTitle">Add a passkey</h2><label for="pk-name" data-pk-text="deviceName">Device name</label><input id="pk-name" maxlength="80" required><button id="pk-create" type="button" data-pk-text="create">Verify device and add</button><p data-pk-text="registerHelp">Registration does not sign you in. Use your new passkey to sign in afterward.</p></section>
+<section id="pk-signin" hidden><h2 data-pk-text="verifyTitle">Verify your identity</h2><p data-pk-text="verifyHelp">Adding or removing passkeys requires passkey verification within the last 5 minutes.</p><button id="pk-authenticate" type="button" data-pk-text="verify">Verify with a passkey</button></section>
+<section id="pk-existing" hidden><h2 data-pk-text="connected">Connected passkeys</h2><ul id="pk-list"></ul><p data-pk-text="backupHelp">Add a backup passkey on another device. The public site cannot remove your last passkey. If all passkeys are lost, create a registration link using the local recovery command.</p></section>
+<footer><a href="/console-login" data-pk-text="back">Back to sign in</a><span>Passkeys · WebAuthn</span></footer></main></body></html>

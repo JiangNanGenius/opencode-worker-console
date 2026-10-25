@@ -1,0 +1,4 @@
+interface:
+  display_name: "千问语音提醒"
+  short_description: "云端优先、本机回退，用 Mac mini 扬声器播报中文短提示"
+  default_prompt: "使用 $qwen-voice-notify，优先云端语音、必要时回退本机，通过 Mac mini 扬声器播报我指定的内容。"

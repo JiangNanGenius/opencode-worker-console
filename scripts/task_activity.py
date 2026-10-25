@@ -232,6 +232,99 @@ def usage_from_messages(messages, complete_history=True, source='saved', include
     return result
 
 
+EVENT_FIELDS = ('input', 'output', 'reasoning', 'cache_read', 'cache_write', 'total', 'cost')
+MAX_EVENT_ID = 200
+# Timestamped per-response usage events use their own bound; MAX_EVENTS above is
+# the activity feed's page size.
+MAX_USAGE_EVENTS = 1200
+
+
+def usage_events_from_messages(messages):
+    """Timestamped per-response usage events, deduplicated by assistant message ID.
+
+    One event per real assistant response with its completion time, model and
+    disjoint token counters. No prompt, tool or message text is ever copied, so
+    the events can be retained past task cleanup for exact rolling windows.
+    """
+    events = []
+    if not isinstance(messages, list):
+        return events
+    seen = set()
+    for index, message in enumerate(messages):
+        info = message.get('info') if isinstance(message, dict) else None
+        if not isinstance(info, dict) or info.get('role') != 'assistant':
+            continue
+        message_id = info.get('id')
+        key = message_id if isinstance(message_id, str) and message_id else 'position:%d' % index
+        if key in seen:
+            continue
+        seen.add(key)
+        provider, model = info.get('providerID'), info.get('modelID')
+        name = provider + '/' + model if isinstance(provider, str) and provider and \
+            isinstance(model, str) and model else 'unknown'
+        times = info.get('time') if isinstance(info.get('time'), dict) else {}
+        when = None
+        for field in ('completed', 'created'):
+            value = _num(times.get(field))
+            if value is not None and value > 0:
+                when = value
+                break
+        if when is None:
+            continue
+        if when > 1e12:
+            when /= 1000
+        tokens = info.get('tokens') if isinstance(info.get('tokens'), dict) else {}
+        components = _token_components(tokens)
+        supplied_total = _num(tokens.get('total'))
+        known = [value for value in components.values() if value is not None]
+        total = supplied_total if supplied_total is not None else (sum(known) if known else None)
+        event = {'id': key[:MAX_EVENT_ID], 'at': when, 'model': name[:200],
+                 'input': components.get('input'), 'output': components.get('output'),
+                 'reasoning': components.get('reasoning'), 'cache_read': components.get('cache_read'),
+                 'cache_write': components.get('cache_write'), 'total': total,
+                 'cost': _num(info.get('cost'))}
+        events.append(event)
+    events.sort(key=lambda item: (item['at'], item['id']))
+    return events
+
+
+def normalize_usage_events(value):
+    """Validate stored events down to compact scalars; deduplicate and bound them."""
+    if not isinstance(value, list):
+        return []
+    out = []
+    seen = set()
+    for item in value[:MAX_USAGE_EVENTS * 2]:
+        if not isinstance(item, dict):
+            continue
+        event_id = item.get('id')
+        if not isinstance(event_id, str) or not event_id or len(event_id) > MAX_EVENT_ID:
+            continue
+        model = item.get('model')
+        if not isinstance(model, str) or not model or len(model) > 200:
+            continue
+        at = _num(item.get('at'))
+        if at is None or at <= 0:
+            continue
+        if at > 1e12:
+            at /= 1000
+        if event_id in seen:
+            continue
+        seen.add(event_id)
+        event = {'id': event_id, 'at': at, 'model': model}
+        for field in EVENT_FIELDS:
+            event[field] = _num(item.get(field))
+        out.append(event)
+    out.sort(key=lambda item: (item['at'], item['id']))
+    return out[-MAX_USAGE_EVENTS:]
+
+
+def saved_usage_events(task):
+    """Timestamped events from retained session messages, else an empty list."""
+    messages, _ = _load_messages(task.get('id')) if isinstance(task, dict) else (None, None)
+    return usage_events_from_messages(messages) if messages else []
+
+
 def _normalize_usage(value):
     source = value.get('source') if isinstance(value.get('source'), str) and value.get('source') else 'saved'
     result = _usage({name: _num(value.get(name)) for name in COMPONENTS},

@@ -19,7 +19,7 @@ import sys
 import time
 import urllib.parse
 
-from providers import ARK_PROVIDER
+from providers import ARK_PROVIDER, BAILIAN_PROVIDER
 
 ROOT = Path(__file__).resolve().parent.parent
 INSTALL = Path(os.environ.get('DELEGATE_INSTALL', '~/.codex/skills/delegate-opencode')).expanduser()
@@ -30,16 +30,23 @@ CONFIG = Path(os.environ.get('DELEGATE_CONFIG', '~/.config/opencode/delegate-poo
 # valid; missing optional items are skipped by copy_package.
 PACKAGE_ITEMS = ['SKILL.md', 'README.md', 'README.zh-CN.md', 'LICENSE',
                  'SECURITY.md', 'CONTRIBUTING.md',
-                 'agents', 'scripts', 'references', 'web']
+                 'agents', 'scripts', 'references', 'web', 'console-auth-requirements.lock']
 # Routing defaults (quota.route): fast -> fallback, normal -> senior-code,
 # deep -> deep-research. Profile names must stay aligned with those routes.
 PROFILE_NAMES = ['fallback', 'senior-code', 'deep-research']
 LEGACY_FALLBACK_PROFILE = 'fast-code'
+# The four-tier Kimi layout. K3.1 Pro is the reserved Ultra model; the retired
+# native/Ark K3 references are never created for new installs.
+KIMI_ULTRA_PROFILE = 'ultra-reasoning'
+KIMI_ULTRA_MODEL = 'kimi-for-coding/k3.1-pro'
+RETIRED_MODELS = ('kimi-for-coding/k3', 'volcengine-agent-plan/kimi-k3')
+KIMI_GATE_DEFAULT_PORT = 51531
 PRESETS = {
     'deepseek-kimi': {
         'fallback': {'model': 'deepseek/deepseek-flash', 'variant': 'max', 'label': 'Fallback · DeepSeek V4.1 Flash'},
         'senior-code': {'model': 'kimi-for-coding/kimi-for-coding', 'variant': 'max', 'label': 'Kimi K2.8 Preview'},
-        'deep-research': {'model': 'kimi-for-coding/k3', 'variant': 'max', 'label': 'Kimi K3'},
+        'deep-research': {'model': KIMI_ULTRA_MODEL, 'variant': 'max', 'label': 'Kimi K3.1 Pro'},
+        KIMI_ULTRA_PROFILE: {'model': KIMI_ULTRA_MODEL, 'variant': 'max', 'label': 'Kimi K3.1 Pro · Ultra'},
     },
     # Agent Plan ladder: every fixed Ark model and Auto share one AFP allowance,
     # so the automatic policy load-balances the same-capability pairs by
@@ -49,23 +56,38 @@ PRESETS = {
     'ark-agent-plan': {
         'fallback': {'model': 'deepseek/deepseek-flash', 'variant': 'max', 'label': 'Fallback · DeepSeek V4.1 Flash'},
         'senior-code': {'model': 'kimi-for-coding/kimi-for-coding', 'variant': 'max', 'label': 'Kimi K2.8 Preview'},
-        'deep-research': {'model': 'kimi-for-coding/k3', 'variant': 'max', 'label': 'Kimi K3'},
+        'deep-research': {'model': KIMI_ULTRA_MODEL, 'variant': 'max', 'label': 'Kimi K3.1 Pro'},
+        KIMI_ULTRA_PROFILE: {'model': KIMI_ULTRA_MODEL, 'variant': 'max', 'label': 'Kimi K3.1 Pro · Ultra'},
         'ark-evolving': {'model': ARK_PROVIDER + '/doubao-seed-evolving', 'variant': 'max', 'label': 'Ark Doubao Seed Evolving'},
-        'ark-k3': {'model': ARK_PROVIDER + '/kimi-k3', 'variant': 'max', 'label': 'Ark Kimi K3'},
         'ark-auto': {'model': ARK_PROVIDER + '/ark-code-latest', 'variant': 'max', 'label': 'Ark Auto'},
     },
+    # Optional three-subscription-pool stack (Kimi, Ark Agent Plan, Alibaba Token
+    # Plan) plus direct DeepSeek. Deep is Qwen3.8 Max, Normal is Kimi K2.8 and
+    # Qwen3.8 Flash, Ultra is the reserved Kimi K3.1 Pro. The opaque Alibaba Auto
+    # alias is deliberately absent so no automatic policy can select an
+    # unknown-cost model. Revenue-weighted initial priors are configurable and
+    # never a claim of optimal economics.
+    'three-plan': {
+        'fallback': {'model': 'deepseek/deepseek-flash', 'variant': 'max', 'label': 'Fallback · DeepSeek V4.1 Flash'},
+        'senior-code': {'model': 'kimi-for-coding/kimi-for-coding', 'variant': 'max', 'label': 'Kimi K2.8 Preview'},
+        'deep-research': {'model': BAILIAN_PROVIDER + '/qwen3.8-max', 'variant': 'max', 'label': 'Qwen3.8 Max'},
+        KIMI_ULTRA_PROFILE: {'model': KIMI_ULTRA_MODEL, 'variant': 'max', 'label': 'Kimi K3.1 Pro · Ultra'},
+        'ark-evolving': {'model': ARK_PROVIDER + '/doubao-seed-evolving', 'variant': 'max', 'label': 'Ark Doubao Seed Evolving'},
+        'ark-auto': {'model': ARK_PROVIDER + '/ark-code-latest', 'variant': 'max', 'label': 'Ark Auto'},
+        'aliyun-flash': {'model': BAILIAN_PROVIDER + '/qwen3.8-flash', 'variant': 'max', 'label': 'Alibaba Token Plan · Qwen3.8 Flash'},
+    },
 }
-# The automatic ladder: K3 pair (2:1) → K2.8/Evolving pair (1:1) → Ark Auto →
-# direct DeepSeek. Same-capability pairs are one quota-aware pool each, grouped
-# by provider so equal headroom preserves the exact 2:1 and 1:1 baselines. Each
-# pair then follows its own continuous bounded curve as reset-aware runway changes.
-# Auto is its own stronger ordered stage, never mixed into a random pool; direct
-# DeepSeek is the preset's lowest-capability final fallback. A high DeepSeek share
-# under conservation is economic load shedding, not a capability preference.
-# ark-deepseek stays out of automatic routing (manual only).
+# The automatic ladder: K3.1 Pro (Deep/Ultra) → K2.8/Evolving pair (1:1) →
+# Ark Auto → direct DeepSeek. The retired K3 pair is gone. Same-capability pairs
+# are one quota-aware pool each, grouped by provider so equal headroom preserves
+# the exact baseline. Each pair then follows its own continuous bounded curve as
+# reset-aware runway changes. Auto is its own stronger ordered stage, never mixed
+# into a random pool; direct DeepSeek is the preset's lowest-capability final
+# fallback. A high DeepSeek share under conservation is economic load shedding,
+# not a capability preference. ark-deepseek stays out of automatic routing
+# (manual only).
 DEFAULT_ROUTING_POLICY = {
     'fast': [
-        [{'profile': 'ark-auto', 'weight': 1}],
         [{'profile': 'fallback', 'weight': 1}],
     ],
     'background': [
@@ -74,10 +96,13 @@ DEFAULT_ROUTING_POLICY = {
         [{'profile': 'fallback', 'weight': 1}],
     ],
     'deep': [
-        [{'profile': 'deep-research', 'weight': 2}, {'profile': 'ark-k3', 'weight': 1}],
+        [{'profile': 'deep-research', 'weight': 1}],
         [{'profile': 'senior-code', 'weight': 1}, {'profile': 'ark-evolving', 'weight': 1}],
         [{'profile': 'ark-auto', 'weight': 1}],
         [{'profile': 'fallback', 'weight': 1}],
+    ],
+    'ultra': [
+        [{'profile': KIMI_ULTRA_PROFILE, 'weight': 1}],
     ],
 }
 # Adaptive quota balancing is separate from ordinary weighting. This preset opts
@@ -85,10 +110,7 @@ DEFAULT_ROUTING_POLICY = {
 # weights unless the user explicitly enables a curve envelope in the console.
 DEFAULT_ROUTING_DYNAMICS = {
     'background': {'0': {'ladder': [[1, 0], [7, 3], [1, 1], [1, 2]]}},
-    'deep': {
-        '0': {'ladder': [[1, 0], [3, 1], [2, 1], [1, 1]]},
-        '1': {'ladder': [[1, 0], [2, 1], [1, 1], [1, 2]]},
-    },
+    'deep': {'1': {'ladder': [[1, 0], [2, 1], [1, 1], [1, 2]]}},
 }
 DEFAULT_QUOTA_SPILLOVER = {
     'enabled': True,
@@ -107,23 +129,78 @@ DEFAULT_DEEPSEEK_HOLIDAY_CALENDAR = {
     ],
     'refresh_hours': 24,
 }
+# Optional three-plan preset. The four-tier target is Fast=direct DeepSeek,
+# Normal=K2.8 : Qwen3.8 Flash, Deep=Qwen3.8 Max, Ultra=reserved K3.1 Pro. The
+# retired K3 references are absent. Neutral healthy priors are configurable
+# initial weights, not quota ratios. One generalized curve per multi-provider
+# stage lets a genuinely depleted or pressured pool fall to zero and return as
+# its runway recovers. Alibaba Max and Flash share one Credits pool, Kimi
+# K2.8/K3.1 Pro one plan pool, and all Ark models the AFP allowance; each pool
+# keeps its own telemetry. Fast is 100% direct DeepSeek: automatic Fast must
+# never silently substitute another model. If DeepSeek is empty, Fast surfaces
+# no route until the user sets up another channel explicitly; conservation may
+# still move Normal/Deep work to DeepSeek. Ultra is a single reserved stage and
+# is never a spillover or conservation target.
+THREE_PLAN_ROUTING_POLICY = {
+    'fast': [
+        [{'profile': 'fallback', 'weight': 1}],
+    ],
+    'background': [
+        [{'profile': 'senior-code', 'weight': 1}, {'profile': 'aliyun-flash', 'weight': 1}],
+        [{'profile': 'fallback', 'weight': 1}],
+    ],
+    'deep': [
+        [{'profile': 'deep-research', 'weight': 1}],
+        [{'profile': 'senior-code', 'weight': 1}, {'profile': 'aliyun-flash', 'weight': 1}],
+        [{'profile': 'fallback', 'weight': 1}],
+    ],
+    'ultra': [
+        [{'profile': KIMI_ULTRA_PROFILE, 'weight': 1}],
+    ],
+}
+THREE_PLAN_ROUTING_DYNAMICS = {
+    'background': {'0': {'curve': {'strength': 2}}},
+    'deep': {'1': {'curve': {'strength': 2}}},
+}
+THREE_PLAN_QUOTA_SPILLOVER = {
+    'enabled': True,
+    'profile': 'fallback',
+    # Fast already mixes direct DeepSeek, so only the plan-only Normal stage
+    # needs a bounded pay-as-you-go share. Level 2 reuses the Fast source pool.
+    'tiers': ['background'],
+    'max_share_percent': 33,
+    'level2_runway_percent': 25,
+    'level2_offpeak_share_percent': 100,
+    'level2_min_balance_cny': 30.0,
+}
 # Concurrency is capped per owning upstream-harness conversation (owner_thread_id), never
 # globally or per provider; the scheduler reads max_parallel_per_owner (default 4).
-# The low-weekly guard is independent from ordinary weighted routing. Once the
-# authoritative Kimi weekly/overall allowance reaches the threshold, normal work
-# leaves Kimi and only a bounded number of native-K3 deep jobs may run at once.
+# The weekly reserve is independent from ordinary weighted routing: other Kimi
+# models are paused at/below kimi_weekly_reserve_percent (default 30) and fail
+# closed on unknown weekly data, while the reserved k3.1-pro Ultra model may use
+# the final slice. A verified same-account month_total/month_code zero blocks all
+# Kimi models including Ultra. At the low threshold, Ultra concurrency is capped.
 # Confirmed quota errors can continue in the same OpenCode session on the next
 # same-tier route, preserving context and partial work without replaying the task.
 TOP_LEVEL_DEFAULTS = {
     'max_parallel_per_owner': 4,
     'kimi_reserve_percent': 0,
+    'kimi_weekly_reserve_percent': 30,
+    # Dynamic release is enabled by default and only ever lowers the threshold
+    # inside the second half of a verified weekly window with quiet Ultra demand;
+    # setting it to false keeps the fixed base reserve.
+    'kimi_weekly_reserve_dynamic': True,
     'kimi_low_weekly_threshold_percent': 5,
     'kimi_low_weekly_k3_limit': 1,
+    'kimi_low_weekly_ultra_limit': 1,
+    'kimi_gate': {'enabled': False, 'port': KIMI_GATE_DEFAULT_PORT},
     'auto_reroute_on_quota_exhaustion': True,
     'proactive_long_task_reroute': True,
     'proactive_reroute_after_seconds': 900,
     'auto_approve': True,
-    'opencode_updates': {'enabled': True, 'check_interval_hours': 6},
+    # Daily native update check: the daemon stages the official stable binary
+    # whenever the interval elapses and only cuts over inside its idle barrier.
+    'opencode_updates': {'enabled': True, 'check_interval_hours': 24},
     'memory': {'enabled': False},
 }
 ACTIVE_STATUSES = {'queued', 'starting', 'running', 'stopping', 'uncertain'}
@@ -279,6 +356,167 @@ def default_profiles(model=None, preset=None):
     return {name: {'model': model, 'label': model.split('/', 1)[1]} for name in PROFILE_NAMES}
 
 
+def migrate_kimi_four_tiers(c):
+    """One-time in-place upgrade to the four-tier Kimi layout (idempotent).
+
+    Retires the native/Ark K3 profile entries without deleting their historical
+    records, guarantees an ultra-reasoning profile when this install already uses
+    Kimi, and rewires the automatic policy so Deep belongs to Qwen3.8 Max, Ultra
+    belongs to reserved k3.1-pro and K3 appears in no fallback chain. Existing
+    operator weights, enabled flags and valid spillover/dynamics are preserved.
+    """
+    profiles = c.get('profiles')
+    if not isinstance(profiles, dict) or not profiles:
+        return False
+    import routing
+    changed = False
+    for name, profile in list(profiles.items()):
+        if not isinstance(profile, dict):
+            continue
+        if profile.get('model') in RETIRED_MODELS and profile.get('enabled') is not False:
+            profile['enabled'] = False
+            changed = True
+    uses_kimi = any(isinstance(p, dict) and str(p.get('model', '')).startswith('kimi-for-coding/')
+                    for p in profiles.values())
+    ultra = profiles.get(KIMI_ULTRA_PROFILE)
+    if uses_kimi and not (isinstance(ultra, dict) and ultra.get('model') == KIMI_ULTRA_MODEL):
+        profiles[KIMI_ULTRA_PROFILE] = {'model': KIMI_ULTRA_MODEL, 'variant': 'max',
+                                        'label': 'Kimi K3.1 Pro · Ultra', 'enabled': True}
+        ultra = profiles[KIMI_ULTRA_PROFILE]
+        changed = True
+    policy = c.get('routing_policy')
+    if isinstance(policy, dict) and policy:
+        clean = {}
+        for tier in routing.TIERS:
+            stages = policy.get(tier)
+            if not isinstance(stages, list):
+                continue
+            kept_stages = []
+            for stage in stages:
+                if not isinstance(stage, list):
+                    continue
+                kept = []
+                for entry in stage:
+                    if not isinstance(entry, dict) or not isinstance(entry.get('profile'), str):
+                        continue
+                    target = profiles.get(entry['profile'])
+                    if not isinstance(target, dict) or target.get('enabled') is False or \
+                            routing.is_retired_model(target.get('model')):
+                        continue
+                    kept.append({'profile': entry['profile'],
+                                 'weight': entry.get('weight', 1)})
+                if kept:
+                    kept_stages.append(kept)
+            if kept_stages:
+                clean[tier] = kept_stages
+        deep_profile = next((name for name, p in profiles.items()
+                             if isinstance(p, dict) and p.get('enabled') is not False
+                             and str(p.get('model', '')).endswith('/qwen3.8-max')), None)
+        if deep_profile:
+            # A previous three-tier policy can retain low-capability fallback
+            # stages after K3 retirement. Deep now belongs to Qwen3.8 Max:
+            # preserve its configured weights, not its old downgrade chain.
+            deep_entries = [dict(entry) for stage in clean.get('deep', []) for entry in stage
+                            if str(profiles[entry['profile']].get('model', '')).endswith('/qwen3.8-max')]
+            clean['deep'] = [deep_entries or [{'profile': deep_profile, 'weight': 1}]]
+        elif 'deep' not in clean and ultra is not None:
+            clean['deep'] = [[{'profile': KIMI_ULTRA_PROFILE, 'weight': 1}]]
+        if ultra is not None and 'ultra' not in clean:
+            clean['ultra'] = [[{'profile': KIMI_ULTRA_PROFILE, 'weight': 1}]]
+        if clean != policy:
+            c['routing_policy'] = clean
+            changed = True
+        # Keep only adaptive records whose stage still has two different
+        # providers; a rewired single-provider Deep stage must not discard
+        # unrelated valid Normal/Deep curves.
+        dynamics = c.get('routing_dynamics')
+        if isinstance(dynamics, dict):
+            pruned = {}
+            for tier, records in dynamics.items():
+                stages = c['routing_policy'].get(tier) or []
+                if not isinstance(records, dict):
+                    continue
+                kept_records = {}
+                for index, record in records.items():
+                    try:
+                        stage = stages[int(index)]
+                    except (ValueError, IndexError, KeyError):
+                        continue
+                    providers = {str((profiles.get(entry.get('profile')) or {}).get('model', '')).split('/', 1)[0]
+                                 for entry in stage if isinstance(entry, dict)}
+                    if len(stage) >= 2 and len(providers) >= 2:
+                        kept_records[str(int(index))] = record
+                if kept_records:
+                    pruned[tier] = kept_records
+            validated = None
+            if pruned:
+                try:
+                    validated = routing.validate_dynamics(pruned, c['routing_policy'], profiles)
+                except (ValueError, TypeError):
+                    validated = None
+            if validated != dynamics:
+                if validated is None:
+                    c.pop('routing_dynamics', None)
+                else:
+                    c['routing_dynamics'] = validated
+                changed = True
+        spillover = c.get('quota_spillover')
+        if spillover is not None:
+            validated = None
+            try:
+                validated = routing.validate_spillover(spillover, c['routing_policy'], profiles)
+            except (ValueError, TypeError):
+                validated = None
+            if validated != spillover:
+                if validated is None:
+                    c.pop('quota_spillover', None)
+                else:
+                    c['quota_spillover'] = validated
+                changed = True
+    legacy = c.get('routing')
+    if isinstance(legacy, dict):
+        for tier, name in list(legacy.items()):
+            if tier not in ('fast', 'background', 'deep', 'ultra'):
+                continue
+            target = profiles.get(name) if isinstance(name, str) else None
+            if not isinstance(target, dict) or target.get('enabled') is False or \
+                    routing.is_retired_model(target.get('model')):
+                replacement = next((key for key, value in profiles.items()
+                                    if isinstance(value, dict) and value.get('enabled') is not False
+                                    and not routing.is_retired_model(value.get('model'))), None)
+                if replacement:
+                    legacy[tier] = replacement
+                    changed = True
+    if uses_kimi and isinstance(ultra, dict) and ultra.get('enabled') is not False:
+        # The legacy single-profile routing record documents all four tiers
+        # explicitly: the console/API accepts the optional fourth key while old
+        # three-key callers stay valid.
+        if isinstance(legacy, dict) and legacy.get('ultra') != KIMI_ULTRA_PROFILE:
+            legacy['ultra'] = KIMI_ULTRA_PROFILE
+            changed = True
+        # Persist the reserve explicitly so the stored configuration and the
+        # settings UI show the effective 30% floor instead of a null default.
+        if c.get('kimi_weekly_reserve_percent') is None:
+            c['kimi_weekly_reserve_percent'] = 30
+            changed = True
+        # Dynamic release is the safe persisted default: it can only lower the
+        # threshold inside a verified weekly window with quiet Ultra demand, and
+        # an explicit operator ``false`` is preserved on every later upgrade.
+        if c.get('kimi_weekly_reserve_dynamic') is None:
+            c['kimi_weekly_reserve_dynamic'] = True
+            changed = True
+    if uses_kimi and 'kimi_gate' not in c:
+        c['kimi_gate'] = {'enabled': True, 'port': KIMI_GATE_DEFAULT_PORT}
+        changed = True
+    if uses_kimi and 'kimi_low_weekly_ultra_limit' not in c:
+        legacy_limit = c.get('kimi_low_weekly_k3_limit', 1)
+        if isinstance(legacy_limit, bool) or not isinstance(legacy_limit, int) or not 0 <= legacy_limit <= 16:
+            legacy_limit = 1
+        c['kimi_low_weekly_ultra_limit'] = legacy_limit
+        changed = True
+    return changed
+
+
 def migrate_legacy_fallback_profile(c):
     """Rename the old misleading fast-code profile without changing its model.
 
@@ -348,6 +586,10 @@ def load_or_build_config(args, opencode):
         if not args.model and not args.preset:
             fail('Config has no profiles; re-run with --model provider/model or --preset')
         c['profiles'] = default_profiles(args.model, args.preset)
+    # Upgrade an existing installation to the four-tier Kimi layout before the
+    # generic defaults run, so a Kimi install enables the loopback gate while a
+    # non-Kimi install keeps it disabled. Idempotent; historical records stay.
+    migrate_kimi_four_tiers(c)
     ensure_urls(c)
     for key, value in TOP_LEVEL_DEFAULTS.items():
         c.setdefault(key, value)
@@ -360,11 +602,23 @@ def load_or_build_config(args, opencode):
     enabled = [k for k, v in c['profiles'].items() if v.get('enabled') is not False]
     if not enabled:
         fail('At least one enabled profile is required')
-    c.setdefault('routing', {tier: name if name in enabled else enabled[0] for tier, name in zip(('fast', 'background', 'deep'), PROFILE_NAMES)})
+    routing_record = c.setdefault('routing', {})
+    legacy_routing = {tier: name if name in enabled else enabled[0]
+                      for tier, name in zip(('fast', 'background', 'deep'), PROFILE_NAMES)}
+    for tier, name in legacy_routing.items():
+        routing_record.setdefault(tier, name)
+    if KIMI_ULTRA_PROFILE in enabled and \
+            routing_record.get('ultra') != KIMI_ULTRA_PROFILE:
+        routing_record['ultra'] = KIMI_ULTRA_PROFILE
     if fresh and args.preset == 'ark-agent-plan':
         c['routing_policy'] = DEFAULT_ROUTING_POLICY
         c['routing_dynamics'] = DEFAULT_ROUTING_DYNAMICS
         c['quota_spillover'] = DEFAULT_QUOTA_SPILLOVER
+        c['deepseek_holiday_calendar'] = DEFAULT_DEEPSEEK_HOLIDAY_CALENDAR
+    if fresh and args.preset == 'three-plan':
+        c['routing_policy'] = THREE_PLAN_ROUTING_POLICY
+        c['routing_dynamics'] = THREE_PLAN_ROUTING_DYNAMICS
+        c['quota_spillover'] = THREE_PLAN_QUOTA_SPILLOVER
         c['deepseek_holiday_calendar'] = DEFAULT_DEEPSEEK_HOLIDAY_CALENDAR
     # Legacy global/provider cap fields (max_parallel, max_kimi_parallel,
     # provider_limits) are never written for new installs and are left inert
@@ -497,6 +751,12 @@ def main(argv=None):
     # Existing credentials are never reset by an install or upgrade.
     import console_auth
     console_auth.ensure_default_account(STATE)
+    # Resolve all dependencies before stopping observers/UI. A failed prepare
+    # leaves the current installation and its services running. Legacy installs
+    # neither need uv/Python 3.12 nor create a console dependency environment.
+    import console_runtime
+    if console_runtime.passkey_enabled(c):
+        console_runtime.prepare_runtime(STATE, worker_python=sys.executable)
     backup_existing()
     if args.live:
         import service

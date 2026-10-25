@@ -79,10 +79,24 @@ def vlm_settings():
     }
 
 
+def embedding_api_key():
+    """Resolve the selected embedding credential without persisting its value."""
+    cfg = common.config().get('memory') or {}
+    ov = cfg.get('openviking') or {}
+    reference = ov.get('embedding_credential_ref')
+    if reference:
+        import credentials
+        try:
+            return credentials._resolve_reference(reference)
+        except credentials.CredentialError:
+            raise ValueError('Embedding credential reference is unavailable') from None
+    return common.auth_key('volcengine-agent-plan')
+
+
 def service_env():
     """Child environment with model credentials resolved from owner-only local auth."""
     env = dict(os.environ)
-    env['OPENVIKING_ARK_API_KEY'] = common.auth_key('volcengine-agent-plan')
+    env['OPENVIKING_ARK_API_KEY'] = embedding_api_key()
     env['OPENVIKING_DEEPSEEK_API_KEY'] = common.auth_key('deepseek')
     env['OPENVIKING_ROOT_API_KEY'] = root_api_key(create=True)
     user_key = api_key()
@@ -175,6 +189,10 @@ def _redact(text):
     if not text:
         return text
     values = [api_key(), root_api_key()]
+    try:
+        values.append(embedding_api_key())
+    except (ValueError, RuntimeError):
+        pass
     for provider in ('volcengine-agent-plan', 'deepseek'):
         try:
             value = common.auth_key(provider)
@@ -205,21 +223,25 @@ def _console_origins():
 
 
 def runtime_config():
+    memory = common.config().get('memory') or {}
+    ov = memory.get('openviking') or {}
     embedding = embedding_settings()
     vlm = vlm_settings()
     return {
         'embedding': {
+            # A one-time verified migration must never disable later checks.
+            'allow_metadata_override': False,
             'max_concurrent': 4,
             'max_retries': 3,
             'text_source': 'content_only',
             'max_input_tokens': 4096,
             'dense': {
-                'provider': 'openai',
+                'provider': ov.get('embedding_provider') or 'openai',
                 'api_base': embedding['api_url'],
                 'api_key': '${OPENVIKING_ARK_API_KEY}',
                 'model': embedding['model'],
                 'dimension': embedding['dimensions'],
-                'input': 'text',
+                'input': ov.get('embedding_input') or 'text',
                 'encoding_format': 'float',
             },
         },

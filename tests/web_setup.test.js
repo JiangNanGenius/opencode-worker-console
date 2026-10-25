@@ -31,7 +31,8 @@ function catalogFixture() {
         { id: 'deepseek-flash', name: 'DeepSeek V4.1 Flash', variants: ['max', 'high', 'low'] }] },
       { id: 'kimi-for-coding', name: 'Kimi', connected: true, models: [
         { id: 'kimi-for-coding', name: 'Kimi K2.8', variants: ['max', 'high'] },
-        { id: 'k3', name: 'Kimi K3', variants: ['max'] }] },
+        { id: 'k3.1-pro', name: 'Kimi K3.1 Pro', variants: ['max'] }] },
+      { id: 'bailian-token-plan', name: 'Alibaba', connected: true, models: [{id:'qwen3.8-max',name:'Qwen3.8 Max',variants:['max']}] },
       { id: 'acme', name: 'Acme', connected: false, models: [
         { id: 'worker', name: 'Acme Worker', variants: [] }] }
     ]
@@ -47,10 +48,11 @@ function settingsFixture() {
     profiles: {
       'fallback': { model: 'deepseek/deepseek-flash', label: 'Flash', variant: 'high', enabled: true },
       'senior-code': { model: 'kimi-for-coding/kimi-for-coding', label: 'Kimi', variant: 'high', enabled: true },
-      'deep-research': { model: 'kimi-for-coding/k3', label: 'K3', enabled: true },
+      'ultra-reasoning': { model: 'kimi-for-coding/k3.1-pro', label: 'K3.1 Pro', enabled: true },
+      'aliyun-max': {model:'bailian-token-plan/qwen3.8-max',label:'Qwen3.8 Max',variant:'max',enabled:true},
       'my-custom': { model: 'acme/worker', label: 'Mine', enabled: false }
     },
-    routing: { fast: 'fallback', background: 'senior-code', deep: 'deep-research' },
+    routing: { fast: 'fallback', background: 'senior-code', deep: 'aliyun-max', ultra: 'ultra-reasoning' },
     cleanup: { enabled: true, min_free_gb: 5, target_free_gb: 10, min_age_days: 30, keep_recent: 20, interval_seconds: 3600 },
     kimi_monthly_reset: { enabled: true, day: 19, time: '08:30', timezone: 'Asia/Shanghai' }
   };
@@ -114,15 +116,16 @@ test('keep payload preserves every untouched setting byte-for-byte', () => {
   assert.deepEqual(payload.profiles, {
     'fallback': { model: 'deepseek/deepseek-flash', label: 'Flash', enabled: true, variant: 'high' },
     'senior-code': { model: 'kimi-for-coding/kimi-for-coding', label: 'Kimi', enabled: true, variant: 'high' },
-    'deep-research': { model: 'kimi-for-coding/k3', label: 'K3', enabled: true },
-    'my-custom': { model: 'acme/worker', label: 'Mine', enabled: false }
+    'ultra-reasoning': { model: 'kimi-for-coding/k3.1-pro', label: 'K3.1 Pro', enabled: true },
+    'aliyun-max': {model:'bailian-token-plan/qwen3.8-max',label:'Qwen3.8 Max',variant:'max',enabled:true},
+      'my-custom': { model: 'acme/worker', label: 'Mine', enabled: false }
   });
   assert.deepEqual(payload.routing, settings.routing);
   assert.deepEqual(payload.cleanup, settings.cleanup);
   assert.deepEqual(payload.kimi_monthly_reset, settings.kimi_monthly_reset);
 });
 
-test('preset replaces only the three known profiles and preserves custom ones', () => {
+test('preset replaces the four known profiles and preserves custom ones', () => {
   const draft = Setup.createDraft(settingsFixture(), catalogFixture());
   assert.equal(Setup.presetAvailable(draft), true);
   assert.equal(Setup.setChoice(draft, 'preset'), true);
@@ -131,12 +134,12 @@ test('preset replaces only the three known profiles and preserves custom ones', 
     { model: 'deepseek/deepseek-flash', label: 'Fallback · DeepSeek V4.1 Flash', enabled: true, variant: 'max' });
   assert.deepEqual(payload.profiles['senior-code'],
     { model: 'kimi-for-coding/kimi-for-coding', label: 'Kimi K2.8 Preview', enabled: true, variant: 'max' });
-  assert.deepEqual(payload.profiles['deep-research'],
-    { model: 'kimi-for-coding/k3', label: 'Kimi K3', enabled: true, variant: 'max' });
+  assert.deepEqual(payload.profiles['ultra-reasoning'],
+    { model: 'kimi-for-coding/k3.1-pro', label: 'Kimi K3.1 Pro', enabled: true, variant: 'max' });
   assert.deepEqual(payload.profiles['my-custom'], { model: 'acme/worker', label: 'Mine', enabled: false },
     'untouched custom profiles survive the preset');
   assert.deepEqual(payload.cleanup, settingsFixture().cleanup);
-  assert.deepEqual(payload.routing, { fast: 'fallback', background: 'senior-code', deep: 'deep-research' });
+  assert.deepEqual(payload.routing, { fast: 'fallback', background: 'senior-code', deep: 'aliyun-max', ultra: 'ultra-reasoning' });
 });
 
 test('preset keeps max only when the catalog confirms it or lists no variants', () => {
@@ -153,7 +156,7 @@ test('preset keeps max only when the catalog confirms it or lists no variants', 
   draft = Setup.createDraft(settingsFixture(), noInfo);
   Setup.setChoice(draft, 'preset');
   assert.equal(draft.profiles['fallback'].variant, 'max');
-  assert.equal(draft.profiles['deep-research'].variant, 'max');
+  assert.equal(draft.profiles['ultra-reasoning'].variant, 'max');
 });
 
 test('custom mapping only offers catalog variants and never invents max', () => {
@@ -162,7 +165,7 @@ test('custom mapping only offers catalog variants and never invents max', () => 
   Setup.setModel(draft, 'fallback', 'acme/worker');
   assert.equal(draft.profiles['fallback'].variant, undefined, 'variant resets on model change');
   assert.equal(Setup.setVariant(draft, 'fallback', 'max'), false, 'acme lists no variants; max is rejected');
-  Setup.setModel(draft, 'fallback', 'kimi-for-coding/k3');
+  Setup.setModel(draft, 'fallback', 'kimi-for-coding/k3.1-pro');
   assert.equal(Setup.setVariant(draft, 'fallback', 'high'), false, 'k3 does not list high');
   assert.equal(Setup.setVariant(draft, 'fallback', 'max'), true, 'k3 lists max');
   assert.equal(draft.profiles['fallback'].variant, 'max');
@@ -177,12 +180,12 @@ test('custom choice creates missing slots and preserves edits when reselected', 
   Setup.setChoice(draft, 'custom');
   assert.equal(draft.profiles['fallback'].model, '');
   assert.ok(Setup.stepErrors(draft, 1).some((e) => e.key === 'setup.error.modelRequired'));
-  Setup.setModel(draft, 'fallback', 'kimi-for-coding/k3');
+  Setup.setModel(draft, 'fallback', 'kimi-for-coding/k3.1-pro');
   Setup.setRouting(draft, 'fast', 'senior-code');
   Setup.setChoice(draft, 'custom');
-  assert.equal(draft.profiles['fallback'].model, 'kimi-for-coding/k3');
+  assert.equal(draft.profiles['fallback'].model, 'kimi-for-coding/k3.1-pro');
   assert.equal(draft.routing.fast, 'senior-code');
-  assert.equal(draft.touched.profiles['deep-research'], undefined);
+  assert.equal(draft.touched.profiles['ultra-reasoning'], undefined);
 });
 
 test('preset is refused when its models are absent from the catalog', () => {
@@ -223,7 +226,7 @@ test('routing to a missing or disabled profile is invalid', () => {
   assert.ok(Setup.stepErrors(draft, 1).some((e) => e.key === 'setup.error.routingInvalid'));
   Setup.setRouting(draft, 'deep', 'ghost');
   assert.ok(Setup.stepErrors(draft, 1).some((e) => e.key === 'setup.error.routingInvalid'));
-  Setup.setRouting(draft, 'deep', 'deep-research');
+  Setup.setRouting(draft, 'deep', 'ultra-reasoning');
   assert.deepEqual(Setup.stepErrors(draft, 1), []);
 });
 
@@ -270,7 +273,7 @@ test('successful apply sends exactly one POST with the built payload', async () 
 test('failed apply keeps the draft recoverable and a retry succeeds', async () => {
   const draft = Setup.createDraft(settingsFixture(), catalogFixture());
   Setup.setChoice(draft, 'custom');
-  Setup.setModel(draft, 'fallback', 'kimi-for-coding/k3');
+  Setup.setModel(draft, 'fallback', 'kimi-for-coding/k3.1-pro');
   Setup.goTo(draft, 3);
   let fail = true;
   const spy = requestSpy(() => fail
@@ -282,7 +285,7 @@ test('failed apply keeps the draft recoverable and a retry succeeds', async () =
   assert.equal(draft.status, 'error');
   assert.match(draft.error, /queued or active/);
   assert.equal(draft.step, 3, 'stay on review for a recoverable retry');
-  assert.equal(draft.profiles['fallback'].model, 'kimi-for-coding/k3', 'draft edits survive the failure');
+  assert.equal(draft.profiles['fallback'].model, 'kimi-for-coding/k3.1-pro', 'draft edits survive the failure');
   fail = false;
   const second = await Setup.apply(draft, spy);
   assert.equal(second.ok, true);
@@ -294,7 +297,7 @@ test('stale revision flags reload and merge keeps edits but adopts untouched fie
   const draft = Setup.createDraft(settingsFixture(), catalogFixture());
   Setup.setAutoApprove(draft, false);                       // user edit: keep
   Setup.setChoice(draft, 'custom');
-  Setup.setModel(draft, 'fallback', 'kimi-for-coding/k3'); // user edit: keep
+  Setup.setModel(draft, 'fallback', 'kimi-for-coding/k3.1-pro'); // user edit: keep
   const spy = requestSpy(() => Promise.reject(new Error('Settings changed elsewhere; reload before saving')));
   const result = await Setup.apply(draft, spy);
   assert.equal(result.ok, false);
@@ -306,8 +309,9 @@ test('stale revision flags reload and merge keeps edits but adopts untouched fie
   fresh.max_parallel_per_owner = 9;                          // external change: adopt
   fresh.kimi_reserve_percent = 35;                           // external change: adopt
   fresh.profiles['extern'] = { model: 'acme/worker', label: 'External', enabled: true }; // external add: adopt
-  delete fresh.profiles['deep-research'];                    // external delete, untouched by user: adopt
-  fresh.routing.deep = 'senior-code';                       // external configuration remains valid
+  delete fresh.profiles['ultra-reasoning'];                    // external delete, untouched by user: adopt
+  fresh.routing.deep = 'senior-code';
+  fresh.routing.ultra = 'extern';                       // external configuration remains valid
   Setup.mergeFreshSettings(draft, fresh);
   assert.equal(draft.revision, 9);
   assert.equal(draft.stale, false);
@@ -315,9 +319,9 @@ test('stale revision flags reload and merge keeps edits but adopts untouched fie
   assert.equal(draft.autoApprove, false, 'user autoApprove edit survives the merge');
   assert.equal(draft.maxParallelPerOwner, 9, 'untouched concurrency adopts the fresh value');
   assert.equal(draft.kimiReservePercent, 35, 'reserve is never wizard-edited: always fresh');
-  assert.equal(draft.profiles['fallback'].model, 'kimi-for-coding/k3', 'user model edit survives');
+  assert.equal(draft.profiles['fallback'].model, 'kimi-for-coding/k3.1-pro', 'user model edit survives');
   assert.ok(draft.profiles['extern'], 'externally added profiles are preserved');
-  assert.equal(draft.profiles['deep-research'], undefined, 'untouched external deletion is honored');
+  assert.equal(draft.profiles['ultra-reasoning'], undefined, 'untouched external deletion is honored');
   const payload = Setup.buildPayload(draft);
   assert.equal(payload.revision, 9);
   assert.equal(payload.auto_approve, false);
@@ -410,7 +414,7 @@ test('switching language mid-wizard keeps every selection and error keys stay st
   try {
     const draft = Setup.createDraft(settingsFixture(), catalogFixture());
     Setup.setChoice(draft, 'custom');
-    Setup.setModel(draft, 'fallback', 'kimi-for-coding/k3');
+    Setup.setModel(draft, 'fallback', 'kimi-for-coding/k3.1-pro');
     Setup.setVariant(draft, 'fallback', 'max');
     Setup.setAutoApprove(draft, false);
     Setup.setMaxParallelPerOwner(draft, 0); // force a validation error
@@ -418,7 +422,7 @@ test('switching language mid-wizard keeps every selection and error keys stay st
     assert.equal(I18n.getLocale(), 'en');
     I18n.setLocale('zh-CN');
     assert.equal(I18n.getLocale(), 'zh-CN');
-    assert.equal(draft.profiles['fallback'].model, 'kimi-for-coding/k3', 'locale change keeps model selection');
+    assert.equal(draft.profiles['fallback'].model, 'kimi-for-coding/k3.1-pro', 'locale change keeps model selection');
     assert.equal(draft.profiles['fallback'].variant, 'max', 'locale change keeps variant selection');
     assert.equal(draft.autoApprove, false, 'locale change keeps preferences');
     assert.deepEqual(Setup.stepErrors(draft, 2).map((e) => e.key), beforeErrors, 'error keys are locale-independent');
@@ -439,7 +443,7 @@ test('ordered routing survives setup and refreshed settings', () => {
   assert.deepEqual(Setup.buildPayload(draft).routing_policy, settings.routing_policy);
   const fresh = settingsFixture();
   fresh.revision += 1;
-  fresh.routing_policy = { deep: [[{ profile: 'deep-research', weight: 2 }, { profile: 'senior-code', weight: 1 }]] };
+  fresh.routing_policy = { deep: [[{ profile: 'ultra-reasoning', weight: 2 }, { profile: 'senior-code', weight: 1 }]] };
   Setup.mergeFreshSettings(draft, fresh);
   assert.deepEqual(Setup.buildPayload(draft).routing_policy, fresh.routing_policy);
 });

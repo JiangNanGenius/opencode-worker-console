@@ -6,6 +6,7 @@ disk (80, any positive cap, or 0) must never be forwarded.
 """
 import sys
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
@@ -44,14 +45,40 @@ class RuntimeOverlayTests(unittest.TestCase):
     def test_original_kimi_profile_survives_catalog_provider_rename(self):
         overlay = server.runtime_overlay({'profiles': {
             'senior-code': profile('kimi-for-coding/kimi-for-coding', 'max'),
-            'deep-research': profile('kimi-for-coding/k3', 'max')}})
+            'ultra-reasoning': profile('kimi-for-coding/k3.1-pro', 'max')}})
         provider = overlay['provider']['kimi-for-coding']
         self.assertEqual(provider['options'], {'baseURL': 'https://api.kimi.com/coding/v1'})
-        self.assertEqual(set(provider['models']), {'kimi-for-coding', 'k3'})
+        self.assertEqual(set(provider['models']), {'kimi-for-coding', 'k3.1-pro'})
+        self.assertEqual(provider['models']['k3.1-pro']['limit']['context'], 1048576)
+        self.assertEqual(set(provider['models']['k3.1-pro']['variants']),
+                         {'low', 'high', 'max'})
         self.assertNotIn('apiKey', str(provider))
         for agent in overlay['agent'].values():
             self.assertEqual(agent['variant'], 'max')
             self.assertNotIn('steps', agent)
+
+    def test_retired_k3_is_neither_declared_nor_registered(self):
+        overlay = server.runtime_overlay({'profiles': {
+            'senior-code': profile('kimi-for-coding/kimi-for-coding'),
+            'retired': profile('kimi-for-coding/k3')}})
+        provider = overlay['provider']['kimi-for-coding']
+        self.assertEqual(set(provider['models']), {'kimi-for-coding'})
+        self.assertEqual(set(overlay['agent']), {'senior-code'})
+
+    def test_gate_loopback_base_url_keeps_provider_identity(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as temp:
+            state = Path(temp)
+            (state / 'server-password').write_text('gate-pass')
+            with patch.object(server, 'STATE', state), \
+                 patch.object(server, 'kimi_gate_settings',
+                              return_value={'port': 51531}):
+                overlay = server.runtime_overlay({'profiles': {
+                    'senior-code': profile('kimi-for-coding/kimi-for-coding')}})
+        provider = overlay['provider']['kimi-for-coding']
+        self.assertEqual(provider['options']['baseURL'], 'http://127.0.0.1:51531/v1')
+        self.assertTrue(provider['options']['apiKey'].startswith('{file:'))
+        self.assertIn('senior-code', overlay['agent'])
 
     def test_variant_and_overlay_defaults_preserved(self):
         overlay = self.overlay(max_steps=80)

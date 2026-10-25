@@ -12,5 +12,6 @@ auth.json
 state/
 work/
 artifacts/
+reports/
 node_modules/
 *.transcript.json

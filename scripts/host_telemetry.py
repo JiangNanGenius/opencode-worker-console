@@ -60,9 +60,9 @@ CODEXBAR_CLI = '/Applications/CodexBar.app/Contents/Helpers/CodexBarCLI'
 
 MAX_TASKS = 12
 TASK_PRIORITY = {'attention': 0, 'running': 1, 'unknown': 2, 'completed': 3}
-WORKER_PROVIDERS = ('kimi-for-coding', 'volcengine-agent-plan', 'deepseek')
+WORKER_PROVIDERS = ('kimi-for-coding', 'volcengine-agent-plan', 'deepseek', 'bailian-token-plan')
 PROVIDER_LABELS = {'kimi-for-coding': 'Kimi', 'volcengine-agent-plan': '火山方舟',
-                   'deepseek': 'DeepSeek', 'codex': 'Codex'}
+                   'deepseek': 'DeepSeek', 'codex': 'Codex', 'bailian-token-plan': '阿里百炼'}
 WINDOW_LABELS = {300: '5小时', 1440: '每日', 10080: '每周', 43200: '每月'}
 
 
@@ -527,6 +527,28 @@ def _ro_db(path):
     return con
 
 
+def _align_skip(handle, budget):
+    """Skip a partial boundary-straddling record without buffering it.
+
+    Scans at most ``budget`` bytes for the newline that ends the record
+    crossing the read boundary. If the record is larger than the budget the
+    cursor simply stops mid-record; the discarded head and the remaining
+    fragments never parse into dict events, so they are ignored downstream.
+    """
+    remaining = budget
+    while remaining > 0:
+        chunk = handle.read(min(65536, remaining))
+        if not chunk:
+            return
+        index = chunk.find(b'\n')
+        if index >= 0:
+            # Rewind from the post-read cursor to the first byte after the
+            # newline; the cursor already sits len(chunk) past the chunk start.
+            handle.seek(index + 1 - len(chunk), 1)
+            return
+        remaining -= len(chunk)
+
+
 class CodexTasks:
     """Incremental read-only tail of Codex rollout events plus sqlite state."""
 
@@ -535,39 +557,94 @@ class CodexTasks:
         self.tails = {}
 
     def activity(self, path, now):
+        empty = {'at': 0, 'event': None}
+        if not isinstance(path, (str, Path)) or not path:
+            return empty
         path = Path(path)
-        cache = self.tails.setdefault(str(path), {'offset': 0, 'at': 0, 'event': None, 'carry': b''})
+        if not any(path.resolve().is_relative_to((self.root / directory).resolve())
+                   for directory in ('sessions', 'archived_sessions')):
+            return empty
+        key = str(path)
         try:
-            with path.open('rb') as handle:
-                size = handle.seek(0, 2)
-                if size < cache['offset']:
-                    cache.update(offset=0, at=0, event=None, carry=b'')
-                start = max(cache['offset'], size - 262144)
-                handle.seek(start)
-                if start > cache['offset']:
-                    handle.readline()
-                    cache['carry'] = b''
-                raw = cache['carry'] + handle.read(262144)
-                cache['offset'] = handle.tell()
-            lines = raw.split(b'\n')
-            cache['carry'] = lines.pop()
-            for line in lines:
-                try:
-                    event = json.loads(line)
-                except (ValueError, UnicodeError):
-                    continue
-                if event.get('type') == 'event_msg':
+            stat = path.stat()
+            cache = self.tails.get(key)
+            if cache is None or cache['inode'] != stat.st_ino or stat.st_size < cache['offset']:
+                cache = {'offset': 0, 'at': 0, 'carry': b'', 'inode': stat.st_ino,
+                         'turns': {}, 'scan_before': None}
+                self.tails[key] = cache
+            def consume(raw):
+                for line in raw.split(b'\n'):
+                    try:
+                        event = json.loads(line)
+                    except (ValueError, UnicodeError):
+                        continue
+                    if not isinstance(event, dict):
+                        continue  # scalars/lists (including cut mid-record) are not events
                     at = epoch(event.get('timestamp'))
+                    cache['at'] = max(cache['at'], at)
                     payload = event.get('payload', {})
-                    if at >= cache['at']:
-                        cache['at'] = at
-                    if payload.get('type') in ('task_started', 'task_complete', 'turn_aborted'):
-                        cache['event'] = payload['type']
-            return cache
-        except OSError:
-            return {'at': 0, 'event': None}
+                    if not isinstance(payload, dict):
+                        continue
+                    kind = event.get('type')
+                    lifecycle = payload.get('type') if kind == 'event_msg' else None
+                    if kind != 'turn_context' and lifecycle not in ('task_started','task_complete','turn_aborted'):
+                        continue
+                    turn_id = payload.get('turn_id')
+                    if not isinstance(turn_id, str) or not turn_id:
+                        continue
+                    turn = cache['turns'].setdefault(turn_id, {'turn_id': turn_id})
+                    if kind == 'turn_context' and at >= turn.get('context_at', 0):
+                        turn.update(context_at=at, model=payload.get('model'),
+                                    effort=payload.get('effort') or payload.get('reasoning_effort'))
+                    elif lifecycle == 'task_started':
+                        turn['started_at'] = max(turn.get('started_at', 0), at)
+                    if lifecycle and at >= turn.get('event_at', 0):
+                        turn.update(event=lifecycle, event_at=at)
+            with path.open('rb') as handle:
+                # One bounded bootstrap, then incremental append reads. If a
+                # long turn's boundary predates the tail, backfill one bounded
+                # chunk per sample until its context is located.
+                if cache['offset'] == 0:
+                    start = max(0, stat.st_size - 2097152)
+                    cache['scan_before'] = start
+                else:
+                    start = cache['offset']
+                handle.seek(start)
+                if start and start != cache['offset']:
+                    _align_skip(handle, 2097152)
+                raw = cache['carry'] + handle.read(2097152)
+                cache['offset'] = handle.tell()
+                lines = raw.split(b'\n')
+                cache['carry'] = lines.pop()
+                if len(cache['carry']) > 2097152:
+                    cache['carry'] = b''  # oversized content is not activity metadata
+                consume(b'\n'.join(lines))
+                has_start = any(t.get('started_at') or t.get('context_at') for t in cache['turns'].values())
+                before = cache.get('scan_before') or 0
+                if not has_start and before:
+                    # One bounded window per sample, always advancing.
+                    start = max(0, before - 1048576)
+                    cache['scan_before'] = start
+                    handle.seek(start)
+                    if start:
+                        _align_skip(handle, 1048576)
+                    # A single JSONL record longer than the window (image or
+                    # tool dumps) can carry the alignment skip past the window
+                    # end. The remaining span is then 0, never a negative read.
+                    span = before - handle.tell()
+                    if span > 0:
+                        consume(handle.read(span))
+            ranked = sorted(cache['turns'].values(), key=lambda t: max(t.get('started_at',0), t.get('context_at',0), t.get('event_at',0)), reverse=True)[:4]
+            cache['turns'] = {t['turn_id']: t for t in ranked}
+            started = [t for t in ranked if t.get('started_at') or t.get('context_at')]
+            current = max(started, key=lambda t: max(t.get('started_at',0),t.get('context_at',0))) if started else (ranked[0] if ranked else {})
+            return {**current, 'at': cache['at'], 'size': stat.st_size}
+        except (OSError, ValueError):
+            # Malformed records or a damaged cursor must never poison the
+            # whole Codex source; fall back to the database projection.
+            return empty
 
-    def collect(self, now=None):
+    def collect(self, now=None, owner_ids=()):
         now = now or time.time()
         items = []
         meta = self.root / 'state_5.sqlite'
@@ -576,35 +653,136 @@ class CodexTasks:
             return {'state': 'unavailable', 'sampled_at': now, 'total': 0, 'active': 0, 'items': []}
         with contextlib.closing(_ro_db(meta)) as meta_con, contextlib.closing(_ro_db(history)) as history_con:
             columns = {row[1] for row in meta_con.execute('PRAGMA table_info(threads)')}
+            if not {'id', 'name', 'title', 'cwd', 'rollout_path', 'updated_at', 'archived'} <= columns:
+                # Drifted or absent threads projection: report unavailable
+                # instead of letting one failing query discard every board row.
+                return {'state': 'unavailable', 'sampled_at': now, 'total': 0, 'active': 0, 'items': []}
             model_cols = ',model,reasoning_effort' if {'model','reasoning_effort'} <= columns else ',NULL AS model,NULL AS reasoning_effort'
-            threads = meta_con.execute(
-                'SELECT id,name,title,cwd,rollout_path,updated_at' + model_cols + ' FROM threads '
-                'WHERE archived=0 AND updated_at>? ORDER BY updated_at DESC LIMIT 100',
-                (now - 86400,)).fetchall()
+            source_cols = ''.join(',' + key if key in columns else ',NULL AS ' + key for key in ('source','thread_source'))
+            select = 'SELECT id,name,title,cwd,rollout_path,updated_at' + model_cols + source_cols + ' FROM threads '
+            threads = list(meta_con.execute(
+                select + 'WHERE archived=0 AND updated_at>? ORDER BY updated_at DESC LIMIT 100',
+                (now - 86400,)).fetchall())
+            seen = {row['id'] for row in threads}
+            board_ids = set(seen)
+            for owner in sorted(set(owner_ids))[:100]:
+                if owner not in seen:
+                    row = meta_con.execute(select + 'WHERE id=?', (owner,)).fetchone()
+                    if row:
+                        threads.append(row)
+                        seen.add(owner)
+            edges, relation_ids = {}, set(owner_ids)
+            if seen and meta_con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='thread_spawn_edges'").fetchone():
+                # Bounded relationship lookup, including finished children of a
+                # visible owner; never scan turns/items or complete transcripts.
+                placeholders = ','.join('?' for _ in seen)
+                rows = meta_con.execute('SELECT parent_thread_id,child_thread_id FROM thread_spawn_edges WHERE child_thread_id IN (' + placeholders + ') OR parent_thread_id IN (' + placeholders + ') LIMIT 200', tuple(seen) + tuple(seen)).fetchall()
+                for edge in rows:
+                    child = edge['child_thread_id']
+                    edges[child] = edge['parent_thread_id']
+                    relation_ids.add(child)
+                    if child not in seen and len(threads) < 200:
+                        row = meta_con.execute(select + 'WHERE id=?', (child,)).fetchone()
+                        if row:
+                            threads.append(row)
+                            seen.add(child)
+            turn_columns = {row[1] for row in history_con.execute('PRAGMA table_info(thread_turns)')}
+            turn_extra = ''.join(',' + key if key in turn_columns else ',NULL AS ' + key for key in ('turn_id','rollout_end_byte_offset'))
+            skipped = 0
             for thread in threads:
-                turn = history_con.execute(
-                    'SELECT status,started_at,completed_at FROM thread_turns WHERE thread_id=? '
-                    'ORDER BY rollout_ordinal DESC LIMIT 1', (thread['id'],)).fetchone()
-                if not turn:
-                    continue
-                activity = self.activity(thread['rollout_path'], now)
-                updated = max(thread['updated_at'], activity['at'])
-                status = turn['status']
-                completed = turn['completed_at'] or 0
-                if status == 'inProgress' and activity['event'] == 'task_complete':
-                    status, completed = 'completed', activity['at']
-                if status == 'inProgress' and activity['event'] == 'turn_aborted':
-                    status = 'interrupted'
-                state = _classify(status, updated, now, completed,
-                                  now - (activity['at'] or turn['started_at'] or 0))
-                if state:
-                    items.append({'id': thread['id'], 'title': _display_title(thread['name'] or thread['title']),
-                                  'project': _bounded(Path(thread['cwd']).name, 36), 'status': state,
-                                  'model': _bounded(thread['model'],80) or None, 'effort': _bounded(thread['reasoning_effort'],20) or None,
-                                  'started_at': turn['started_at'] or 0, 'ended_at': completed,
-                                  'updated_at': updated})
+                # One malformed record (absent thread_turns table, damaged
+                # projection row, oversized rollout) degrades only its own
+                # thread; it must never discard every Codex task.
+                try:
+                    turn = history_con.execute(
+                        'SELECT status,started_at,completed_at' + turn_extra + ' FROM thread_turns WHERE thread_id=? '
+                        'ORDER BY rollout_ordinal DESC LIMIT 1', (thread['id'],)).fetchone() if turn_columns else None
+                except Exception:
+                    turn = None
+                try:
+                    activity = self.activity(thread['rollout_path'], now)
+                except Exception:
+                    activity = {'at': 0, 'event': None}
+                try:
+                    updated = max(thread['updated_at'] or 0, activity['at'])
+                    # SQLite is an asynchronous projection. Reconcile only a
+                    # matching turn or an explicitly newer start/context; never
+                    # let an old completion override a different in-flight turn.
+                    status = turn['status'] if turn else None
+                    started_at = (turn['started_at'] or 0) if turn else 0
+                    completed = (turn['completed_at'] or 0) if turn else 0
+                    db_turn_id = turn['turn_id'] if turn else None
+                    evidence_start = activity.get('started_at') or activity.get('context_at') or 0
+                    same_turn = bool(db_turn_id and db_turn_id == activity.get('turn_id'))
+                    newer_turn = bool(evidence_start and evidence_start > started_at and
+                                      (not completed or evidence_start > completed) and not same_turn)
+                    if newer_turn:
+                        status, completed = 'inProgress', 0
+                        started_at = evidence_start
+                    if (same_turn or newer_turn) and activity.get('event_at',0) >= max(started_at, completed):
+                        event_status = {'task_started':'inProgress','task_complete':'completed','turn_aborted':'interrupted'}
+                        status = event_status.get(activity.get('event'),status)
+                        if status in ('completed','interrupted'):
+                            completed = activity['event_at']
+                    if turn and turn['rollout_end_byte_offset'] and turn['rollout_end_byte_offset'] > activity.get('size',float('inf')) and not same_turn and not newer_turn:
+                        status, completed = 'unknown', 0
+                    state = _classify(status, updated, now, completed,
+                                      now - (activity['at'] or started_at or 0))
+                    if status == 'unknown':
+                        state = 'unknown'
+                    source = thread['source'] or ''
+                    is_subagent = thread['id'] in edges or thread['thread_source'] == 'subagent' or 'subagent' in source
+                    if is_subagent and thread['id'] not in edges:
+                        try:
+                            origin = json.loads(source)
+                            parent = origin.get('subagent', {}).get('thread_spawn', {}).get('parent_thread_id')
+                            if isinstance(parent,str):
+                                edges[thread['id']] = parent
+                        except (ValueError,AttributeError):
+                            pass
+                    board_visible = bool(state) and thread['id'] in board_ids
+                    if state is None and thread['id'] in relation_ids and turn:
+                        state = {'completed': 'completed', 'failed': 'attention', 'interrupted': 'interrupted'}.get(status)
+                    if state or thread['id'] in relation_ids:
+                        items.append({'id': thread['id'], 'title': _display_title(thread['name'] or thread['title']),
+                                      'project': _bounded(Path(thread['cwd']).name, 36), 'status': state or 'unknown',
+                                      'model': _bounded(activity.get('model') if newer_turn or (same_turn and activity.get('context_at')) else thread['model'],80) or None,
+                                      'effort': _bounded(activity.get('effort') if newer_turn or (same_turn and activity.get('context_at')) else thread['reasoning_effort'],20) or None,
+                                      'started_at': started_at, 'ended_at': completed,
+                                      'updated_at': updated, 'parent_thread_id': edges.get(thread['id']),
+                                      '_board_visible': board_visible,
+                                      'turn_status': status, 'is_subagent': is_subagent})
+                except Exception:
+                    skipped += 1
+        # A child whose parent is unavailable is not a main task. Keep only
+        # children attached to a retained tree; guardians never become roots.
+        for _ in range(8):
+            ids = {item['id'] for item in items}
+            retained = [item for item in items if not item['is_subagent'] or item.get('parent_thread_id') in ids]
+            if len(retained) == len(items):
+                break
+            items = retained
+        self.tails = {key: value for key, value in self.tails.items()
+                      if key in {row['rollout_path'] for row in threads}}
         return {'state': 'ok', 'sampled_at': now, 'total': len(items),
-                'active': sum(1 for t in items if t['status'] != 'completed'), 'items': _sort_tasks(items)}
+                'active': sum(1 for t in items if t['status'] in ('running','attention','unknown')), 'items': sorted(items, key=lambda t: -t['updated_at'])[:200]}
+
+
+def collect_worker_links(now=None):
+    """Only exact owner IDs; never export job objectives or filesystem paths."""
+    now = now or time.time()
+    links = {}
+    for path in sorted((STATE / 'tasks').glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True)[:500]:
+        record = read_json(path, {}) or {}
+        if record.get('status') not in ('starting','running','stopping','uncertain') and record.get('status') != 'queued' and now - epoch(record.get('updated_at')) > 86400:
+            continue
+        owner = record.get('owner_thread_id')
+        if not isinstance(owner, str) or not owner:
+            continue
+        links.setdefault(owner, []).append({'id': _bounded(record.get('id'), 64),
+            'title': _display_title(record.get('title')), 'status': _bounded(record.get('status'), 32),
+            'model': _task_model(record), 'source': 'opencode'})
+    return links
 
 
 # --- quota view (delegate-daemon cache + CodexBar adapter, background only) --
@@ -613,21 +791,176 @@ def _window_label(minutes):
     return WINDOW_LABELS.get(minutes, '额度')
 
 
+# Additive window metadata for the host overview: the Alibaba Token Plan row
+# shows an actual Credits amount, Ark shows AFP, other providers stay percent.
+WINDOW_UNITS = {'bailian-token-plan': 'credits', 'volcengine-agent-plan': 'afp'}
+# Live cached provider readings are considered fresh for the same 15 minutes the
+# quota view uses. Manual snapshots instead publish their own configured horizon
+# (bounded by the plan reset) so a 24 h snapshot is not falsely aged out by a
+# consumer's 15-minute default.
+LIVE_QUOTA_VALID_SECONDS = 900
+
+
+def billing_overlay(provider):
+    """Safe exhaustion metadata for host/board views; never messages or IDs.
+
+    The daemon cache holds raw account records; the durable billing circuit is
+    what makes a provider genuinely uncallable (for example Kimi's confirmed
+    monthly exhaustion) and must reach the host overview instead of a
+    misleading positive window percentage.
+    """
+    try:
+        import quota
+        block = quota.billing_block(provider)
+    except Exception:
+        return {}
+    if not block:
+        return {}
+    reason = block.get('reason') if isinstance(block.get('reason'), str) else 'billing_error'
+    return {'available': False,
+            'billing': {'reason': reason,
+                        'monthly_exhausted': reason == 'monthly_usage_limit'}}
+
+
+def _kimi_window_key(window):
+    kind = window.get('kind')
+    if kind in ('short', 'weekly', 'month_total', 'month_code'):
+        return kind
+    name = window.get('name')
+    if name in ('limit5h', 'limit_5h') or window.get('duration_minutes') == 300:
+        return 'short'
+    if name in ('limit7d', 'limit_7d', 'overall') or window.get('duration_minutes') == 10080:
+        return 'weekly'
+    return 'name:' + str(name) if name else 'duration:' + str(window.get('duration_minutes'))
+
+
+def _kimi_host_windows(value):
+    """Merge only fresh, verified account windows; never acquire credentials."""
+    windows = [dict(row) for row in value.get('windows') or [] if isinstance(row, dict)]
+    account = value.get('account')
+    now = time.time()
+    if not isinstance(account, dict):
+        return windows, False
+    binding = account.get('account_binding')
+    sampled = epoch(account.get('sampled_at'))
+    if (account.get('state') != 'ok' or account.get('stale') is True
+            or not isinstance(binding, dict) or binding.get('state') != 'verified'
+            or not sampled or not 0 <= now - sampled <= LIVE_QUOTA_VALID_SECONDS):
+        return windows, False
+    merged = {_kimi_window_key(row): row for row in windows}
+    accepted = False
+    for row in account.get('windows') or []:
+        if not isinstance(row, dict):
+            continue
+        remaining = row.get('remaining_percent')
+        reset = epoch(row.get('resets_at'))
+        expires = epoch(row.get('expires_at'))
+        if (row.get('valid') is not True or row.get('expired') is True
+                or not _finite(remaining) or not 0 <= remaining <= 100
+                or (reset and reset <= now) or (expires and expires <= now)):
+            continue
+        merged[_kimi_window_key(row)] = dict(row)
+        accepted = True
+    return list(merged.values()), accepted
+
+
 def normalize_worker(provider, value):
     value = value or {}
     result = {'id': provider, 'name': PROVIDER_LABELS.get(provider, provider),
               'state': value.get('state', 'unavailable'), 'sampled_at': epoch(value.get('sampled_at')),
               'windows': [], 'balances': []}
-    for window in (value.get('windows') or [])[:4]:
+    windows = value.get('windows') or []
+    kimi_account_current = False
+    if provider == 'kimi-for-coding':
+        windows, kimi_account_current = _kimi_host_windows(value)
+    for window in windows[:4]:
         remaining = window.get('remaining_percent')
         if window.get('valid') and _finite(remaining) and 0 <= remaining <= 100:
-            result['windows'].append({'label': _window_label(window.get('duration_minutes')),
-                                      'remaining_percent': round(remaining, 1),
-                                      'resets_at': epoch(window.get('resets_at'))})
+            row = {'label': _window_label(window.get('duration_minutes')),
+                   'remaining_percent': round(remaining, 3 if provider == 'kimi-for-coding' else 1),
+                   'resets_at': epoch(window.get('resets_at'))}
+            if provider == 'kimi-for-coding':
+                kind = _kimi_window_key(window)
+                if kind in ('short', 'weekly', 'month_total', 'month_code'):
+                    row['kind'] = kind
+                    row['label'] = {'short': '5小时', 'weekly': '每周',
+                                    'month_total': '总额度', 'month_code': '月度Code'}[kind]
+                for key in ('name', 'source'):
+                    if isinstance(window.get(key), str):
+                        row[key] = _bounded(window[key], 64)
+                if window.get('expires_at'):
+                    row['expires_at'] = epoch(window['expires_at'])
+            amount, limit = window.get('remaining'), window.get('limit')
+            if _finite(amount):
+                row['remaining'] = round(amount, 3)
+            if _finite(limit):
+                row['limit'] = round(limit, 3)
+            unit = WINDOW_UNITS.get(provider)
+            if unit:
+                row['unit'] = unit
+            if window.get('expired') is True:
+                row['expired'] = True
+            result['windows'].append(row)
     for balance in (value.get('balances') or [])[:2]:
         if _finite(balance.get('remaining')):
             result['balances'].append({'currency': _bounded(balance.get('currency'), 8),
                                        'remaining': balance['remaining']})
+    if 'available' in value:
+        # Unknown availability stays an explicit null instead of being dropped,
+        # so a consumer can distinguish unknown from a missing field.
+        result['available'] = value.get('available') if isinstance(value.get('available'), bool) else None
+    if kimi_account_current and any(
+            row.get('kind') in ('month_total', 'month_code') and row.get('remaining_percent') == 0
+            for row in result['windows']):
+        result['available'] = False
+    billing = value.get('billing') if isinstance(value.get('billing'), dict) else None
+    reason = billing.get('reason') if billing and isinstance(billing.get('reason'), str) else None
+    if billing is not None or value.get('billing_reason') or value.get('monthly_plan_exhausted'):
+        reason = reason or (value.get('billing_reason') if isinstance(value.get('billing_reason'), str)
+                            else 'monthly_usage_limit' if value.get('monthly_plan_exhausted') else 'billing_error')
+        result['billing'] = {'reason': reason, 'monthly_exhausted': reason == 'monthly_usage_limit'}
+    snapshot = value.get('snapshot') if isinstance(value.get('snapshot'), dict) else None
+    if snapshot is not None:
+        # A manually imported reading is never a live balance. The snapshot's own
+        # freshness (already reset-expiry aware) is authoritative; age is only a
+        # fallback for legacy records, and expiration is propagated explicitly.
+        captured = epoch(snapshot.get('captured_at'))
+        fresh_for = snapshot.get('fresh_for_minutes')
+        if not _finite(fresh_for) or fresh_for <= 0:
+            fresh_for = 1440
+        freshness = snapshot.get('freshness')
+        if freshness not in ('fresh', 'stale'):
+            age = max(0.0, time.time() - captured) if captured else None
+            freshness = 'fresh' if age is not None and age <= fresh_for * 60 else 'stale'
+        expired = snapshot.get('expired') is True or any(
+            row.get('expired') is True for row in result['windows'])
+        result['snapshot'] = {'captured_at': captured, 'freshness': freshness, 'expired': expired}
+        if freshness != 'fresh' or expired:
+            result['stale'] = True
+        # Absolute freshness deadline: the configured snapshot horizon, never
+        # beyond the plan reset. Consumers can honor it instead of assuming a
+        # fixed default that would age a 24-hour snapshot out after 15 minutes.
+        valid_until = captured + fresh_for * 60 if captured else None
+        reset = epoch(snapshot.get('resets_at'))
+        if reset is None:
+            resets = [epoch(row.get('resets_at')) for row in result['windows']]
+            resets = [item for item in resets if item]
+            reset = min(resets) if resets else None
+        if reset and (valid_until is None or reset < valid_until):
+            valid_until = reset
+        if valid_until:
+            result['valid_until'] = valid_until
+    elif _finite(value.get('sampled_at')):
+        result['valid_until'] = epoch(value['sampled_at']) + LIVE_QUOTA_VALID_SECONDS
+    if value.get('stale') is True:
+        result['stale'] = True
+    if value.get('source') == 'openapi_live':
+        result['source'] = 'openapi_live'
+    error = value.get('live_error')
+    if isinstance(error, dict):
+        result['stale'] = True
+        result['live_error'] = {'state': _bounded(error.get('state') or 'unknown', 24),
+                                'attempted_at': epoch(error.get('attempted_at'))}
     return result
 
 
@@ -649,7 +982,30 @@ def normalize_codex(data, now=None):
                                       'resets_at': epoch(window.get('resetsAt'))})
     if result['windows']:
         result.update(state='ok', sampled_at=epoch(usage.get('updatedAt')) or now)
+        result['valid_until'] = result['sampled_at'] + LIVE_QUOTA_VALID_SECONDS
     return result
+
+
+def cached_worker_quotas(previous):
+    """Read the shared cache cheaply; preserve the separately sampled Codex row.
+
+    This never calls a provider or the Codex CLI. Web snapshots and board
+    publication see a worker balance update immediately, even while the slower
+    Codex sampler keeps its independent five-minute cadence.
+    """
+    cached = read_json(STATE / 'quota.json', None)
+    if not isinstance(cached, dict) or not cached:
+        return previous
+    rows = {row.get('id'): row for row in previous}
+    for provider in WORKER_PROVIDERS:
+        if provider not in cached:
+            continue
+        value = cached[provider] if isinstance(cached[provider], dict) else {}
+        row = normalize_worker(provider, dict(value, **billing_overlay(provider)))
+        if row.get('valid_until') and row['valid_until'] <= time.time():
+            row['stale'] = True
+        rows[provider] = row
+    return list(rows.values())
 
 
 def collect_quotas(now=None):
@@ -659,7 +1015,11 @@ def collect_quotas(now=None):
     out = []
     cached = read_json(STATE / 'quota.json', {}) or {}
     for provider in WORKER_PROVIDERS:
-        out.append(normalize_worker(provider, cached.get(provider)))
+        record = cached.get(provider)
+        if isinstance(record, dict):
+            record = dict(record)
+            record.update(billing_overlay(provider))
+        out.append(normalize_worker(provider, record))
     codex = {'id': 'codex', 'name': 'Codex', 'state': 'unavailable', 'sampled_at': 0, 'windows': [], 'balances': []}
     try:
         result = subprocess.run([CODEXBAR_CLI, 'usage', '--provider', 'codex', '--source', 'oauth',
@@ -889,8 +1249,21 @@ class Collector:
 
     def collect_tasks_once(self, now=None):
         now = now or time.time()
-        tasks = {'codex': self.codex.collect(now),
-                 'opencode': collect_opencode_tasks(now)}
+        links = collect_worker_links(now)
+        with self.lock:
+            previous = json.loads(json.dumps(self.latest_tasks))
+        tasks = {}
+        for source, acquire in (('codex', lambda: self.codex.collect(now, owner_ids=links)),
+                                ('opencode', lambda: collect_opencode_tasks(now))):
+            try:
+                tasks[source] = acquire()
+            except Exception:
+                tasks[source] = dict(previous.get(source, {}), state='unavailable', error='collection_failed')
+        codex = tasks.get('codex', {})
+        for item in codex.get('items', []):
+            item['workers'] = links.pop(item['id'], [])
+        codex['missing_owners'] = [{'id': owner, 'title': None, 'status': 'unknown', 'workers': jobs}
+                                   for owner, jobs in links.items()]
         with self.lock:
             self.latest_tasks = tasks
         self.publish_board()
@@ -918,9 +1291,22 @@ class Collector:
             latest = json.loads(json.dumps(self.latest_system)) if self.latest_system else {}
             tasks = json.loads(json.dumps(self.latest_tasks))
             quotas = json.loads(json.dumps(self.latest_quotas))
+        board_task_keys = {'id','title','project','status','model','effort','started_at','ended_at','updated_at','progress'}
+        for group in tasks.values():
+            group.pop('missing_owners', None)
+            visible = [item for item in group.get('items', []) if item.get('_board_visible', True)]
+            group['total'] = len(visible)
+            group['active'] = sum(item.get('status') != 'completed' for item in visible)
+            group['items'] = _sort_tasks([{k: v for k, v in item.items() if k in board_task_keys}
+                                         for item in visible])
+        quotas = cached_worker_quotas(quotas)
         # v2 firmware matches these exact compact IDs. Keep full provider IDs
         # in the web snapshot/cache; adapt only this independent board copy.
-        board_ids = {'kimi-for-coding': 'kimi', 'volcengine-agent-plan': 'ark'}
+        # The Alibaba Token Plan row is additive metadata (windows, state and
+        # bounded snapshot freshness); consumers that do not know the alias
+        # simply ignore the extra row.
+        board_ids = {'kimi-for-coding': 'kimi', 'volcengine-agent-plan': 'ark',
+                     'bailian-token-plan': 'aliyun'}
         for quota in quotas:
             quota['id'] = board_ids.get(quota.get('id'), quota.get('id'))
         unix_time = int(time.time())
@@ -966,6 +1352,12 @@ class Collector:
             system = json.loads(json.dumps(self.latest_system)) if self.latest_system else None
             tasks = json.loads(json.dumps(self.latest_tasks))
             quotas = json.loads(json.dumps(self.latest_quotas))
+        for group in tasks.values():
+            for item in group.get('items', []):
+                item.pop('_board_visible', None)
+            group['stale'] = (group.get('state') != 'ok' or
+                              now - group.get('sampled_at', 0) > TASK_INTERVAL_SECONDS * 4)
+        quotas = cached_worker_quotas(quotas)
         sampled_at = system.get('sampled_at') if system else None
         return {'sampled_at': sampled_at,
                 'stale': (sampled_at is None or now - sampled_at > STALE_AFTER_SECONDS),

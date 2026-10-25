@@ -303,7 +303,7 @@ def run(limit=None, batch=50, dry_run=False, offline=False):
             try:
                 backend.request('/api/v1/content/batch-write', 'POST',
                                 {'root_uri': backend.MEMORY_ROOT + '/' + category,
-                                 'operations': operations, 'wait': True, 'timeout': 600}, timeout=900)
+                                 'operations': operations, 'wait': True}, timeout=900)
                 written = group
             except ValueError:
                 # Fall back to individual writes so one bad record cannot fail a chunk.

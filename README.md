@@ -53,6 +53,7 @@ The included **Codex skill** supplies delegation guidance. Claude Code and other
 | Ask an AI agent to install it | [Agent installation runbook](references/agent-install.md) / [模型安装指引](references/agent-install.zh-CN.md) |
 | Configure models after installation | Open **Setup wizard** in the console |
 | Delegate and inspect work | [Skill](SKILL.md) and [operations](references/operations.md) |
+| Use the voice reminder for alerts | [Voice reminder settings](references/qwen-voice-settings.md) |
 | Use LAN access or a reverse proxy | [Accounts and remote access](references/remote-access.md) |
 
 ### Guided installation
@@ -97,19 +98,57 @@ Or install the subscription-first Ark/Kimi/DeepSeek ladder:
 python3 scripts/install.py --preset ark-agent-plan
 ```
 
-That preset uses Ark Auto for fast work; Kimi K2.8 and Ark Seed Evolving at 1:1 for
-ordinary work; native Kimi K3 and Ark K3 at 2:1 for deep work; then Ark Auto and direct
-DeepSeek as ordered fallbacks. Ark Auto is stronger; direct DeepSeek is the lowest-capability
-final fallback, even when severe conservation temporarily gives it more traffic. Every paired
-tier has its own continuous load curve: live,
-reset-aware runway moves through configured ratio control points without rewriting the saved
-baseline or crossing its economic bounds. Fast fallback sharing has separate healthy, level 1
-and level 2 curves, so full capacity and constrained capacity do not collapse to one fixed value.
-When Kimi is healthy but Ark is severely constrained, the same-capability Normal and Deep
-curves may reach 100% Kimi / 0% Ark. A zero endpoint removes Ark from actual dispatch rather
-than keeping a cosmetic 1% share. Fast has no same-tier subscription peer, so severe Ark
-pressure may instead move it continuously to 100% direct DeepSeek; Ark returns as its
-reset-aware runway improves.
+Or install the optional three-plan stack (Kimi + Ark Agent Plan + Alibaba Token Plan + direct
+DeepSeek). It declares only the fixed `qwen3.8-max` and `qwen3.8-flash` models, so the opaque
+Alibaba Auto alias can never appear in automatic routing:
+
+```sh
+python3 scripts/install.py --preset three-plan
+```
+
+The four-tier setup uses Fast = DeepSeek Flash, Normal = K2.8 Preview / Qwen3.8 Flash,
+Deep = Qwen3.8 Max, and Ultra = native Kimi K3.1 Pro with maximum supported reasoning.
+Old native/Ark K3 routes are retired; historical records stay accurate. Ultra has no silent
+lower-model fallback. Kimi's base / maximum weekly protection for K3.1 Pro defaults to 30%. Dynamic release is on
+by default: the idle final half of the real weekly cycle lowers protection toward min(base, 5)%,
+opening that allowance to Normal. Ultra demand or unknown signals keep the base. The five-hour
+window and account total remain separate limits. Missing account total is unknown,
+never four times a weekly allowance. See [routing](references/routing.md).
+
+For single-key Alibaba access, keep its
+provider API key in an owner-only file; set `provider_api_key_files` in the private pool config to
+`{"bailian-token-plan": "/private/path/key"}` and the runtime references it without copying the
+secret. The Credits pool refreshes itself from the official read-only account query
+(Model Studio OpenAPI `GetSubscriptionStats`, ACS3-signed): register the Alibaba account
+AK/SK pair — separate from the inference key and never from configuration — as owner-only
+file references `aliyun-control-ak` and `aliyun-control-sk`, then `delegate-opencode quota
+--refresh` or the console refresh button fetches the actual remaining Credits with an
+explicit `openapi_live` source. A failed live query never fabricates a refresh: the row
+keeps its last genuine reading (or, before the first one, an imported console snapshot)
+with a sanitized `live_error`. Snapshot imports remain available as that baseline:
+
+```sh
+delegate-opencode quota --import-snapshot /private/path/snapshot.json
+```
+
+Multiple independent Alibaba seats with the same expiry are counted as one combined Credits
+pool, with optional per-seat detail. An optional authenticated loopback proxy consumes keys
+sequentially and switches after a confirmed key-level rejection; existing single-key installs
+keep working. See [combined Credits](references/bailian-seat-ledger.md) and
+[multi-key setup and idle-safe activation](references/bailian-pool.md).
+
+Snapshots are shown with explicit freshness, never as live readings; an expired-period or
+already-stale positive reading can never clear a recorded depletion or billing circuit.
+For timestamped per-response token and estimated-Credit windows (1 h / 24 h / 48 h):
+
+```sh
+delegate-opencode usage-report --windows 1,24,48
+```
+
+Native OpenCode updates default to `enabled` with a 24-hour check interval. The bridge stages the
+official stable binary while tasks run and performs a short serialized restart only when no
+task is executing; a queued-only handoff reserves the admission barrier instead of cancelling
+anything, and a failed health/version check restores the previous binary and configuration.
 
 These options initialize a **fresh** installation, not replace existing profiles. `--no-start` installs without launching services. [Full installation guide](references/installation.md): provider login, managed binary path, passwords, verification, updates and recovery.
 
@@ -118,17 +157,18 @@ These options initialize a **fresh** installation, not replace existing profiles
 | Internal profile | Optional preset model | Bridge role |
 | --- | --- | --- |
 | `senior-code` | Kimi K2.8 Preview | Normal-tier subscription pool |
-| `deep-research` | Kimi K3 | Deep-tier subscription pool |
+| `aliyun-max` | Qwen3.8 Max | Deep reasoning |
+| `ultra-reasoning` | Kimi K3.1 Pro | Ultra reasoning; waits rather than downgrades |
 | `fallback` | DeepSeek V4.1 Flash | Final fallback after preferred stages are unavailable |
 
-The upstream harness chooses Fast, Normal or Deep only from task uncertainty and submits with `profile=auto`; the bridge privately owns the profile, provider, allowance balance, conservation and fallback. Ordinary task results do not disclose automatic model or route changes, while the operator console retains the full audit trail. The profile table above is an operator configuration view, not an agent role list. The preset uses `max` reasoning; other models need a variant their provider actually supports. Only a user-required named model or controlled comparison should pin a profile. [Routing and plan efficiency](references/routing.md).
+The upstream harness chooses Fast, Normal, Deep or Ultra only from task uncertainty and submits with `profile=auto`; the bridge privately owns the profile, provider, allowance balance, conservation and fallback. Ordinary task results do not disclose automatic model or route changes, while the operator console retains the full audit trail. The profile table above is an operator configuration view, not an agent role list. The preset uses `max` reasoning; other models need a variant their provider actually supports. Only a user-required named model or controlled comparison should pin a profile. [Routing and plan efficiency](references/routing.md).
 
 Fast can complete bounded, well-specified features, known fixes, tests, documentation and routine
-deployment; it is not a mechanical-work bucket. Normal is for a concrete outcome whose execution
-still needs open investigation or synthesis. Deep is for abstract or unclear goals,
-unresolved system-wide causes, architecture trade-offs and unusually complex
-logic. File count, runtime, context size and importance do not make a task Deep, and genuinely
-Deep work has no separate task-count limit.
+deployment; it is not a mechanical-work bucket. Normal is the default for concrete outcomes. Deep handles complex work needing strong reasoning.
+Ultra handles especially difficult architecture, stubborn root causes and long-horizon reasoning.
+After two rounds without material progress, the coordinator reviews a checkpoint before upgrading;
+authentication, permissions and environment failures need direct repair. Once uncertainty is
+resolved, give routine implementation to Normal. File count and importance alone do not choose a tier.
 
 ## Product capabilities
 
@@ -144,13 +184,16 @@ visible for review.
 
 ### Route by capability
 
-The coordinator classifies uncertainty only: **Fast** for complete work with a clear direction and acceptance boundary, **Normal** for a concrete goal that still needs open investigation, and **Deep** for abstract goals, system-wide causes and difficult trade-offs. The bridge then selects a provider through a single model, ordered fallback chain, fixed pool or quota-adaptive pool. One provider is enough; multiple plans are an enhancement.
+The coordinator chooses Fast, Normal, Deep or Ultra from uncertainty and the concrete benefit
+of model latency. The bridge chooses the model; Ultra uses native K3.1 Pro and waits when it
+has no usable capacity. [The tier and quota contract](references/routing.md) describes checkpoint
+handoffs and dynamic weekly protection. Released percentage points are not available quota; spent quota cannot be reclaimed.
 
 Capacity protection combines a global curve with a curve for each provider pool. A constrained provider can leave a same-capability pair entirely while its healthy peer takes 100%; the global pool can still remain healthy. Level 1 gradually gives a later pay-as-you-go model some Fast/Normal work as subscription runway falls. Fast follows the runway of its own configured source, so a freshly restored Normal/Deep subscription cannot hide a nearly exhausted Fast plan. Level 2 ramps faster and can move a provider-only Fast route fully to DeepSeek while the configured balance floor is intact. Deep and explicitly pinned models never fall to a lower-capability stage. Off-peak reaches the high-pressure ceiling earlier; peak traffic rises from the Level 1 ceiling only as subscription runway becomes severe. Weekends are always off-peak, while weekday public holidays come from a configurable, locally cached calendar subscription. See [routing and plan efficiency](references/routing.md).
 
 ### Keep long jobs running
 
-There is no artificial model-step, tool-call or total-runtime cap. `wait` blocks and returns immediately when a result appears. Guidance and model changes can continue in the same OpenCode session at a safe turn boundary, preserving context and partial work. Confirmed quota exhaustion, usage-window limits and model-origin 429s continue through the next configured route without replaying the original task.
+There is no artificial model-step, tool-call or total-runtime cap. `wait` blocks and returns immediately when a result appears. Guidance continues at a safe turn boundary. Entering Ultra starts a fresh native model session with the same bridge task, authority and checkpoint, without replaying completed work. Confirmed quota exhaustion, usage-window limits and model-origin 429s continue through the next configured route without replaying the original task.
 
 ### Operate from one console
 
@@ -160,8 +203,19 @@ There is no artificial model-step, tool-call or total-runtime cap. `wait` blocks
 - Long builds, deployments and GitHub Actions runs can publish truthful phase, percentage and ETA data; jobs without measurable totals remain visibly indeterminate.
 - Statistics reuse one usage snapshot every three seconds for the last hour, 24 hours and 30 days. Charts carry real Token scales plus model, tier, status and profile breakdowns.
 - Task scheduling reports CPU, memory, disk, load and worker counts. Cleaned-task Token, cost and route summaries remain in an expandable **History ledger**.
+- **Models & routing** includes a separate **Voice reminders** card for the installed `qwen-voice-notify` skill. It defaults to cloud speech through the existing Volcengine Ark Agent Plan `seed-tts-2.0` model, automatically falls back to the installed offline Qwen3-TTS voice when cloud speech fails before playback, and never falls back after audio has started. Cloud and local fallback voices are selected separately, the shared rate defaults to 1.10× (0.50–2.00×), and settings persist atomically for both the console and `notify.py`; missing new fields keep their defaults so an older save cannot reset them. **试听** is explicit and fixed-text, stop only owns the console preview, and a GET never synthesizes or calls the network. There is no autoplay, volume or output-device change, model download or resident model server. See [Voice reminder settings](references/qwen-voice-settings.md).
 
 ### Host overview and structured controls
+
+Public deployments support **Passkey-only sign-in** while a separate LAN address
+retains password login. The same gateway protects the console and native OpenCode,
+including live streams and WebSockets. Multi-device enrollment, revocation and
+Mac-local recovery are available under **Passkey / Secure sign-in**; see the
+[public access guide](references/remote-access.md#public-access-with-passkeys).
+
+Codex tasks expand into their subagents and exactly associated OpenCode workers
+on the host overview and task dashboard. This local, read-only view shows the
+current model, reasoning effort and source freshness without inventing progress.
 
 Signing in lands on the **Host overview**: live CPU, GPU, memory, kernel memory-pressure, die temperatures, fan RPM, network rate, disk I/O and internal/external disk capacity charts (15 minutes, 1 hour, 24 hours), the active Codex and OpenCode tasks with their real model and elapsed time, provider quotas, and managed-service status. One shared collector serves the web and the physical information board; the board payload is published as an owner-only `STATE/host-board.json` in the existing v2 schema. Missing sensors render as unavailable, never as zero.
 

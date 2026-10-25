@@ -1,7 +1,7 @@
 """Opt-in ordered fallback and deterministic weighted admission routing.
 
 A ``routing_policy`` configuration optionally maps a work tier (fast, background,
-deep) to ordered stages. Each stage is a list of ``{'profile', 'weight'}`` entries.
+deep, ultra) to ordered stages. Each stage is a list of ``{'profile', 'weight'}`` entries.
 Dispatch picks the first stage that has at least one enabled candidate whose provider
 currently passes quota/circuit admission, then advances a smooth weighted round-robin
 over the candidates that are available in that stage. A tier without a policy keeps
@@ -23,7 +23,10 @@ without bound across restarts.
 from common import STATE, read_json, write_json
 import math
 
-TIERS = ('fast', 'background', 'deep')
+TIERS = ('fast', 'background', 'deep', 'ultra')
+# The four public work tiers, lowest to highest capability. ``background`` is the
+# internal routing name for the public ``normal`` tier.
+PUBLIC_TIERS = ('fast', 'normal', 'deep', 'ultra')
 COUNTERS = 'routing.json'
 MAX_STAGES = 8
 MAX_STAGE_ENTRIES = 8
@@ -33,6 +36,20 @@ MAX_CREDIT = MAX_WEIGHT * MAX_STAGE_ENTRIES
 MAX_LADDER_STEPS = 7
 MAX_SPILLOVER_SHARE = 50
 MAX_LEVEL2_SPILLOVER_SHARE = 100
+
+# Retired model references. Their profile records and historical task evidence are
+# preserved forever, but they are never a new-task entry, an automatic route, a
+# fallback-chain stage or a runtime model declaration any more: native Kimi K3 and
+# Ark Kimi K3 were removed when K3.1 Pro became the Ultra model.
+RETIRED_MODELS = frozenset(('kimi-for-coding/k3', 'volcengine-agent-plan/kimi-k3'))
+# The reserved native model whose weekly allowance slice is protected from every
+# other Kimi model (quota.kimi_request_allowed owns the policy evaluation).
+KIMI_RESERVED_MODEL = 'kimi-for-coding/k3.1-pro'
+
+
+def is_retired_model(model):
+    """True for a retired provider/model reference; historical records stay intact."""
+    return isinstance(model, str) and model.strip() in RETIRED_MODELS
 
 # Quota-aware dynamic admission weights inside one same-capability stage.
 # Stored policy weights stay the baseline preference; only the in-memory advance
@@ -55,6 +72,16 @@ MAX_LEVEL2_SPILLOVER_SHARE = 100
 RUNWAY_MAX = 4.0
 ZERO_ENDPOINT_RUNWAY_MAX = 2.0
 EFFECTIVE_WEIGHT_TOTAL = 100
+# Generalized N-provider curve (opt-in ``curve`` record). Each provider's
+# effective baseline weight is multiplied by min(1, runway) ** strength: one
+# on-pace runway is neutral, a genuinely zero runway removes the provider, a
+# pressured provider keeps only part of its weight, and unknown/stale telemetry
+# keeps the configured prior instead of erasing known pressure elsewhere.
+# strength=2 makes a provider at half the on-pace runway keep a quarter of its
+# weight while any provider at or above on pace returns exactly to baseline.
+CURVE_DEFAULT_STRENGTH = 2.0
+CURVE_MIN_STRENGTH = 0.25
+CURVE_MAX_STRENGTH = 8.0
 
 def _ratio(value, field='routing_dynamics ladder'):
     if not isinstance(value, (list, tuple)) or len(value) != 2:
@@ -69,17 +96,43 @@ def _ratio(value, field='routing_dynamics ladder'):
     return (left // divisor, right // divisor)
 
 
+def _curve(value):
+    """Validate one N-provider curve record; returns normalized settings.
+
+    ``{'curve': {'strength': 2.0}}`` applies to a stage with two or more
+    providers. Only the response strength is configurable; runways at or above
+    on-pace reproduce the stored baseline, a zero runway yields zero weight, and
+    unknown telemetry keeps that provider's configured prior.
+    """
+    if not isinstance(value, dict) or set(value) != {'curve'}:
+        raise ValueError('routing_dynamics entries require only ladder or curve')
+    curve = value.get('curve')
+    if not isinstance(curve, dict) or not set(curve).issubset({'strength'}):
+        raise ValueError('routing_dynamics curve accepts only the strength field')
+    strength = curve.get('strength', CURVE_DEFAULT_STRENGTH)
+    if isinstance(strength, bool) or not isinstance(strength, (int, float)) or \
+            not math.isfinite(strength) or not CURVE_MIN_STRENGTH <= float(strength) <= CURVE_MAX_STRENGTH:
+        raise ValueError('routing_dynamics curve.strength must be between ' +
+                         str(CURVE_MIN_STRENGTH) + ' and ' + str(CURVE_MAX_STRENGTH))
+    return {'curve': {'strength': float(strength)}}
+
+
 def validate_dynamics(value, policy, profiles):
-    """Validate optional, explicit quota-adaptive ladders for two-provider stages.
+    """Validate optional, explicit quota-adaptive curves for provider stages.
 
     The policy stays completely generic. A stage is fixed-weight unless its tier/index
     appears here, so a public installation with one plan, a plain backup, or an ordinary
     1:1 review pool never changes merely because its weights resemble this project's
     Ark/Kimi setup.
 
-    Shape: ``{tier: {"stage_index": {"ladder": [[2,1],[1,1],[1,2]]}}}``.
-    Ratios run from left-leaning to right-leaning and must include the stage's stored
-    baseline ratio. Runtime continuously interpolates through these control points.
+    Two record shapes are supported:
+
+    * ``{"ladder": [[2,1],[1,1],[1,2]]}`` for exactly two providers, with ratios
+      running from left-leaning to right-leaning that include the stored baseline.
+    * ``{"curve": {"strength": 2}}`` for two or more providers, scaling each
+      provider's baseline weight by its runway relative to the stage's best.
+
+    Both forms are opt-in per stage, so a fixed-weight policy needs no dynamics.
     """
     if value in (None, {}):
         return None
@@ -89,7 +142,7 @@ def validate_dynamics(value, policy, profiles):
         raise ValueError('routing_dynamics requires routing_policy')
     unknown = [key for key in value if key not in TIERS]
     if unknown:
-        raise ValueError('routing_dynamics keys must be fast, background or deep')
+        raise ValueError('routing_dynamics keys must be fast, background, deep or ultra')
     profiles = profiles if isinstance(profiles, dict) else {}
     out = {}
     for tier, records in value.items():
@@ -104,16 +157,23 @@ def validate_dynamics(value, policy, profiles):
             if index >= len(stages):
                 raise ValueError('routing_dynamics.' + tier + ' references a missing stage')
             stage = stages[index]
-            if len(stage) != 2:
-                raise ValueError('adaptive routing requires exactly two profiles in the stage')
+            if len(stage) < 2:
+                raise ValueError('adaptive routing requires two or more profiles in the stage')
             providers = []
             for entry in stage:
                 model = (profiles.get(entry['profile']) or {}).get('model', '')
                 providers.append(str(model).split('/', 1)[0])
-            if not all(providers) or providers[0] == providers[1]:
-                raise ValueError('adaptive routing requires two different providers')
-            if not isinstance(record, dict) or set(record) != {'ladder'}:
-                raise ValueError('routing_dynamics entries require only ladder')
+            if not all(providers) or len(set(providers)) < 2:
+                raise ValueError('adaptive routing requires two or more different providers')
+            if not isinstance(record, dict):
+                raise ValueError('routing_dynamics entries must be objects')
+            if set(record) == {'curve'}:
+                cleaned[raw_index] = _curve(record)
+                continue
+            if set(record) != {'ladder'}:
+                raise ValueError('routing_dynamics entries require only ladder or curve')
+            if len(stage) != 2:
+                raise ValueError('routing_dynamics ladder requires exactly two profiles')
             ladder = record.get('ladder')
             if not isinstance(ladder, list) or not 2 <= len(ladder) <= MAX_LADDER_STEPS:
                 raise ValueError('routing_dynamics ladder must contain 2 to ' + str(MAX_LADDER_STEPS) + ' ratios')
@@ -169,7 +229,12 @@ def validate_spillover(value, policy, profiles):
     tiers = value.get('tiers')
     if not isinstance(tiers, list) or not tiers or len(tiers) != len(set(tiers)) or \
             any(not isinstance(tier, str) or tier not in TIERS for tier in tiers):
-        raise ValueError('quota_spillover.tiers must be unique fast, background or deep values')
+        raise ValueError('quota_spillover.tiers must be unique fast, background, deep or ultra values')
+    if 'ultra' in tiers:
+        # Conservation and pay-as-you-go spillover shed ordinary plan work. Ultra
+        # is the reserved-capability tier: it must never share its stage away and
+        # its work must never be silently blended into a cheaper pool.
+        raise ValueError('quota_spillover.tiers must not include ultra')
     maximum = value.get('max_share_percent')
     if isinstance(maximum, bool) or not isinstance(maximum, int) or not 1 <= maximum <= MAX_SPILLOVER_SHARE:
         raise ValueError('quota_spillover.max_share_percent must be an integer between 1 and ' +
@@ -241,7 +306,7 @@ def validate_policy(value, profiles):
         raise ValueError('routing_policy must be a non-empty object')
     unknown = [key for key in value if not isinstance(key, str) or key not in TIERS]
     if unknown:
-        raise ValueError('routing_policy keys must be fast, background or deep')
+        raise ValueError('routing_policy keys must be fast, background, deep or ultra')
     clean_profiles = profiles if isinstance(profiles, dict) else {}
     out = {}
     for tier in TIERS:
@@ -405,6 +470,74 @@ def _runway(provider_view, now):
     return forecast['runway']
 
 
+def _scaled_curve(entries, provider_by_profile, group_base, runway_by_provider, info, strength):
+    """Generalized N-provider runway curve; returns (entries, reason, info).
+
+    Each provider's baseline weight is scaled by ``min(1, runway) ** strength``,
+    an absolute response that treats one "on pace" runway as the neutral point:
+    a genuinely empty pool scores zero and is dropped, a pressured pool keeps
+    only part of its weight, and any provider with unknown/stale telemetry keeps
+    its configured prior instead of erasing known pressure on other pools. Paygo
+    balances never carry windows, so they stay at that prior rather than being
+    compared as a subscription runway. All entries are then allocated one
+    integer budget of 100 by the largest-remainder rule.
+    """
+    scores = {}
+    known = []
+    for provider, runway in runway_by_provider.items():
+        if runway is None:
+            scores[provider] = 1.0
+            continue
+        value = max(0.0, float(runway))
+        scores[provider] = 0.0 if value <= 0 else min(1.0, value) ** strength
+        known.append(scores[provider])
+    if not known:
+        # Nothing is measurable: keep the configured weights as the prior.
+        return list(entries), 'telemetry_unknown', info
+    weighted = [(entry, entry['weight'] * scores.get(provider_by_profile.get(entry['profile']), 1.0))
+                for entry in entries]
+    total = sum(value for _, value in weighted)
+    if total <= 0:
+        return [], 'runway_scaled_all_depleted', info
+    allocated = []
+    for entry, value in weighted:
+        if value <= 0:
+            continue
+        exact = value / total * EFFECTIVE_WEIGHT_TOTAL
+        allocated.append([entry, int(math.floor(exact)), exact])
+    if not allocated:
+        return list(entries), 'telemetry_unknown', info
+    delta = EFFECTIVE_WEIGHT_TOTAL - sum(item[1] for item in allocated)
+    order = sorted(range(len(allocated)),
+                   key=lambda index: (allocated[index][2] - allocated[index][1], -index), reverse=True)
+    cursor = 0
+    while delta > 0 and order:
+        allocated[order[cursor % len(order)]][1] += 1
+        cursor += 1
+        delta -= 1
+    out = [dict(entry, weight=weight) for entry, weight, _ in allocated if weight > 0]
+    if not out:
+        return list(entries), 'telemetry_unknown', info
+    for name in info:
+        info[name]['effective_weight'] = 0
+        info[name]['share'] = 0.0
+    total_effective = sum(entry['weight'] for entry in out) or 1
+    for entry in out:
+        info[entry['profile']]['effective_weight'] = entry['weight']
+        info[entry['profile']]['share'] = entry['weight'] / total_effective
+    groups = {}
+    for entry in out:
+        provider = provider_by_profile.get(entry['profile'])
+        groups[provider] = groups.get(provider, 0) + entry['weight']
+    ordered = []
+    for entry in entries:
+        provider = provider_by_profile.get(entry['profile'])
+        if provider not in ordered:
+            ordered.append(provider)
+    reason = 'runway_scaled_' + '_'.join(str(groups.get(provider, 0)) for provider in ordered)
+    return out, reason, info
+
+
 def dynamics(entries, provider_by_profile, quota_view=None, now=None, adaptive=None,
              runway_override=None):
     """Effective admission weights and a safe reason for one available stage.
@@ -418,13 +551,15 @@ def dynamics(entries, provider_by_profile, quota_view=None, now=None, adaptive=N
     Provider grouping is load-bearing: profiles on one provider share one quota
     runway signal, so several models never make one subscription appear to have
     extra allowance. Dynamic balancing is explicitly opt-in per stage through an
-    ``adaptive`` ladder. Without it the configured weights are fixed, including
-    ordinary 1:1 review pools and primary/fallback setups.
+    ``adaptive`` ladder (exactly two providers) or ``curve`` (two or more).
+    Without one the configured weights are fixed, including ordinary 1:1 review
+    pools and primary/fallback setups.
 
-    Each adaptive stage owns a continuous curve. Its saved ratio list supplies
-    ordered control points, including the stored baseline anchor and the two
-    economic bounds. Runtime interpolates between them from the reset-aware runway
-    ratio and never moves outside the configured envelope or rewrites the policy.
+    Each adaptive stage owns a continuous curve. A ladder's saved ratio list
+    supplies ordered control points, including the stored baseline anchor and the
+    two economic bounds; a curve scales each provider's baseline by its runway
+    relative to the stage's best. Runtime never moves outside the configured
+    envelope or rewrites the policy.
     """
     import time as _time
     now = _time.time() if now is None else now
@@ -457,10 +592,6 @@ def dynamics(entries, provider_by_profile, quota_view=None, now=None, adaptive=N
                           {provider: _runway(quota_view.get(provider), now) for provider in providers})
     for name in base:
         info[name]['runway'] = runway_by_provider.get(info[name]['provider'])
-    if any(runway is None for runway in runway_by_provider.values()):
-        # Telemetry unknown/stale for any provider in the stage: keep the
-        # stored baseline rather than loading partial telemetry onto one side.
-        return list(entries), 'telemetry_unknown', info
     # Each provider group's baseline weight is the sum of its member profiles'
     # base weights. Equal on-track runway reduces exactly to the stored baseline
     # (deep stays 2:1, background stays 1:1). Relative runway then moves along
@@ -469,6 +600,18 @@ def dynamics(entries, provider_by_profile, quota_view=None, now=None, adaptive=N
     for entry in entries:
         provider = provider_by_profile.get(entry['profile'])
         group_base[provider] = group_base.get(provider, 0) + entry['weight']
+    if 'curve' in adaptive:
+        # Generalized multi-pool path: one curve for any pool size, where an
+        # unknown provider keeps its prior and never erases known depletion.
+        curve = _curve(adaptive)
+        return _scaled_curve(entries, provider_by_profile, group_base,
+                             runway_by_provider, info, curve['curve']['strength'])
+    if 'ladder' not in adaptive:
+        return list(entries), 'adaptive_invalid', info
+    if any(runway is None for runway in runway_by_provider.values()):
+        # Ladder stages keep their historic exactly-two-provider contract: any
+        # unknown side falls back to the stored baseline.
+        return list(entries), 'telemetry_unknown', info
     if max(runway_by_provider.values()) <= 0:
         return list(entries), 'telemetry_unknown', info
     left, right = providers[0], providers[1]

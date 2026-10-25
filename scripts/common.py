@@ -129,7 +129,69 @@ def auth_key(provider):
     return value['key']
 
 
+def _key_file_identity(provider):
+    """Identity of a configured key-file reference; never reads its contents.
+
+    The hash covers the provider, the resolved path and the file's stat identity
+    (device, inode, size, mtime, ctime). A rotated or replaced file therefore
+    changes the identity, and a missing or changed file fails closed instead of
+    inheriting stale evidence.
+    """
+    try:
+        from providers import KEY_FILE_PROVIDERS
+        if provider not in KEY_FILE_PROVIDERS:
+            return None
+    except Exception:
+        return None
+    try:
+        c = config()
+    except Exception:
+        return None
+    files = c.get('provider_api_key_files')
+    value = files.get(provider) if isinstance(files, dict) else None
+    if not isinstance(value, str) or not value or len(value) > 512:
+        return None
+    path = Path(value).expanduser()
+    try:
+        stat = path.stat()
+        resolved = str(path.resolve())
+    except OSError:
+        return None
+    material = '\x1f'.join(('key-file', provider, resolved, str(stat.st_dev),
+                            str(stat.st_ino), str(stat.st_size),
+                            str(stat.st_mtime_ns), str(stat.st_ctime_ns)))
+    return hashlib.sha256(material.encode()).hexdigest()
+
+
 def credential_identity(provider):
+    """Opaque credential identity used by billing circuits and dispatch provenance.
+
+    A provider configured through a runtime key-file reference is identified by
+    its file location and stat identity only; the bridge never opens or copies
+    the secret. A pooled provider uses a stable identity derived from its slot
+    reference metadata, never from any key value, so the pool can remain
+    available while one slot is exhausted. Providers without either override
+    keep the existing OpenCode auth-store key hash, and an absent credential
+    fails closed as None.
+    """
+    from providers import BAILIAN_PROVIDER, KEY_FILE_PROVIDERS
+    c = config()
+    pool = c.get('bailian_pool')
+    if provider == BAILIAN_PROVIDER and isinstance(pool, dict) and pool.get('enabled') is True:
+        # The pool is a distinct credential concept: a single exhausted seat
+        # must not make the provider look credential-less, and no Keychain value
+        # or file content is ever read to compute this identity. Invalid pool
+        # configuration fails closed because no stable provenance can be proven.
+        try:
+            import bailian_pool
+            return bailian_pool.pool_identity(c)
+        except Exception:
+            return None
+    files = c.get('provider_api_key_files')
+    if provider in KEY_FILE_PROVIDERS and isinstance(files, dict) and files.get(provider):
+        # The runtime gives this override precedence over auth.json even when
+        # its file disappeared; stale auth-store evidence cannot prove recovery.
+        return _key_file_identity(provider)
     try:
         return hashlib.sha256(auth_key(provider).encode()).hexdigest()
     except ValueError:
@@ -193,7 +255,8 @@ def api(path, directory=None, method='GET', data=None, timeout=15, include_curso
 
 
 def public_task(t):
-    keys = ['id', 'title', 'status', 'profile', 'requested_profile', 'profile_reason', 'tier', 'mode', 'urgency', 'complexity',
+    keys = ['id', 'title', 'status', 'profile', 'requested_profile', 'profile_reason', 'tier',
+            'requested_tier', 'tier_change', 'tier_history', 'mode', 'urgency', 'complexity',
             'capability_floor', 'capability_reason',
             'group_id', 'group_title', 'parent_task_id', 'owner_thread_id',
             'workspace', 'source_dir', 'directory', 'scopes', 'targets', 'resources',

@@ -74,10 +74,10 @@ python3 scripts/install.py --preset ark-agent-plan
 # 可追加 --no-start，仅安装文件而不启动服务。
 ```
 
-自定义模型初始映射到三个 profile。`deepseek-kimi` 配置 DeepSeek V4.1 Flash、Kimi K2.8
-Preview、Kimi K3；`ark-agent-plan` 还加入方舟 Auto、Seed Evolving、方舟 K3 和
-[路由说明](routing.zh-CN.md)中的套餐优先加权策略。两种预设均使用 `max`。预设不会创建账号
-或赋予模型权限。已有安装即使传入模型/预设参数，也保留原配置。
+自定义安装使用用户指定的模型；四档预设加入 DeepSeek Flash、K2.8 Preview、Qwen3.8 Max 与 Kimi K3.1 Pro，
+使用最高受支持思考档。旧原厂和 Ark K3 不再作为新任务选项。具体路由、Ultra 不降档和周额度预留见
+[路由说明](routing.zh-CN.md)。预设不会创建账号或赋予模型权限；已有安装保留原配置，升级迁移需单独核验。
+
 
 安装后可在**模型与路由**中配置单套餐、一个主模型加一个备用、固定多模型池，或主动开启额度
 自适应。用户只有一个供应商时从 `--model` 开始即可；预设只适用于已经拥有对应账号的用户。

@@ -328,13 +328,21 @@ class RoutePolicyTests(unittest.TestCase):
                          patch.object(delegate, 'STATE', self.state), patch.object(routing, 'STATE', self.state),
                          patch.object(worker, 'STATE', self.state),
                          patch.object(common, 'CONFIG', self.config), patch.object(delegate, 'CONFIG', self.config),
-                         patch.object(quota, 'credential_identity', lambda p: 'cred-' + str(p))]
+                         patch.object(quota, 'credential_identity', lambda p: 'cred-' + str(p)),
+                         # Routing mechanics fixtures reuse the historical profile/
+                         # model names as generic stand-ins. Retirement admission is
+                         # covered by tests/test_kimi_weekly_reserve.py.
+                         patch.object(routing, 'RETIRED_MODELS', frozenset())]
         for p in self.patchers:
             p.start()
         common.init()
         self.q = {p: {'state': 'ok', 'stale': False, 'sampled_at': time.time(), 'available': True,
                       'windows': [{'name': 'window_0', 'remaining_percent': 80.0}]}
                   for p in ('deepseek', 'kimi-for-coding', 'ark')}
+        # A weekly reading keeps ordinary Kimi admissible in these routing
+        # mechanics tests. No 'valid' flag keeps it out of capacity forecasts.
+        self.q['kimi-for-coding']['windows'].append(
+            {'name': 'overall', 'remaining_percent': 80.0, 'duration_minutes': 10080})
 
     def tearDown(self):
         for p in reversed(self.patchers):
@@ -394,15 +402,20 @@ class RoutePolicyTests(unittest.TestCase):
         self.assertEqual(quota.route(t, self.c, self.q)[0], 'ark-k3')
         self.assertEqual((self.state / COUNTERS).read_bytes(), before)
 
-    def test_explicit_profile_pins_and_retains_monthly_retry(self):
+    def test_explicit_kimi_profile_requires_manual_release_not_implicit_retry(self):
         quota.trip('kimi-for-coding', MONTHLY_MESSAGE, 'm-monthly', reason=quota.MONTHLY_REASON)
         explicit = self.task(requested_profile='senior-code')
         self.assertEqual(quota.route(explicit, self.c, self.q),
-                         ('senior-code', 'explicit_profile_monthly_retry'))
+                         (None, 'provider_billing_blocked'))
         auto = self.task()
         profile, why = quota.route(auto, self.c, self.q)
         self.assertEqual(profile, 'ark-auto')  # the blocked preferred stage is skipped
         self.assertTrue(why.startswith('routing_policy:background:stage1:'))
+        # Non-Kimi explicit profiles keep the legacy monthly-retry semantics.
+        quota.trip('deepseek', MONTHLY_MESSAGE, 'm-ds', reason=quota.MONTHLY_REASON)
+        pinned = self.task(requested_profile='fallback')
+        self.assertEqual(quota.route(pinned, self.c, self.q),
+                         ('fallback', 'explicit_profile_monthly_retry'))
 
     def test_existing_circuits_still_block_policy_candidates(self):
         quota.trip('kimi-for-coding', 'Insufficient Balance', 'm-balance', reason=quota.BALANCE_REASON)
@@ -450,11 +463,16 @@ class RoutePolicyTests(unittest.TestCase):
         c['quota_spillover'] = {'enabled': True, 'profile': 'fallback',
                                  'tiers': ['fast', 'background'], 'max_share_percent': 30}
 
-        def provider(percent):
-            return {'state': 'ok', 'available': True, 'stale': False,
-                    'windows': [{'valid': True, 'remaining_percent': percent,
-                                 'duration_minutes': 300, 'resets_at': now + 4 * 3600}]}
-        q = {'kimi-for-coding': provider(10), 'ark': provider(10), 'deepseek': provider(100)}
+        def provider(percent, weekly=None):
+            windows = [{'valid': True, 'remaining_percent': percent,
+                        'duration_minutes': 300, 'resets_at': now + 4 * 3600}]
+            if weekly is not None:
+                windows.append({'name': 'overall', 'valid': True,
+                                'remaining_percent': weekly,
+                                'duration_minutes': 10080})
+            return {'state': 'ok', 'available': True, 'stale': False, 'windows': windows}
+        q = {'kimi-for-coding': provider(10, weekly=20), 'ark': provider(10),
+             'deepseek': provider(100)}
         admissions = routing.Admissions(c['routing_policy'])
         chosen = []
         with patch.object(quota.time, 'time', return_value=now):
@@ -463,16 +481,24 @@ class RoutePolicyTests(unittest.TestCase):
                 admissions.commit()
                 chosen.append(profile)
                 self.assertIn('quota_spillover_', why)
-        # 10% remaining with 80% of the window left is 0.125x runway, producing
-        # a 25% DeepSeek share under a 30% ceiling.
-        self.assertEqual(chosen.count('fallback'), 25)
-        self.assertEqual(chosen.count('senior-code'), 38)
-        self.assertEqual(chosen.count('ark-k3'), 37)
+            status = quota.routing_status(c, q)
+        # At 20% weekly the reserve owns the remaining Kimi slice for Ultra, so
+        # ordinary Kimi is not an automatic Normal candidate here.
+        self.assertNotIn('senior-code', chosen)
+        members = status['background'][0]['members']
+        self.assertEqual(chosen.count('fallback'), members['fallback']['effective_weight'])
+        self.assertGreater(members['fallback']['effective_weight'], 0)
+        self.assertLessEqual(members['fallback']['effective_weight'], 30)
 
         explicit = self.task(requested_profile='senior-code')
-        self.assertEqual(quota.route(explicit, c, q)[0], 'senior-code')
+        self.assertEqual(quota.route(explicit, c, q),
+                         (None, 'kimi_weekly_reserved_for_ultra'))
         deep = self.task(complexity='deep')
-        self.assertEqual(quota.route(deep, c, q)[0], 'deep-research')
+        # This fixture has no Deep policy stage, so the legacy single-profile
+        # route is deep-research (an ordinary Kimi model) and the reserve
+        # correctly reports no route instead of silently downgrading.
+        self.assertEqual(quota.route(deep, c, q),
+                         (None, 'kimi_weekly_reserved_for_ultra'))
 
     def test_level2_conservation_uses_fast_pool_for_normal_but_never_deep(self):
         now = 1_800_000_000
@@ -536,7 +562,10 @@ class RoutePolicyTests(unittest.TestCase):
         self.assertLessEqual(fallback_weight, 30)
 
         # A fresh Kimi window restores the original strong Normal pool automatically.
-        q['kimi-for-coding'] = provider(80)
+        restored = provider(80)
+        restored['windows'].append({'name': 'overall', 'remaining_percent': 80,
+                                    'duration_minutes': 10080})
+        q['kimi-for-coding'] = restored
         q['volcengine-agent-plan'] = provider(80)
         with patch.object(quota.time, 'time', return_value=now):
             restored, why = quota.route(self.task(), c, q)
@@ -579,18 +608,24 @@ class RoutePolicyTests(unittest.TestCase):
         self.assertFalse(guidance['conservation_refill_safe'])
         self.assertEqual(guidance['conservation_level'], 2)
 
-    def test_level2_keeps_task_tier_but_uses_normal_model_for_deep(self):
+    def test_level2_conservation_never_downgrades_deep_to_a_normal_model(self):
         c = json.loads(json.dumps(self.c))
         c['routing_policy'] = {'deep': DEEP_POLICY, 'background': BACKGROUND_POLICY}
         q = {'kimi-for-coding': {'state': 'ok', 'available': True, 'stale': False,
-             'windows': [{'valid': True, 'remaining_percent': 80}]}}
+             'windows': [{'valid': True, 'remaining_percent': 80},
+                         {'name': 'overall', 'remaining_percent': 80,
+                          'duration_minutes': 10080}]}}
         t = self.task(complexity='deep')
         with patch.object(quota, 'tier_guidance', return_value={'conservation_level': 2}):
+            # The Normal-only replacement (senior-code) cannot satisfy the Deep
+            # capability floor, so the admissible deep primary is preserved
+            # rather than silently downgrading the model.
             selected, _ = quota.route(t, c, q)
-            self.assertEqual(selected, 'senior-code')
+            self.assertEqual(selected, 'deep-research')
             self.assertEqual(t['complexity'], 'deep')
             status = quota.routing_status(c, q)
-            self.assertIn('senior-code', status['deep'][0]['members'])
+            self.assertIn('deep-research', status['deep'][0]['members'])
+            self.assertNotIn('senior-code', status['deep'][0]['members'])
             pinned = dict(t, requested_profile='deep-research')
             self.assertEqual(quota.route(pinned, c, q)[0], 'deep-research')
         with patch.object(quota, 'tier_guidance', return_value={'conservation_level': 1}):
@@ -698,7 +733,10 @@ class RoutePolicyTests(unittest.TestCase):
              'deepseek': {'state': 'ok', 'available': True, 'windows': [], 'balances': []}}
         t = self.task(complexity='deep', excluded_providers=['kimi-for-coding'])
         with patch('economics._window_fit', return_value={'status': 'ok', 'pressure_runway': .17}):
-            self.assertEqual(quota.route(t, c, q)[0], 'fallback')
+            # Every admissible Deep primary is excluded or reserved. The later
+            # stage is the DeepSeek cash fallback, which is a capability
+            # downgrade for a Deep task: wait intentionally instead.
+            self.assertIsNone(quota.route(t, c, q)[0])
             self.assertFalse(quota._allowed_profile('ark-k3', t, c, q)[1])
             self.assertFalse(quota._allowed_profile('ark-auto', t, c, q)[1])
         with patch('economics._window_fit', return_value={'status': 'ok', 'pressure_runway': .8}):
@@ -728,10 +766,11 @@ class RoutePolicyTests(unittest.TestCase):
             self.assertEqual(status['background'][0]['members']['ark-evolving']['reason'],
                              'provider_reserved_for_fast')
             # Kimi is available but also below the Level 2 threshold, so the
-            # reserved Ark pool gives Normal the configured cash fallback while
-            # Deep still uses its conserved paid-plan slot.
+            # reserved Ark pool gives Normal the configured cash fallback. Deep
+            # keeps its deep-capable Kimi profile: a Normal-only conservation
+            # replacement is not a valid Deep downgrade.
             self.assertEqual(quota.route(normal, c, q)[0], 'fallback')
-            self.assertEqual(quota.route(deep, c, q)[0], 'senior-code')
+            self.assertEqual(quota.route(deep, c, q)[0], 'deep-research')
 
             # A healthy Kimi peer takes both automatic tiers; the depleted Ark
             # plan never reopens for them.
@@ -739,11 +778,12 @@ class RoutePolicyTests(unittest.TestCase):
             self.assertEqual(quota.route(normal, c, q)[0], 'senior-code')
             self.assertEqual(quota.route(deep, c, q)[0], 'deep-research')
 
-            # Kimi temporarily exhausted: both tiers fall to the cash peer
-            # instead of reopening the expensive Ark plan.
+            # Kimi temporarily exhausted: Normal falls to the cash peer instead
+            # of reopening the expensive Ark plan, while Deep waits for a
+            # deep-capable peer rather than downgrading to cash.
             q['kimi-for-coding']['available'] = False
             self.assertEqual(quota.route(normal, c, q)[0], 'fallback')
-            self.assertEqual(quota.route(deep, c, q)[0], 'fallback')
+            self.assertIsNone(quota.route(deep, c, q)[0])
 
             # All peers unavailable: no automatic route at all, and no
             # fabricated provider error is introduced.
@@ -849,6 +889,23 @@ class RoutePolicyTests(unittest.TestCase):
             # silently downgraded to the cash fallback.
             self.assertEqual([item['profile'] for item in quota.alternatives(floored, c, q)],
                              ['ark-k3'])
+
+    def test_explicit_ultra_policy_does_not_shadow_the_implicit_deep_primary(self):
+        # Old three-tier shape: no routing record and no deep/background policy.
+        # An explicit Ultra stage must not make the capability floor reject the
+        # resolver's implicit default Deep profile.
+        c = {'profiles': profiles(), 'kimi_reserve_percent': 0,
+             'routing_policy': {'ultra': [[{'profile': 'ark-k3', 'weight': 1}]]}}
+        deep = self.task(complexity='deep')
+        self.assertTrue(quota.meets_capability_floor('deep-research', deep, c))
+        self.assertFalse(quota.meets_capability_floor('fallback', deep, c))
+        self.assertFalse(quota.meets_capability_floor('senior-code', deep, c))
+        self.assertEqual(quota.route(deep, c, self.q)[0], 'deep-research')
+        # The Ultra floor still accepts only its explicit primary; the Deep
+        # default never leaks into an Ultra requirement.
+        self.assertTrue(quota.meets_capability_floor('ark-k3', {'tier': 'ultra'}, c))
+        self.assertFalse(quota.meets_capability_floor('deep-research',
+                                                      {'tier': 'ultra'}, c))
 
     def test_generic_single_plan_uses_curves_without_cost_guesses(self):
         now = 1_800_000_000
@@ -1061,7 +1118,10 @@ class RoutePolicyTests(unittest.TestCase):
                                  'level2_runway_percent': 25}
         q = {
             'kimi-for-coding': {'state': 'ok', 'available': True, 'stale': False,
-                                'windows': [{'valid': True, 'remaining_percent': 20}]},
+                                'windows': [{'valid': True, 'remaining_percent': 20},
+                                            {'name': 'overall', 'valid': True,
+                                             'remaining_percent': 80,
+                                             'duration_minutes': 10080}]},
             'ark': {'state': 'ok', 'available': True, 'stale': False,
                     'windows': [{'valid': True, 'remaining_percent': 100}]},
             'deepseek': {'state': 'ok', 'available': True, 'stale': False, 'windows': []},
@@ -1080,9 +1140,9 @@ class RoutePolicyTests(unittest.TestCase):
     def test_recovery_alternatives_follow_policy_order(self):
         t = self.task(complexity='deep', requested_profile='deep-research')
         alts = quota.alternatives(t, self.c, self.q, exclude='kimi-for-coding')
-        # Deep tier first (Ark K3, then its DeepSeek fallback), then the background tier.
-        self.assertEqual([a['profile'] for a in alts],
-                         ['ark-k3', 'fallback'])
+        # Only deep-capable profiles are deliberate alternatives; the cash
+        # fallback stage is not a Deep downgrade.
+        self.assertEqual([a['profile'] for a in alts], ['ark-k3'])
 
     def test_window_recovery_prefers_policy_order_and_excludes_provider(self):
         t = self.task(requested_profile='deep-research', complexity='deep')
@@ -1093,8 +1153,7 @@ class RoutePolicyTests(unittest.TestCase):
         self.assertTrue(rec['usage_window_exhausted'])
         self.assertIsNone(rec['billing_reason'])
         self.assertEqual(rec['blocked_provider'], 'kimi-for-coding')
-        self.assertEqual([a['profile'] for a in rec['alternatives']],
-                         ['ark-k3', 'fallback'])
+        self.assertEqual([a['profile'] for a in rec['alternatives']], ['ark-k3'])
         self.assertEqual((rec['autonomous_next_action']['tier'],
                           rec['autonomous_next_action']['profile']), ('deep', 'auto'))
         self.assertFalse(rec['autonomous_next_action']['wait_for_quota'])
@@ -1176,14 +1235,17 @@ class ChooseReadyAdmissionTests(RoutePolicyTests):
                                     'deep-research', 'ark-k3', 'deep-research'])
 
     def test_separate_stage_fallback_keeps_independent_credits(self):
+        # A later cash stage is reachable for Normal work; a Deep task with no
+        # deep-capable peer waits instead of downgrading. Stage-credit
+        # independence is unrelated to the tier, so this phase uses Normal.
         self.q['kimi-for-coding']['available'] = False
         self.q['ark']['available'] = False
         for i in range(20):
             queued = [self.task(owner_thread_id='t%d' % i, group_id='t%d' % i, scopes=['f%d' % i],
-                                complexity='deep')]
+                                complexity='normal')]
             self.assertEqual(self.admit(queued)[0][1], 'fallback')
-        self.assertEqual(self.stored_credits()['deep'].get('fallback', 0), 0)
-        self.assertEqual(self.stored_credits()['deep'].get('deep-research', 0), 0)
+        self.assertEqual(self.stored_credits()['background'].get('fallback', 0), 0)
+        self.assertEqual(self.stored_credits()['background'].get('senior-code', 0), 0)
         self.q['kimi-for-coding']['available'] = True
         self.q['ark']['available'] = True
         sequence = []
@@ -1502,6 +1564,21 @@ class WindowClassificationTests(unittest.TestCase):
 class KimiWindowNormalizationTests(unittest.TestCase):
     """Live endpoint regression: exhausted window omits remaining; usages ratios fall back."""
 
+    def setUp(self):
+        # Billing circuits and quota caches are durable production state; these
+        # normalization tests must never read an operator's real blocks.
+        self.tmp = tempfile.TemporaryDirectory()
+        self.state = Path(self.tmp.name)
+        self.patchers = [patch.object(common, 'STATE', self.state),
+                         patch.object(quota, 'STATE', self.state)]
+        for item in self.patchers:
+            item.start()
+
+    def tearDown(self):
+        for item in reversed(self.patchers):
+            item.stop()
+        self.tmp.cleanup()
+
     def real_payload(self):
         return {
             'usage': {'limit': '100', 'used': '75', 'remaining': '25',
@@ -1571,7 +1648,7 @@ class KimiWindowNormalizationTests(unittest.TestCase):
         self.assertTrue(result['available'])
         self.assertEqual(result['windows'][0]['duration_minutes'], 10080)
 
-    def test_low_weekly_guard_uses_time_until_reset(self):
+    def test_ultra_low_weekly_uses_time_until_reset(self):
         now = time.time()
         base = {'state': 'ok', 'stale': False, 'available': True,
                 'windows': [{'name': 'overall', 'valid': True, 'remaining_percent': 3,
@@ -1580,8 +1657,10 @@ class KimiWindowNormalizationTests(unittest.TestCase):
         far = dict(base, windows=[dict(base['windows'][0], resets_at=now + 86400)])
         near = dict(base, windows=[dict(base['windows'][0], resets_at=now + 3600)])
         with patch.object(quota.time, 'time', return_value=now):
-            self.assertEqual(quota.kimi_low_weekly({'kimi-for-coding': far}, c), (True, 3.0))
-            self.assertEqual(quota.kimi_low_weekly({'kimi-for-coding': near}, c), (False, 3.0))
+            self.assertEqual(quota.kimi_ultra_low_weekly({'kimi-for-coding': far}, c),
+                             (True, 3.0))
+            self.assertEqual(quota.kimi_ultra_low_weekly({'kimi-for-coding': near}, c),
+                             (False, 3.0))
 
     def test_limit_7d_fallback_used_when_overall_is_unusable(self):
         result = quota.normalize('kimi-for-coding', {
@@ -1629,7 +1708,11 @@ class WorkerWindowRecoveryTests(unittest.TestCase):
         self.patchers = [patch.object(common, 'STATE', self.state), patch.object(worker, 'STATE', self.state),
                          patch.object(quota, 'STATE', self.state), patch.object(routing, 'STATE', self.state),
                          patch.object(common, 'CONFIG', self.config),
-                         patch.object(quota, 'credential_identity', lambda p: 'cred-' + str(p))]
+                         patch.object(quota, 'credential_identity', lambda p: 'cred-' + str(p)),
+                         # Routing mechanics fixtures reuse the historical profile/
+                         # model names as generic stand-ins. Retirement admission is
+                         # covered by tests/test_kimi_weekly_reserve.py.
+                         patch.object(routing, 'RETIRED_MODELS', frozenset())]
         for p in self.patchers:
             p.start()
         common.init()
@@ -1654,8 +1737,8 @@ class WorkerWindowRecoveryTests(unittest.TestCase):
         with patch.object(worker, 'call', return_value=[]) as call, \
              patch.object(worker, 'api', return_value=status), \
              patch.object(worker, 'stop', return_value=True) as stop, \
-             patch.object(worker, 'reroute_after_capacity_stop', return_value=False), \
-             patch.object(worker, 'finish', return_value={'done': True}) as finish:
+             patch.object(worker, '_reroute_after_capacity_stop', return_value=False), \
+             patch.object(worker, '_finish', return_value={'done': True}) as finish:
             worker.run_task('job-window', threading.Event())
         stop.assert_called_once()
         self.assertEqual(finish.call_args.args[2], 'needs_attention')
@@ -1683,9 +1766,9 @@ class WorkerWindowRecoveryTests(unittest.TestCase):
         with patch.object(worker, 'call', return_value=[]), \
              patch.object(worker, 'api', return_value=status), \
              patch.object(worker, 'stop', return_value=True) as stop, \
-             patch.object(worker, 'reroute_after_capacity_stop',
+             patch.object(worker, '_reroute_after_capacity_stop',
                           side_effect=lambda *args: shutdown.set() or True) as reroute, \
-             patch.object(worker, 'finish', return_value={'done': True}) as finish:
+             patch.object(worker, '_finish', return_value={'done': True}) as finish:
             worker.run_task('job-window', shutdown)
         stop.assert_called_once()
         reroute.assert_called_once()
@@ -1741,7 +1824,7 @@ class WorkerWindowRecoveryTests(unittest.TestCase):
         self.assertEqual(result['reason'], 'provider_usage_window_limit')
         self.assertTrue(result['recovery']['usage_window_exhausted'])
         self.assertEqual([a['profile'] for a in result['recovery']['alternatives']],
-                         ['ark-k3', 'fallback'])
+                         ['ark-k3'])
         self.assertIsNone(quota.billing_block('kimi-for-coding'))
         self.assertFalse(any(e.get('billing') for e in result['errors']))
 

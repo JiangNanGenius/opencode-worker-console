@@ -83,6 +83,25 @@ class ParseTests(BackendTestCase):
         self.assertIn('project=opencode_project_x', item['tags'])
 
 
+class WriteCompatibilityTests(BackendTestCase):
+    def test_write_uses_client_deadline_without_rejected_server_field(self):
+        seen = {}
+
+        def strict_server(path, method='GET', data=None, timeout=15):
+            if 'timeout' in data:
+                raise ValueError('HTTP 422: extra field timeout is forbidden')
+            seen.update(path=path, method=method, data=data, timeout=timeout)
+            return {'uri': data['uri']}
+
+        with patch.object(backend, 'request', side_effect=strict_server):
+            result = backend.write('viking://user/default/memories/events/check.md',
+                                   'compatibility probe', wait=True, timeout=75)
+        self.assertEqual(result['uri'], seen['data']['uri'])
+        self.assertTrue(seen['data']['wait'])
+        self.assertEqual(seen['timeout'], 105)
+        self.assertEqual(seen['path'], '/api/v1/content/write')
+
+
 class JournalTests(BackendTestCase):
     def test_unpin_updates_retrieval_tag_and_journal_without_replacing_body(self):
         uri = 'viking://user/default/memories/experiences/pinned.md'

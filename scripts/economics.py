@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 import math
 import time
 
-from providers import ARK_PROVIDER
+from providers import ARK_PROVIDER, BAILIAN_PROVIDER
 
 
 DEEPSEEK_PRICE_SOURCE = 'https://api-docs.deepseek.com/zh-cn/quick_start/pricing/'
@@ -39,6 +39,20 @@ DEFAULTS = {
     'deepseek_pro_input_cny_per_m': 9.0,
     'deepseek_pro_output_cny_per_m': 27.0,
     'deepseek_offpeak_multiplier': 0.5,
+    # Alibaba Token Plan Credits per million tokens. All four components were
+    # reconciled from exact 8-decimal native-task console bill rows captured
+    # 2026-10-17 through the Anthropic-compatible endpoint (sanitized evidence:
+    # ~/.local/state/delegate-opencode/analysis/2026-10-17-aliyun-native-task-billing.json;
+    # the raw export with private account IDs is never copied into the repo).
+    # These are model usage coefficients, not membership CNY conversions.
+    'ali_flash_input_credits_per_m': 80.0,
+    'ali_flash_cache_read_credits_per_m': 10.0,
+    'ali_flash_output_credits_per_m': 270.0,
+    'ali_flash_cache_write_credits_per_m': 125.0,
+    'ali_max_input_credits_per_m': 1200.0,
+    'ali_max_cache_read_credits_per_m': 100.0,
+    'ali_max_output_credits_per_m': 3600.0,
+    'ali_max_cache_write_credits_per_m': 1500.0,
 }
 
 
@@ -57,11 +71,19 @@ def normalize(value):
     out = {}
     for key, default in DEFAULTS.items():
         try:
-            out[key] = _number(source.get(key, default), key, high=1.0) \
-                if key == 'deepseek_offpeak_multiplier' else _number(source.get(key, default), key)
+            out[key] = _setting_number(source.get(key, default), key)
         except ValueError:
             out[key] = default
     return out
+
+
+def _setting_number(value, key):
+    """One configured amount; Credits rates may legitimately be zero."""
+    if key.endswith('_credits_per_m'):
+        return _number(value, key, low=0.0, high=1000000000.0)
+    if key == 'deepseek_offpeak_multiplier':
+        return _number(value, key, high=1.0)
+    return _number(value, key)
 
 
 def validate(value):
@@ -79,8 +101,7 @@ def validate(value):
     result = {}
     for key, default in DEFAULTS.items():
         raw = value.get(key, default)
-        result[key] = _number(raw, key, high=1.0) if key == 'deepseek_offpeak_multiplier' \
-            else _number(raw, key)
+        result[key] = _setting_number(raw, key)
     return result
 
 
@@ -184,6 +205,103 @@ def deepseek_usage_cost(usage, model, timestamp, settings=None):
 def _is_deepseek_model(model):
     """True for Worker Desk '<provider>/<model>' identifiers on DeepSeek."""
     return isinstance(model, str) and model.split('/', 1)[0].strip().lower() == 'deepseek'
+
+
+# Fixed Alibaba Token Plan models and their Credits coefficients. Worker Desk
+# never treats these estimates as a bill: the console's usage detail remains the
+# billing authority, and this only converts observed task token segments into an
+# estimated Credits cost for side-by-side comparison.
+ALI_CREDIT_MODEL_KEYS = {
+    'qwen3.8-max': {'fresh_input': 'ali_max_input_credits_per_m',
+                    'cached_input': 'ali_max_cache_read_credits_per_m',
+                    'output_including_reasoning': 'ali_max_output_credits_per_m',
+                    'cache_write': 'ali_max_cache_write_credits_per_m'},
+    'qwen3.8-flash': {'fresh_input': 'ali_flash_input_credits_per_m',
+                      'cached_input': 'ali_flash_cache_read_credits_per_m',
+                      'output_including_reasoning': 'ali_flash_output_credits_per_m',
+                      'cache_write': 'ali_flash_cache_write_credits_per_m'},
+}
+# Where each component rate comes from. The default coefficients for both fixed
+# Qwen3.8 models were reconciled from exact native-task bill rows (2026-10-17),
+# so every component is "observed_bill". "unmeasured_treated_zero" remains the
+# labeling for any future placeholder rate with no independent evidence: that
+# component is then excluded from the numeric estimate and reported as unpriced
+# whenever tokens were observed, so an unknown cost is never shown as zero.
+ALI_CREDIT_HONESTY = {
+    'qwen3.8-flash': {'fresh_input': 'observed_bill', 'cached_input': 'observed_bill',
+                      'output_including_reasoning': 'observed_bill',
+                      'cache_write': 'observed_bill'},
+    'qwen3.8-max': {'fresh_input': 'observed_bill', 'cached_input': 'observed_bill',
+                    'output_including_reasoning': 'observed_bill',
+                    'cache_write': 'observed_bill'},
+}
+ALI_CREDIT_EVIDENCE = {
+    'captured_at': '2026-10-17',
+    'protocol': 'anthropic_native',
+    'source': 'reconciled native-task Token Plan bill rows',
+}
+ALI_CREDIT_COMPONENTS = ('fresh_input', 'cached_input', 'output_including_reasoning', 'cache_write')
+
+
+def _is_alibaba_model(model):
+    return isinstance(model, str) and model.split('/', 1)[0] == BAILIAN_PROVIDER
+
+
+def alibaba_credits_cost(usage, model, settings=None):
+    """Estimate one Alibaba token segment's Credits; None for other providers.
+
+    OpenCode reports fresh input and cache reads as separate counters, so fresh
+    input is charged at the input rate, cache reads at theirs, completion is
+    output plus reasoning counted once, and cache writes at the cache-creation
+    rate. The result is explicitly an estimate and never a bill. A component
+    whose rate has no independent evidence is left out of the numeric value and
+    returned in ``unpriced_components`` with its token count, so partial
+    evidence is never rounded down to a complete-looking zero.
+    """
+    if not isinstance(usage, dict) or not _is_alibaba_model(model):
+        return None
+    name = model.split('/', 1)[1]
+    keys = ALI_CREDIT_MODEL_KEYS.get(name)
+    if keys is None:
+        return None
+    values = normalize(settings)
+    amounts = {'fresh_input': _usage_number(usage.get('input')),
+               'cached_input': _usage_number(usage.get('cache_read')),
+               'output_including_reasoning': _usage_number(usage.get('output')) +
+                                             _usage_number(usage.get('reasoning')),
+               'cache_write': _usage_number(usage.get('cache_write'))}
+    tokens = sum(amounts.values())
+    if tokens <= 0:
+        return None
+    provenance = dict(ALI_CREDIT_HONESTY.get(name, {}))
+    rates = {component: values[keys[component]] for component in ALI_CREDIT_COMPONENTS}
+    unpriced = []
+    unpriced_tokens = 0.0
+    credits = 0.0
+    priced_tokens = 0.0
+    for component in ALI_CREDIT_COMPONENTS:
+        amount = amounts[component]
+        rate = rates[component]
+        if provenance.get(component) == 'unmeasured_treated_zero' and rate <= 0:
+            if amount > 0:
+                unpriced.append(component)
+                unpriced_tokens += amount
+            continue
+        credits += amount * rate / 1_000_000
+        priced_tokens += amount
+    return {'credits': round(credits, 6), 'tokens': tokens,
+            'priced_tokens': priced_tokens, 'unpriced_tokens': unpriced_tokens,
+            'unpriced_components': unpriced,
+            'precision': 'partial' if unpriced else 'complete',
+            'underestimate': bool(unpriced), 'model': model,
+            'components': {'fresh_input_tokens': amounts['fresh_input'],
+                           'cached_input_tokens': amounts['cached_input'],
+                           'completion_tokens': amounts['output_including_reasoning'],
+                           'cache_write_tokens': amounts['cache_write']},
+            'rates_credits_per_million': rates,
+            'rate_provenance': provenance,
+            'evidence': dict(ALI_CREDIT_EVIDENCE),
+            'basis': 'estimated_from_observed_tokens'}
 
 
 def _usage_tokens(value):
@@ -637,8 +755,12 @@ def _refill_forecast(components, capacity, now, records=None):
     return forecast
 
 
-def work_pool(config, quota_view, now=None, include_payg_balance=True):
+def work_pool(config, quota_view, now=None, include_payg_balance=True,
+              exclude_providers=None):
     """Fit unlike provider quotas onto one actual-workload runtime axis.
+
+    ``exclude_providers`` lets control exclude refillable prepaid pools from
+    global conservation while the console's display call still includes them.
 
     Each slot's full width is its estimated runtime at its own conservative burn
     rate; the filled part is the fitted runtime still available. DeepSeek may use
@@ -666,7 +788,9 @@ def work_pool(config, quota_view, now=None, include_payg_balance=True):
             mapping[provider] = provider
             records[provider] = record
             components[provider] = _window_fit(provider, record, now)
-    selected = {mapping[p] for p in configured if p in mapping} if configured else set(components)
+    excluded = set(exclude_providers or ())
+    selected = ({mapping[p] for p in configured if p in mapping and p not in excluded}
+                if configured else set(components) - {mapping[p] for p in excluded if p in mapping})
 
     included = {key: item for key, item in components.items()
                 if key in selected and (include_payg_balance or key != 'balance')}

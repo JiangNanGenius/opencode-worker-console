@@ -26,6 +26,8 @@ DEFAULTS = {
     'model_switches': False,
 }
 MAX_CLIENTS = 8
+ALIBABA_PROVIDER = 'bailian-token-plan'
+LOW_CREDITS_PERCENT = 10.0
 _CREDENTIAL_NAME = re.compile(r'^[A-Za-z][A-Za-z0-9_.-]{0,63}$')
 
 
@@ -175,6 +177,121 @@ def _threshold_alert(settings, key, severity, title, body):
     return [result]
 
 
+def _opaque_identity(provider, identity=None):
+    """Private dedup token only; never included in a title, body or delivery result."""
+    if isinstance(identity, str) and identity:
+        return identity
+    try:
+        value = quota.credential_identity(provider)
+    except Exception:
+        value = None
+    return value if isinstance(value, str) and value else 'unknown'
+
+
+def _credits_percent(window):
+    percent = quota.number(window.get('remaining_percent'))
+    if percent is not None:
+        return percent
+    remaining = quota.number(window.get('remaining'))
+    limit = quota.number(window.get('limit'))
+    return remaining / limit * 100 if remaining is not None and limit and limit > 0 else None
+
+
+def _observe_alibaba_credits(settings, snapshot):
+    """Edge-triggered prepaid Credits warning, keyed by the inference credential.
+
+    Only authoritative fresh telemetry qualifies: a zero/empty reading is an
+    exhaustion action, a positive reading at or below 10% is a prepare-next-seat
+    warning, and a healthy reading silently re-arms the edge only when no active
+    current-key circuit exists. A later seat/key has a new opaque identity and
+    therefore re-alerts. The live ledger already sums independent seat groups that
+    share one cycle into the combined Credits window, so the reading here is the
+    subscription total, never the scarcest single seat; optional seat detail only
+    changes the wording, never the threshold. Nothing here invents a balance,
+    a timestamp or an automatic reminder schedule.
+    """
+    record = (snapshot or {}).get(ALIBABA_PROVIDER) or {}
+    if record.get('state') != 'ok' or record.get('stale', True):
+        return []
+    # Positive whole-account telemetry may describe another seat. It must never
+    # re-arm an exhausted/rejected current-key alert and cause a repeat push on
+    # the next failure scan. Rotation detaches the block, so a new key can still
+    # receive its own edge alert.
+    try:
+        if quota.billing_block(ALIBABA_PROVIDER):
+            return []
+    except Exception:
+        pass
+    windows = [window for window in record.get('windows') or []
+               if isinstance(window, dict) and window.get('valid') is not False and
+               _credits_percent(window) is not None and _credits_percent(window) >= 0]
+    if not windows:
+        return []
+    percent = min(_credits_percent(window) for window in windows)
+    remaining_zero = any(quota.number(window.get('remaining')) is not None and
+                         quota.number(window.get('remaining')) <= 0 for window in windows)
+    exhausted = record.get('available') is False or remaining_zero or percent <= 0
+    groups = [group for group in record.get('seat_groups') or []
+              if isinstance(group, dict)] if isinstance(record.get('seat_groups'), list) else []
+    pooled = len(groups) >= 2
+    identity = _opaque_identity(ALIBABA_PROVIDER)
+    key = 'alibaba_credits:' + identity
+    if exhausted:
+        if pooled:
+            return _threshold_alert(settings, key, 2,
+                'Worker Desk · 阿里云 Credits 已耗尽（全部坐席）',
+                '阿里云 Token Plan 合并后的推理 Credits 已耗尽（%d 个坐席合计）。请打开并分配'
+                '下一个坐席，并把新推理 Key 写入该坐席的 Keychain 引用（不是控制面 AK/SK）。'
+                % len(groups))
+        return _threshold_alert(settings, key, 2,
+            'Worker Desk · 阿里云 Credits 已耗尽',
+            '阿里云 Token Plan 当前推理额度已耗尽。请打开并分配下一个坐席，然后替换 '
+            'Token Plan 推理 API Key（不是控制面 AK/SK）。')
+    if percent <= LOW_CREDITS_PERCENT:
+        if pooled:
+            return _threshold_alert(settings, key, 1,
+                'Worker Desk · 阿里云 Credits 不足 10%',
+                '阿里云 Token Plan 合并后 Credits 约剩 %.1f%%（%d 个坐席合计）。请准备下一个'
+                '坐席；合并额度耗尽后打开并分配新坐席，再把新 Key 写入坐席引用。'
+                % (percent, len(groups)))
+        return _threshold_alert(settings, key, 1,
+            'Worker Desk · 阿里云 Credits 不足 10%',
+            '阿里云 Token Plan 当前 Credits 约剩 %.1f%%。请准备下一个坐席；额度耗尽后'
+            '打开并分配新坐席，再替换 Token Plan 推理 API Key。' % percent)
+    # Healthy positive capacity rearms the warning for the same key without a push.
+    _threshold_alert(settings, key, 0, '', '')
+    return []
+
+
+def observe_provider_failure(config, provider, reason, identity=None):
+    """Direct best-effort alert for a confirmed Alibaba inference failure.
+
+    Billing (402/insufficient balance/monthly exhaustion) asks the operator to open
+    and assign the next seat and replace the Token Plan inference API Key. A model
+    401 is a separate action: check/replace the inference Key, never the control
+    AK/SK pair. Native 429 capacity throttling is not handled here. Dedup state is
+    keyed only by the opaque inference credential identity, so replacing the key
+    re-arms a later alert; messages never contain the identity or a raw secret.
+    """
+    if provider != ALIBABA_PROVIDER:
+        return []
+    settings = normalize((config or {}).get('notifications'))
+    if not settings['enabled'] or not settings['quota_transitions']:
+        return []
+    token = _opaque_identity(provider, identity)
+    if reason == quota.AUTH_REASON:
+        return _threshold_alert(settings, 'alibaba_auth:' + token, 1,
+            'Worker Desk · 阿里云推理 Key 被拒绝',
+            '阿里云 Token Plan 当前推理 API Key 被拒绝。请检查或替换推理 Key；'
+            '控制面 AK/SK 与这项修复无关。')
+    if reason in (quota.BALANCE_REASON, quota.MONTHLY_REASON):
+        return _threshold_alert(settings, 'alibaba_credits:' + token, 2,
+            'Worker Desk · 阿里云 Credits 已耗尽',
+            '阿里云 Token Plan 当前推理额度已耗尽。请打开并分配下一个坐席，然后替换 '
+            'Token Plan 推理 API Key（不是控制面 AK/SK）。')
+    return []
+
+
 def _observe_balance_and_windows(settings, snapshot):
     events = []
     record = (snapshot or {}).get('deepseek') or {}
@@ -243,15 +360,16 @@ def observe_quota(config, snapshot):
     if not settings['enabled'] or not settings['quota_transitions']:
         return []
     events = _observe_balance_and_windows(settings, snapshot)
+    events += _observe_alibaba_credits(settings, snapshot)
     events += _observe_long_conservation(settings, config, snapshot)
     # Probe the same admission path as dispatch, without advancing routing counters.
     # Do not infer an outage from a single empty window or conservation level.
     if not config.get('profiles'):
         return events
     blocked = []
-    for tier in ('fast', 'normal', 'deep'):
+    for tier in ('fast', 'normal', 'deep', 'ultra'):
         profile, _ = quota.route({'requested_profile': 'auto', 'tier': tier,
-            'complexity': 'deep' if tier == 'deep' else 'normal'}, config, snapshot)
+            'complexity': 'deep' if tier in ('deep', 'ultra') else 'normal'}, config, snapshot)
         if not profile:
             blocked.append(tier)
     events += _threshold_alert(settings, 'service_route_unavailable', int(bool(blocked)),

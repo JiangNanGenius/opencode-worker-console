@@ -7,6 +7,7 @@
   <title data-i18n="auth.pageTitle">Sign in · Worker Desk</title>
   <link rel="stylesheet" href="/console-assets/style.css">
   <script src="/console-assets/i18n.js" defer></script>
+  <script src="/console-assets/passkeys.js" defer></script>
   <script src="/console-assets/login.js" defer></script>
 </head>
 <body class="login-page">
@@ -17,7 +18,10 @@
   <main class="login-main">
     <h1 data-i18n="auth.heading">Sign in to your workspace</h1>
     <p class="login-intro" data-i18n="auth.intro">Manage your tasks, models and OpenCode sessions.</p>
-    <form id="login-form">
+    <button id="passkey-login" class="primary-button" type="button" data-pk-text="signIn" hidden>Sign in with a passkey</button>
+    <p id="passkey-error" role="alert" hidden></p>
+    <button id="login-retry" type="button" data-pk-text="retry" hidden>Try again</button>
+    <form id="login-form" hidden>
       <label for="login-username" data-i18n="auth.username">Username</label>
       <input id="login-username" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="64" required autofocus>
       <label for="login-password" data-i18n="auth.password">Password</label>
@@ -28,7 +32,8 @@
       <p id="login-error" role="alert" hidden></p>
       <button id="login-submit" class="primary-button" type="submit" data-i18n="auth.signIn">Sign in</button>
     </form>
-    <p class="login-help" data-i18n="auth.help">Use the account configured by your workspace administrator.</p>
+    <p id="login-help" class="login-help">Checking sign-in options…</p>
+    <a href="/console-passkeys" data-pk-text="manage">Manage passkeys</a>
     <noscript>JavaScript is required to sign in.</noscript>
   </main>
   <footer class="login-footer"><span>Worker Desk</span><span data-i18n="auth.footer">Your agents, one workspace.</span></footer>

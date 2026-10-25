@@ -297,3 +297,13 @@ test('current model ignores queued profile and historical models', () => {
   assert.equal(View.currentModel({profile: 'next', actual_models: ['ark/next', 'deepseek/flash']}, profiles), '');
   assert.equal(View.currentModel({actual_models: ['deepseek/flash']}, profiles), 'DeepSeek');
 });
+
+test('epochSeconds accepts ISO snapshot capture time, seconds and milliseconds', () => {
+  assert.equal(View.epochSeconds('2026-10-16T18:21:54+00:00'), Date.parse('2026-10-16T18:21:54+00:00') / 1000);
+  assert.equal(View.epochSeconds(1700000000), 1700000000);
+  assert.equal(View.epochSeconds(1700000000000), 1700000000);
+  assert.equal(View.epochSeconds(''), null);
+  assert.equal(View.epochSeconds('not a date'), null);
+  assert.equal(View.epochSeconds(null), null);
+  assert.equal(View.epochSeconds(true), null);
+});

@@ -1,5 +1,95 @@
 # Console authentication and remote access
 
+## Public access with Passkeys
+
+Keep password sign-in on a trusted LAN address. Public access uses a separate
+loopback listener and requires a WebAuthn Passkey with device verification.
+The configured public domain always uses Passkeys, even when opened from the
+LAN. A password cookie cannot be reused on the public listener.
+
+Enable the following **non-secret** settings in the existing pool configuration,
+preserving unrelated fields:
+
+```json
+{
+  "console_passkey": {
+    "enabled": true,
+    "public_origin": "https://desk.example.com",
+    "rp_id": "desk.example.com"
+  },
+  "console_public_port": 51529,
+  "console_trusted_proxies": ["127.0.0.1/32"]
+}
+```
+
+The public origin must be HTTPS and its hostname must equal the RP ID. Forward
+only to the dedicated public listener, never the LAN/password port or native
+OpenCode. Host and forwarded-IP headers cannot change a listener's role.
+
+Prepare the isolated, hash-locked console dependencies before restarting the
+console. The original worker interpreter stays separate:
+
+```sh
+python3 scripts/console_runtime.py prepare --worker-python /absolute/path/to/original/python3 \
+  --python /absolute/path/to/python3.12
+```
+
+From the LAN console, open **Passkey / Secure sign-in**, re-enter the current
+password and open the generated HTTPS registration link. The link expires after
+ten minutes, is single-use and authorizes registration only; it never creates a
+dashboard session. Complete device verification, then sign in with the new
+Passkey. Register a second device as a backup. Credential management requires a
+recent Passkey login; removing the last credential is blocked on the public site.
+
+If every Passkey is lost, an operator on the Mac can generate a fresh enrollment
+link without enabling public password login:
+
+```sh
+python3 scripts/console_auth.py enrollment-grant
+```
+
+Treat that output as a temporary secret. Do not save enrollment links in logs,
+documentation or tickets. Revoking a credential also invalidates its sessions
+and closes their live streams within the gateway's revalidation interval.
+
+### Managed FRP + Caddy on Apple Silicon macOS
+
+`scripts/public_access.py` installs pinned official FRP/Caddy archives and
+checks their published checksums. Its config, certificate storage and binaries
+live under `STATE/public-access`, outside conversations and worktrees. The
+helper's default domain is this project's deployment; pass `--domain` for your
+own installation. It never edits a router's existing proxies.
+
+Save the FRP token in macOS Keychain, using hidden input; do not put it in argv:
+
+```sh
+python3.12 scripts/keychain_secrets.py put --service com.workerdesk.frp --account desk.example.com
+python3.12 scripts/public_access.py install
+python3.12 scripts/public_access.py configure --server frp.example.com --server-port 5443 --domain desk.example.com
+python3.12 scripts/public_access.py validate
+python3.12 scripts/public_access.py start
+python3.12 scripts/public_access.py status
+# Withdraw the tunnel and remove its login-time autostart:
+python3.12 scripts/public_access.py stop
+```
+
+Point DNS at your existing FRP server, with HTTP and HTTPS virtual hosts on
+ports 80 and 443. The two domain-specific proxies reach local Caddy on loopback
+54080/54443. Caddy obtains and renews the public certificate through HTTP-01,
+redirects other HTTP traffic to HTTPS, and forwards HTTPS/SSE/WebSocket to the
+Passkey listener at loopback 51529. PROXY protocol v2 preserves the original
+HTTPS client IP for throttling; only the loopback sender is trusted. The FRP
+token is injected into the FRP child environment from Keychain. Caddy receives
+no token. A failed startup withdraws partially started components.
+
+Missing certificates, dependencies or credentials never enable a public
+password fallback. Roll back public access by stopping its tunnel first; keep
+native OpenCode and active workers running. Verify a real device registration
+and login before considering Passkey rollout complete.
+
+The legacy proxy examples below describe trusted/private deployments. Use the
+Passkey-only listener above for an Internet-facing installation.
+
 Worker Desk authenticates the console itself. Every console API, native
 OpenCode HTTP path and WebSocket upgrade requires a server-side session created
 through an explicit login. The old automatic, deterministic HMAC cookie was

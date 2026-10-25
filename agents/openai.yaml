@@ -1,6 +1,6 @@
 interface:
   display_name: "OpenCode Worker Pool"
-  short_description: "Delegate complete outcomes to general-purpose agents"
-  default_prompt: "Use $delegate-opencode to delegate a complete authorized outcome, including verification. Choose Fast, Normal or Deep by unresolved uncertainty and keep profile=auto. For substantial or continuing work, send a self-contained structured handoff with current state, decisions, evidence, constraints, acceptance and do-not-repeat items. Wait through completion, then review evidence. The bridge owns model choice and fallback."
+  short_description: "Delegate investigation and execution early to OpenCode"
+  default_prompt: "Use $delegate-opencode to delegate ready investigation and execution packages early with enough context and suitable tools, keep Normal as the default tier, improve efficiency through workflow and handoffs rather than automatically choosing Fast, reserve Fast for clear work with a concrete model-latency bottleneck use Deep for complex work needing strong reasoning, and use Ultra with Kimi K3.1 Pro for especially difficult architecture, stubborn root causes, long-horizon reasoning, or two rounds without material progress after checkpoint review; repair authentication, permissions and environment blockers directly, return routine implementation to Normal once uncertainty is resolved, keep profile=auto, and coordinate through completion and acceptance while retaining complex device interaction and visual judgment upstream."
 policy:
   allow_implicit_invocation: true

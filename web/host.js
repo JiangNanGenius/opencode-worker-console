@@ -37,6 +37,42 @@
     return Math.round(Number(value)) + '%';
   }
 
+  function meterHTML(kind, value, key, tone, label) {
+    if (!coercible(value)) return '';
+    const percent = Math.max(0, Math.min(100, Number(value)));
+    // HTML style attributes are blocked by the console CSP. External-script
+    // CSSOM updates below keep the security policy and geometry both intact.
+    return '<span class="' + esc(kind) + '" role="progressbar" aria-label="' + esc(label) +
+      '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + percent + '">' +
+      '<i class="hostov-fill ' + esc(tone || '') + '" data-host-meter="' + esc(key) +
+      '" data-meter-percent="' + percent + '"></i></span>';
+  }
+
+  function renderMeterHTML(container, html) {
+    const previous = new Map();
+    container.querySelectorAll('[data-host-meter]').forEach(fill => {
+      const width = fill.parentElement.getBoundingClientRect().width;
+      if (width > 0) previous.set(fill.dataset.hostMeter,
+        Math.max(0, Math.min(1, fill.getBoundingClientRect().width / width)));
+    });
+    container.innerHTML = html;
+    const updates = [];
+    container.querySelectorAll('[data-host-meter]').forEach(fill => {
+      const target = Number(fill.dataset.meterPercent) / 100;
+      const before = previous.get(fill.dataset.hostMeter);
+      fill.style.transform = 'scaleX(' + (before === undefined ? target : before) + ')';
+      if (before !== undefined && before !== target) updates.push([fill, target]);
+    });
+    if (updates.length) {
+      // Commit the preceding visible length before transitioning. Preserve the
+      // current interpolated fraction if another sample arrives mid-animation.
+      void container.offsetWidth;
+      requestAnimationFrame(() => updates.forEach(([fill, target]) => {
+        if (fill.isConnected) fill.style.transform = 'scaleX(' + target + ')';
+      }));
+    }
+  }
+
   function formatDuration(seconds) {
     if (!coercible(seconds) || Number(seconds) < 0) return '—';
     const n = Number(seconds);
@@ -84,7 +120,8 @@
     const hasRealProgress = Boolean(progress && (progress.percent != null || progress.github_run || progress.phase));
     const run = progress && typeof progress.github_run === 'string' && /^https?:\/\/[^\s]+$/i.test(progress.github_run) ? progress.github_run : '';
     const ci = run ? '<a class="hostov-ci" href="' + esc(run) + '" target="_blank" rel="noopener">CI ↗</a>' : '';
-    const bar = hasRealProgress && progress.percent != null ? '<span class="hostov-taskbar"><i style="transform:scaleX(' + Math.max(0, Math.min(100, progress.percent)) / 100 + ')"></i></span>' : '';
+    const bar = hasRealProgress ? meterHTML('hostov-taskbar', progress.percent,
+      'task:' + item.source + ':' + item.id, '', item.title) : '';
     return '<article class="hostov-task ' + esc(item.status) + '">' +
       '<div class="hostov-task-main">' + (item.source === 'opencode' ? '<button class="hostov-task-link" data-host-task="'+esc(item.id)+'">'+esc(item.title)+'</button>' : '<strong>'+esc(item.title)+'</strong>') +
       '<span class="hostov-task-meta">' + esc(item.project || '') + ' · ' + esc(item.source === 'codex' ? 'Codex' : 'OpenCode') + '</span></div>' +
@@ -93,23 +130,94 @@
       '<span class="hostov-task-elapsed">' + esc(elapsed) + '</span>' + bar + ci + '</div></article>';
   }
 
+  const taskText = (key, vars) => root.I18n ? root.I18n.t(key, vars) : ({
+    'codex.empty': 'No recent local Codex tasks', 'codex.stale': 'Task status is unavailable or out of date',
+    'codex.missing': 'Owner task unavailable', 'codex.workers': 'Associated workers',
+    'codex.children': 'Subagents', 'codex.local': 'Local Codex · read only',
+    'codex.noRelations': 'No recorded subagents or associated workers.',
+    'codex.opencodeStale': 'OpenCode task status is unavailable or out of date'
+  }[key] || key);
+  function codexHTML(group, now) {
+    group = group || {};
+    const items = group.items || [], seen = new Set();
+    const warning = group.stale || group.state === 'unavailable' ? '<p class="codex-source-warning" role="status">' + esc(taskText('codex.stale')) + '</p>' : '';
+    function entry(item, depth) {
+      if (seen.has(item.id) || depth > 8) return '';
+      seen.add(item.id);
+      const children = items.filter(child => child.parent_thread_id === item.id);
+      const workers = item.workers || [];
+      const state = String(item.status || 'unknown');
+      const statusLabel = root.I18n && root.I18n.has('status.' + state) ? root.I18n.t('status.' + state) : state;
+      const elapsed = item.started_at ? formatDuration((item.ended_at || now || Date.now()/1000) - item.started_at) : '—';
+      return '<details class="codex-thread" data-codex-thread="' + esc(item.id) + '"><summary>' +
+        '<span class="codex-title">' + esc(item.title || taskText('codex.missing')) + '<small>' + esc('Codex' + (item.project ? ' · ' + item.project : '')) + '</small></span>' +
+        '<span class="codex-thread-meta"><span class="status ' + esc(state) + '">' + esc(statusLabel) + '</span><span>' + esc(item.model || '—') + (item.effort ? ' · ' + esc(item.effort) : '') + '</span><span>' + esc(elapsed) + '</span>' +
+        '<span>' + esc(taskText('codex.children')) + ' ' + children.length + ' · ' + esc(taskText('codex.workers')) + ' ' + workers.length + '</span></span></summary>' +
+        '<div class="codex-relationships">' + children.map(child => entry(child, depth + 1)).join('') +
+        (workers.length ? '<p class="codex-relation-label">' + esc(taskText('codex.workers')) + '</p>' + workers.map(worker => taskRowHTML({ ...worker, source:'opencode' }, now)).join('') : '') +
+        (!children.length && !workers.length ? '<p class="muted">' + esc(taskText('codex.noRelations')) + '</p>' : '') + '</div></details>';
+    }
+    let html = items.filter(item => !items.some(parent => parent.id === item.parent_thread_id)).map(item => entry(item, 0)).join('');
+    html += items.filter(item => !seen.has(item.id)).map(item => entry(item, 0)).join('');
+    html += (group.missing_owners || []).map(item => entry(item, 0)).join('');
+    return warning + (html || '<p class="muted">' + esc(taskText('codex.empty')) + '</p>');
+  }
   function tasksHTML(tasks, now) {
-    const items = [...((tasks && tasks.codex && tasks.codex.items) || []).map(t => ({ ...t, source: 'codex' })),
-                   ...((tasks && tasks.opencode && tasks.opencode.items) || []).map(t => ({ ...t, source: 'opencode' }))];
-    if (!items.length) return '<p class="muted">—</p>';
-    return items.map(item => taskRowHTML(item, now)).join('');
+    const codex = tasks && tasks.codex;
+    const opencode = tasks && tasks.opencode;
+    const linked = new Set([...(codex?.items || []), ...(codex?.missing_owners || [])].flatMap(item => (item.workers || []).map(worker => worker.id)));
+    const jobs = (opencode?.items || []).filter(item => !linked.has(item.id));
+    let html = codex && ((codex.items || []).length || (codex.missing_owners || []).length || codex.stale || codex.state === 'unavailable') ? codexHTML(codex, now) : '';
+    if (opencode?.stale || opencode?.state === 'unavailable') html += '<p class="codex-source-warning" role="status">' + esc(taskText('codex.opencodeStale')) + '</p>';
+    html += jobs.map(item => taskRowHTML({ ...item, source: 'opencode' }, now)).join('');
+    return html || '<p class="muted">—</p>';
+  }
+  function renderTaskHTML(container, html) {
+    if (!container) return;
+    const expanded = new Set([...container.querySelectorAll('details[data-codex-thread][open]')].map(el => el.dataset.codexThread));
+    const focused = container.contains(document.activeElement) ? document.activeElement.closest('[data-codex-thread]')?.dataset.codexThread : null;
+    renderMeterHTML(container, html);
+    for (const el of container.querySelectorAll('details[data-codex-thread]')) {
+      el.open = expanded.has(el.dataset.codexThread);
+      if (el.dataset.codexThread === focused) el.querySelector('summary')?.focus();
+    }
   }
 
-  function quotaRowHTML(quota) {
-    const windows = (quota.windows || []).filter(w => coercible(w.remaining_percent));
+  function quotaRowHTML(quota, translate) {
+    const tr = typeof translate === 'function' ? translate : (key => key);
+    const windows = (quota.windows || []).filter(w => w.valid !== false && coercible(w.remaining_percent));
     const worst = windows.reduce((best, w) => !best || Number(w.remaining_percent) < Number(best.remaining_percent) ? w : best, null);
+    const isKimi=['kimi','kimi-for-coding'].includes(quota.id);
+    const total=isKimi?windows.find(w=>w.kind==='month_total'):null;
+    const primary=total||worst;
+    const kindLabels={month_total:'quota.accountTotal',month_code:'quota.codeMonthly',weekly:'quota.weekly',short:'quota.fiveHour'};
+    const primaryLabel=isKimi&&primary?(kindLabels[primary.kind]?tr(kindLabels[primary.kind]):primary.label||''):'';
+    const label=(quota.name||quota.id)+(primaryLabel?' · '+primaryLabel:'');
     const balances = (quota.balances || []).map(b => (b.currency === 'CNY' ? '¥' : b.currency === 'USD' ? '$' : (b.currency || '') + ' ') + Number(b.remaining).toFixed(2)).join(' / ');
-    const tone = quota.state === 'ok' ? (worst && worst.remaining_percent <= 5 ? 'critical' : 'healthy') : quota.state === 'unavailable' ? '' : 'tight';
-    const value = balances || (worst ? Math.round(worst.remaining_percent) + '%' : '—');
+    const billing = quota.billing && typeof quota.billing === 'object' ? quota.billing : null;
+    const snapshot = quota.snapshot && typeof quota.snapshot === 'object' ? quota.snapshot : null;
+    const exhausted = quota.available === false || Boolean(billing && billing.monthly_exhausted === true) || Boolean(isKimi&&windows.some(w=>Number(w.remaining_percent)<=0));
+    const stale = quota.stale === true || Boolean(quota.live_error) || Boolean(snapshot && (snapshot.freshness === 'stale' || snapshot.expired === true));
+    const tone = exhausted ? 'critical' : quota.state !== 'ok' ? (quota.state === 'unavailable' ? '' : 'tight') : stale ? 'tight' : worst && worst.remaining_percent <= 5 ? 'critical' : isKimi&&worst&&worst.remaining_percent<=25?'tight':'healthy';
+    const credits = worst && worst.unit === 'credits' && coercible(worst.remaining)
+      ? Number(worst.remaining).toLocaleString() + ' Credits'
+      : null;
+    const value = isKimi?(primary?Number(primary.remaining_percent).toLocaleString(undefined,{maximumFractionDigits:2})+'%':'—'):(balances || (worst ? (credits || Math.round(worst.remaining_percent) + '%') : '—'));
     const reset = worst && coercible(worst.resets_at) && Number(worst.resets_at) > 0 ? new Date(Number(worst.resets_at) * 1000).toLocaleString(undefined, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }) : '';
-    const track = worst ? '<span class="hostov-track"><i class="' + (worst.remaining_percent <= 5 ? 'critical' : worst.remaining_percent <= 25 ? 'tight' : '') + '" style="width:' + Math.max(0, Math.min(100, worst.remaining_percent)) + '%"></i></span>' : '';
-    return '<div class="hostov-quota ' + esc(tone) + '"><span class="hostov-quota-name">' + esc(quota.name || quota.id) + '</span>' +
-      '<strong>' + esc(value) + '</strong>' + track + '<small>' + esc(reset ? '↻ ' + reset : quota.state === 'ok' ? '' : quota.state) + '</small></div>';
+    const track = primary ? meterHTML('hostov-track', primary.remaining_percent, 'quota:' + quota.id,
+      exhausted || worst.remaining_percent <= 5 ? 'critical' : worst.remaining_percent <= 25 ? 'tight' : '',
+      label) : '';
+    const status = exhausted ? tr('hostov.quotaExhausted')
+      : stale ? tr(snapshot ? 'hostov.quotaSnapshotStale' : 'hostov.quotaStale')
+      : snapshot ? tr('quota.snapshotCaptured')
+      : quota.state === 'ok' ? (quota.source === 'openapi_live' ? tr('quota.liveApi') : '') : String(quota.state || '');
+    const accountWindows=windows.filter(w=>['month_total','month_code','weekly','short'].includes(w.kind)).map(w=>tr({month_total:'quota.accountTotal',month_code:'quota.codeMonthly',weekly:'quota.weekly',short:'quota.fiveHour'}[w.kind])+' '+Number(w.remaining_percent).toLocaleString(undefined,{maximumFractionDigits:2})+'%');
+    const expiryRaw=isKimi&&total?total.expires_at:null;
+    const expiryAt=expiryRaw==null||expiryRaw===''||typeof expiryRaw==='boolean'?NaN:typeof expiryRaw==='number'?(expiryRaw<1e11?expiryRaw*1000:expiryRaw):Date.parse(expiryRaw);
+    const expiry=Number.isFinite(expiryAt)&&expiryAt>0?tr('quota.expiresAt',{time:new Date(expiryAt).toLocaleString(undefined,{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',timeZoneName:'short'})}):'';
+    const detail = [status, isKimi&&!total?tr('kimiAccount.totalMissing'):'', ...accountWindows, expiry, reset ? '↻ ' + reset : ''].filter(Boolean).join(' · ');
+    return '<div class="hostov-quota ' + esc(tone) + '"><span class="hostov-quota-name">' + esc(label) + '</span>' +
+      '<strong>' + esc(value) + '</strong>' + track + '<small>' + esc(detail) + '</small></div>';
   }
 
   function serviceRowHTML(service) {
@@ -119,7 +227,8 @@
   function diskRowHTML(disk) {
     const used = Number(disk.used_percent);
     return '<div class="hostov-disk"><div class="hostov-disk-head"><strong>' + esc(disk.name) + '</strong><span>' + esc(disk.mountpoint) + '</span></div>' +
-      '<div class="hostov-disk-bar"><i class="' + (used >= 90 ? 'critical' : used >= 75 ? 'tight' : '') + '" style="width:' + Math.max(0, Math.min(100, used)) + '%"></i></div>' +
+      meterHTML('hostov-disk-bar', disk.used_percent, 'disk:' + disk.mountpoint,
+        used >= 90 ? 'critical' : used >= 75 ? 'tight' : '', disk.name) +
       '<small>' + esc(Number.isFinite(used) ? Math.round(used) + '% · ' : '') + esc(formatBytes((disk.free_gb || 0) * (1 << 30))) + ' free / ' + esc(formatBytes((disk.total_gb || 0) * (1 << 30))) + (disk.internal ? '' : ' · external') + '</small></div>';
   }
 
@@ -139,7 +248,7 @@
     return op.status + (op.status === 'accepted' || op.status === 'dispatched' ? '…' : '');
   }
 
-  const api = { esc, formatBytes, formatRate, formatTemp, formatPercent, formatDuration, splitGaps, chartSVG, taskRowHTML, tasksHTML, quotaRowHTML, serviceRowHTML, diskRowHTML, processRowHTML, availabilityNote, opStatusLabel };
+  const api = { esc, formatBytes, formatRate, formatTemp, formatPercent, formatDuration, meterHTML, renderMeterHTML, splitGaps, chartSVG, taskRowHTML, tasksHTML, codexHTML, quotaRowHTML, serviceRowHTML, diskRowHTML, processRowHTML, availabilityNote, opStatusLabel };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.HostView = api;
 
@@ -224,14 +333,14 @@
     if (tasks) {
       const active = Object.values(snapshot.tasks || {}).reduce((n, group) => n + (group.active || 0), 0);
       $('hostov-tasks-count').textContent = tr('hostov.tasksCount', { n: active });
-      tasks.innerHTML = tasksHTML(snapshot.tasks);
+      renderTaskHTML(tasks, tasksHTML(snapshot.tasks));
     }
     const quotas = $('hostov-quotas');
-    if (quotas) quotas.innerHTML = (snapshot.quotas || []).map(quotaRowHTML).join('') || '<p class="muted">—</p>';
+    if (quotas) renderMeterHTML(quotas, (snapshot.quotas || []).map(q => quotaRowHTML(q, tr)).join('') || '<p class="muted">—</p>');
     const services = $('hostov-services');
     if (services) services.innerHTML = (snapshot.services || []).map(serviceRowHTML).join('') || '<p class="muted">—</p>';
     const disks = $('hostov-disks');
-    if (disks) disks.innerHTML = (sys && sys.disks ? sys.disks.map(diskRowHTML).join('') : '<p class="muted">—</p>');
+    if (disks) renderMeterHTML(disks, sys && sys.disks ? sys.disks.map(diskRowHTML).join('') : '<p class="muted">—</p>');
     renderCharts();
     if (!$('hostov-drawers')?.contains(document.activeElement)) renderDrawers();
   }
@@ -306,6 +415,21 @@
     renderCharts();
   }
 
+  function renderCodexTasks() {
+    renderTaskHTML($('codex-task-list'), codexHTML(snapshot?.tasks?.codex));
+  }
+  let taskRequestPending = false;
+  api.loadTasks = async function () {
+    if (taskRequestPending) return;
+    taskRequestPending = true;
+    try {
+      const result = await request('/console-api/host/snapshot');
+      snapshot = result.snapshot || {};
+      renderCodexTasks();
+    } catch (error) {
+      renderTaskHTML($('codex-task-list'), '<p class="codex-source-warning" role="status">' + esc(taskText('codex.stale')) + '</p>');
+    } finally { taskRequestPending = false; }
+  };
   async function load() {
     const [snap, caps] = await Promise.all([
       request('/console-api/host/snapshot'),
@@ -314,6 +438,7 @@
     snapshot = snap.snapshot || {};
     capabilities = caps;
     renderSnapshot();
+    renderCodexTasks();
     await loadHistory();
 
   }
@@ -332,6 +457,13 @@
     currentRange = button.dataset.range;
     document.querySelectorAll('.hostov-ranges [data-range]').forEach(b => b.classList.toggle('selected', b === button));
     loadHistory().catch(() => {});
+  });
+
+  for (const container of [$('hostov-tasks'), $('codex-task-list')]) container?.addEventListener('click', event => {
+    const taskLink = event.target.closest('[data-host-task]');
+    if (!taskLink) return;
+    document.querySelector('[data-view=tasks]')?.click();
+    if (typeof details === 'function') details(taskLink.dataset.hostTask);
   });
 
   $('hostov-drawers')?.addEventListener('click', async event => {

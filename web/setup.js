@@ -18,17 +18,18 @@
   'use strict';
 
   var STEPS = ['providers', 'models', 'preferences', 'review'];
-  var ROUTING_KEYS = ['fast', 'background', 'deep'];
-  var WIZARD_PROFILE_IDS = ['fallback', 'senior-code', 'deep-research'];
+  var ROUTING_KEYS = ['fast', 'background', 'deep', 'ultra'];
+  var WIZARD_PROFILE_IDS = ['fallback', 'senior-code', 'aliyun-max', 'ultra-reasoning'];
   var MONTHLY_FIELDS = ['enabled', 'day', 'time', 'timezone'];
-  var DEFAULT_ROUTING = { fast: 'fallback', background: 'senior-code', deep: 'deep-research' };
+  var DEFAULT_ROUTING = { fast: 'fallback', background: 'senior-code', deep: 'aliyun-max', ultra: 'ultra-reasoning' };
   // Mirrors install.py's documented DeepSeek + Kimi preset. The 'max' variant
   // is kept only when the catalog confirms it or lists no variant information;
   // it is never invented for models whose catalog entry excludes it.
   var PRESET_PROFILES = {
     'fallback': { model: 'deepseek/deepseek-flash', label: 'Fallback · DeepSeek V4.1 Flash', variant: 'max' },
     'senior-code': { model: 'kimi-for-coding/kimi-for-coding', label: 'Kimi K2.8 Preview', variant: 'max' },
-    'deep-research': { model: 'kimi-for-coding/k3', label: 'Kimi K3', variant: 'max' }
+    'aliyun-max': { model: 'bailian-token-plan/qwen3.8-max', label: 'Qwen3.8 Max', variant: 'max' },
+    'ultra-reasoning': { model: 'kimi-for-coding/k3.1-pro', label: 'Kimi K3.1 Pro', variant: 'max' }
   };
 
   function clone(value) { return value == null ? value : JSON.parse(JSON.stringify(value)); }
@@ -52,6 +53,7 @@
       for (var j = 0; j < rawModels.length; j++) {
         var m = rawModels[j];
         if (!m || typeof m.id !== 'string' || !m.id) continue;
+        if (['kimi-for-coding/k3','kimi-for-coding/k3-256k','volcengine-agent-plan/kimi-k3'].indexOf(p.id + '/' + m.id) >= 0) continue;
         var variants = Array.isArray(m.variants) ? m.variants.filter(function (v) { return typeof v === 'string'; }) : [];
         models.push({ id: m.id, name: typeof m.name === 'string' && m.name ? m.name : m.id, variants: variants });
       }
@@ -92,13 +94,15 @@
   function createDraft(settings, rawCatalog) {
     settings = settings && typeof settings === 'object' ? settings : {};
     var catalog = normalizeCatalog(rawCatalog);
-    var reserve = toInt(settings.kimi_reserve_percent);
+    var reserve = toInt(settings.kimi_weekly_reserve_percent == null ? settings.kimi_reserve_percent : settings.kimi_weekly_reserve_percent);
     var base = {
       profiles: clone(settings.profiles) || {},
       routing: clone(settings.routing) || null,
       routingPolicy: clone(settings.routing_policy) || null,
       cleanup: clone(settings.cleanup) || null,
       kimiReservePercent: reserve == null ? 0 : reserve,
+      kimiWeeklyReservePercent: toInt(settings.kimi_weekly_reserve_percent),
+      kimiLegacyReservePercent: toInt(settings.kimi_reserve_percent),
       monthlyReset: normalizeMonthly(settings.kimi_monthly_reset)
     };
     return {
@@ -268,6 +272,7 @@
     });
     ROUTING_KEYS.forEach(function (key) {
       var target = draft.routing && draft.routing[key];
+      if (key === 'ultra' && !target && draft.choice === 'keep') return;
       if (!target || !profiles[target] || profiles[target].enabled === false)
         errs.push({ key: 'setup.error.routingInvalid', field: 'routing:' + key });
     });
@@ -374,8 +379,8 @@
       auto_approve: draft.autoApprove === true,
       profiles: profiles,
       max_parallel_per_owner: toInt(draft.maxParallelPerOwner),
-      kimi_reserve_percent: toInt(draft.kimiReservePercent) == null ? 0 : toInt(draft.kimiReservePercent),
-      routing: { fast: draft.routing.fast, background: draft.routing.background, deep: draft.routing.deep },
+      kimi_reserve_percent: draft.base.kimiLegacyReservePercent == null ? (toInt(draft.kimiReservePercent) == null ? 0 : toInt(draft.kimiReservePercent)) : draft.base.kimiLegacyReservePercent,
+      routing: Object.fromEntries(ROUTING_KEYS.filter(function (key) { return draft.routing[key]; }).map(function (key) { return [key, draft.routing[key]]; })),
       kimi_monthly_reset: {
         enabled: mr.enabled === true,
         day: toInt(mr.day) == null ? 1 : toInt(mr.day),
@@ -383,6 +388,7 @@
         timezone: String(mr.timezone || '').trim() || 'Asia/Shanghai'
       }
     };
+    if (draft.base.kimiWeeklyReservePercent != null) payload.kimi_weekly_reserve_percent = draft.base.kimiWeeklyReservePercent;
     // Untouched configuration round-trips exactly as loaded: the cleanup
     // policy is never rebuilt by the wizard.
     if (draft.base.cleanup) payload.cleanup = clone(draft.base.cleanup);
@@ -428,7 +434,7 @@
   // profiles added or removed elsewhere — while keeping each explicit edit.
   function mergeFreshSettings(draft, settings) {
     settings = settings && typeof settings === 'object' ? settings : {};
-    var reserve = toInt(settings.kimi_reserve_percent);
+    var reserve = toInt(settings.kimi_weekly_reserve_percent == null ? settings.kimi_reserve_percent : settings.kimi_weekly_reserve_percent);
     draft.revision = isInt(settings.revision) ? settings.revision : draft.revision;
     draft.base = {
       profiles: clone(settings.profiles) || {},
@@ -436,6 +442,8 @@
       routingPolicy: clone(settings.routing_policy) || null,
       cleanup: clone(settings.cleanup) || null,
       kimiReservePercent: reserve == null ? 0 : reserve,
+      kimiWeeklyReservePercent: toInt(settings.kimi_weekly_reserve_percent),
+      kimiLegacyReservePercent: toInt(settings.kimi_reserve_percent),
       monthlyReset: normalizeMonthly(settings.kimi_monthly_reset)
     };
     var merged = clone(draft.base.profiles);

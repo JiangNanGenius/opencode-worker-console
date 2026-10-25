@@ -11,6 +11,11 @@ GENERIC_REASON = 'billing_error'
 # A real short usage window (for example the Kimi 5-hour limit) that will refresh on
 # its own. It is not a monthly plan block and must never open the durable circuit.
 WINDOW_REASON = 'usage_window_limit'
+# A confirmed model-origin credential rejection (HTTP 401). It is separate from
+# both billing and a control-plane quota-query AK/SK failure; only the inference
+# key can fix it. The worker applies this circuit to Alibaba Token Plan only.
+AUTH_REASON = quota.AUTH_REASON
+ALIBABA_PROVIDER = 'bailian-token-plan'
 # The monthly wording alone is not exhaustion: "permission to view monthly quota" or a
 # stated monthly allowance must never classify. Both a monthly reference and explicit
 # exhaustion/next-cycle wording are required.
@@ -56,6 +61,21 @@ def billing_kind_message(status, message):
     return None
 
 
+def auth_kind_message(status, message):
+    """Confirmed model-origin inference credential rejection, else None.
+
+    HTTP 401 is authoritative for the request's inference key. A control-plane
+    GetSubscriptionStats 401/403 is a separate AK/SK query failure and never
+    reaches this model-error classifier. No text heuristic is used, so a tool
+    message mentioning an invalid key is not classified.
+    """
+    try:
+        status = int(status) if status is not None else None
+    except (TypeError, ValueError):
+        status = None
+    return AUTH_REASON if status == 401 else None
+
+
 def usage_window_kind(status, message):
     """Provider capacity/window exhaustion that should leave this slot, else None.
 
@@ -81,6 +101,15 @@ def usage_window_kind(status, message):
     if _WINDOW_DURATION.search(text) and any(marker in text for marker in EXHAUSTION_MARKERS):
         return WINDOW_REASON
     return None
+
+
+def auth_kind(raw):
+    """Classify a raw OpenCode model error payload for inference auth rejection."""
+    if not isinstance(raw, dict):
+        return None
+    data = raw.get('data') if isinstance(raw.get('data'), dict) else {}
+    return auth_kind_message(data.get('statusCode', raw.get('statusCode')),
+                             data.get('message') or raw.get('message') or '')
 
 
 def window_kind(raw):
@@ -136,17 +165,23 @@ def from_messages(messages):
             data = raw.get('data') if isinstance(raw.get('data'), dict) else {}
             kind = billing_kind(raw)
             window = None if kind else window_kind(raw)
+            # Keep model-401 circuit metadata narrow to Alibaba Token Plan; other
+            # providers retain their existing generic error handling.
+            auth = None if (kind or window) or \
+                info.get('providerID') != ALIBABA_PROVIDER else auth_kind(raw)
             errors.append(error('model', raw.get('name', 'model_error'),
                                 data.get('message') or raw.get('message') or raw.get('name', 'Model error'),
-                                retryable=False if (kind or window) else data.get('isRetryable'),
+                                retryable=False if (kind or window or auth) else data.get('isRetryable'),
                                 action='inspect_partial_work_and_resubmit_same_tier_auto' if (kind or window)
-                                else 'inspect_model_error',
+                                else 'check_provider_credentials' if auth else 'inspect_model_error',
                                 http_status=data.get('statusCode', raw.get('statusCode')),
                                 message_id=info.get('id'), provider=info.get('providerID'),
                                 **({'billing': True, 'billing_reason': kind,
                                     'occurred_at': occurred_at(info)} if kind else
                                    {'usage_window': True, 'usage_window_reason': window,
-                                    'occurred_at': occurred_at(info)} if window else {})))
+                                    'occurred_at': occurred_at(info)} if window else
+                                   {'auth': True, 'auth_reason': auth,
+                                    'occurred_at': occurred_at(info)} if auth else {})))
         for part in message.get('parts', []):
             if part.get('type') != 'tool': continue
             state = part.get('state') or {}

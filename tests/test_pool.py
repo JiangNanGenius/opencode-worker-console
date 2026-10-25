@@ -47,7 +47,11 @@ class PoolTests(unittest.TestCase):
         self.patchers = [patch.object(m, 'STATE', self.state)
                          for m in (common, quota, routing, workspace, worker, delegate)]
         self.patchers += [patch.object(common, 'CONFIG', self.config), patch.object(delegate, 'CONFIG', self.config),
-                          patch.object(quota, 'credential_identity', lambda p: self.identities.get(p))]
+                          patch.object(quota, 'credential_identity', lambda p: self.identities.get(p)),
+                          # These fixtures use the retired K3 model as a generic
+                          # Kimi stand-in; retirement is exercised in
+                          # tests/test_kimi_weekly_reserve.py.
+                          patch.object(routing, 'RETIRED_MODELS', frozenset())]
         for p in self.patchers:
             p.start()
         common.init()
@@ -55,6 +59,8 @@ class PoolTests(unittest.TestCase):
         self.repo.mkdir()
         self.q = {p: {'state': 'ok', 'stale': False, 'sampled_at': time.time(), 'available': True,
                       'windows': [{'remaining_percent': 80}]} for p in ('deepseek', 'kimi-for-coding')}
+        self.q['kimi-for-coding']['windows'].append(
+            {'name': 'overall', 'remaining_percent': 80, 'duration_minutes': 10080})
 
     def tearDown(self):
         for p in reversed(self.patchers):
@@ -305,7 +311,7 @@ class PoolTests(unittest.TestCase):
             'next_refill': {'provider': 'kimi-for-coding', 'hours_until': 1},
         })
         self.assertEqual(list(compact), ['instruction'])
-        self.assertIn('Fast, Normal or Deep', compact['instruction'])
+        self.assertIn('Fast, Normal, Deep or Ultra', compact['instruction'])
         self.assertIn('profile=auto', compact['instruction'])
         self.assertNotIn('quota', json.dumps(compact).lower())
 
@@ -324,12 +330,16 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(child['excluded_providers'], ['kimi-for-coding'])
         self.assertEqual(quota.route(child, self.c, self.q)[0], 'fallback')
 
-    def test_low_quota_blocks_without_fallback_and_keeps_pins(self):
+    def test_weekly_reserve_blocks_ordinary_kimi_and_keeps_pins(self):
         self.q['kimi-for-coding']['windows'][0]['remaining_percent'] = 10
+        self.q['kimi-for-coding']['windows'][-1]['remaining_percent'] = 10
         t = self.new(profile='auto')
         profile, why = quota.route(t, self.c, self.q)
         self.assertIsNone(profile)
-        self.assertEqual(why, 'reserve_kimi_for_complex_work')
+        self.assertEqual(why, 'kimi_weekly_reserved_for_ultra')
+        # The reserved Ultra model itself is exempt from the weekly reserve only.
+        self.assertTrue(quota.kimi_request_allowed('kimi-for-coding/k3.1-pro',
+                                                   self.c, self.q)[0])
         alts = quota.alternatives(t, self.c, self.q)
         self.assertEqual([a['profile'] for a in alts], ['fallback'])
         rec = quota.recovery(t, self.c, self.q)
@@ -337,73 +347,99 @@ class PoolTests(unittest.TestCase):
         self.assertFalse(rec['automatic_fallback'])
         t['requested_profile'] = 'senior-code'
         self.assertIsNone(quota.route(t, self.c, self.q)[0])
+        # Explicit selection is never a weekly-reserve bypass.
         t.update(requested_profile='deep-research', complexity='deep')
-        self.assertEqual(quota.route(t, self.c, self.q)[0], 'deep-research')
+        self.assertEqual(quota.route(t, self.c, self.q),
+                         (None, 'kimi_weekly_reserved_for_ultra'))
 
-    def test_reserve_defaults_to_zero_unless_configured(self):
+    def test_weekly_reserve_defaults_to_thirty_and_folds_legacy_value(self):
         c = dict(self.c)
         c.pop('kimi_reserve_percent')
-        self.q['kimi-for-coding']['windows'][0]['remaining_percent'] = 10
+        c.pop('kimi_weekly_reserve_percent', None)
+        self.q['kimi-for-coding']['windows'][-1]['remaining_percent'] = 10
         t = self.new(profile='auto')
-        self.assertEqual(quota.route(t, c, self.q)[0], 'senior-code')
-        self.assertTrue(quota.allowed('kimi-for-coding', self.q, 'normal')[0])
-        # An explicitly configured nonzero reserve is preserved.
-        self.assertFalse(quota.allowed('kimi-for-coding', self.q, 'normal', 20)[0])
+        self.assertEqual(quota.kimi_weekly_reserve_percent(c), 30)
+        self.assertIsNone(quota.route(t, c, self.q)[0])
+        self.assertEqual(quota.route(t, c, self.q)[1], 'kimi_weekly_reserved_for_ultra')
+        # A legacy explicit value is folded in as an additional floor.
+        self.assertEqual(quota.kimi_weekly_reserve_percent(
+            dict(c, kimi_reserve_percent=40)), 40)
+        disabled = dict(c, kimi_weekly_reserve_percent=0, kimi_reserve_percent=0)
+        self.assertEqual(quota.kimi_weekly_reserve_percent(disabled), 0)
+        self.assertEqual(quota.route(t, disabled, self.q)[0], 'senior-code')
 
-    def test_low_weekly_guard_uses_overall_and_allows_only_one_native_k3(self):
+    def test_weekly_reserve_protects_ultra_and_limits_ultra_concurrency(self):
         self.c['profiles'].update({
-            'ark-evolving': {'model': 'ark/doubao-seed-evolving'},
-            'ark-k3': {'model': 'ark/kimi-k3'},
+            'aliyun-flash': {'model': 'bailian-token-plan/qwen3.8-flash'},
+            'ultra-reasoning': {'model': 'kimi-for-coding/k3.1-pro'},
         })
         self.c['routing_policy'] = {
             'background': [[{'profile': 'senior-code', 'weight': 1},
-                            {'profile': 'ark-evolving', 'weight': 1}],
+                            {'profile': 'aliyun-flash', 'weight': 1}],
                            [{'profile': 'fallback', 'weight': 1}]],
-            'deep': [[{'profile': 'deep-research', 'weight': 2},
-                      {'profile': 'ark-k3', 'weight': 1}],
-                     [{'profile': 'senior-code', 'weight': 1},
-                      {'profile': 'ark-evolving', 'weight': 1}],
-                     [{'profile': 'fallback', 'weight': 1}]],
+            'ultra': [[{'profile': 'ultra-reasoning', 'weight': 1}]],
         }
-        self.c.update(kimi_low_weekly_threshold_percent=5, kimi_low_weekly_k3_limit=1)
+        self.c.update(kimi_weekly_reserve_percent=30, kimi_low_weekly_threshold_percent=5,
+                      kimi_low_weekly_ultra_limit=1)
         self.q['kimi-for-coding']['windows'] = [
-            {'name': 'window_0', 'remaining_percent': 99, 'duration_minutes': 300, 'valid': True},
-            {'name': 'overall', 'remaining_percent': 3, 'valid': True},
+            {'name': 'window_0', 'remaining_percent': 99, 'duration_minutes': 300,
+             'valid': True},
+            {'name': 'overall', 'remaining_percent': 4, 'duration_minutes': 10080,
+             'valid': True, 'resets_at': time.time() + 5 * 86400},
         ]
-        self.q['ark'] = {'state': 'ok', 'stale': False, 'sampled_at': time.time(),
-                         'available': True, 'windows': [{'name': 'weekly',
-                                                        'remaining_percent': 70, 'valid': True}]}
+        self.q['bailian-token-plan'] = {
+            'state': 'ok', 'stale': False, 'sampled_at': time.time(), 'available': True,
+            'windows': [{'name': 'CreditsPool', 'remaining_percent': 70, 'valid': True}]}
         self.config.write_text(json.dumps(self.c))
         normal = self.new(profile='auto', tier='normal', mode='read', scopes=[])
-        deep_a = self.new(profile='auto', tier='deep', mode='read', scopes=[])
-        deep_b = self.new(profile='auto', tier='deep', mode='read', scopes=[])
+        ultra_a = self.new(profile='auto', tier='ultra', mode='read', scopes=[])
+        ultra_b = self.new(profile='auto', tier='ultra', mode='read', scopes=[])
         choices = delegate.choose_ready(
-            [common.task(normal['id']), common.task(deep_a['id']), common.task(deep_b['id'])],
-            self.c, self.q, routing.Admissions.load(self.c['routing_policy']))
+            [common.task(normal['id']), common.task(ultra_a['id']),
+             common.task(ultra_b['id'])], self.c, self.q,
+            routing.Admissions.load(self.c['routing_policy']))
         selected = {task['id']: (profile, reason) for task, profile, reason in choices}
-        self.assertEqual(selected[normal['id']][0], 'ark-evolving')
-        deep_profiles = [selected[deep_a['id']][0], selected[deep_b['id']][0]]
-        self.assertEqual(deep_profiles.count('deep-research'), 1)
-        self.assertEqual(deep_profiles.count('ark-k3'), 1)
-        self.assertTrue(all('kimi_low_weekly_guard_3.0pct' in selected[x['id']][1]
-                            for x in (normal, deep_a, deep_b)))
+        # Ordinary Kimi is in the reserve zone: Normal continues on Qwen Flash.
+        self.assertEqual(selected[normal['id']][0], 'aliyun-flash')
+        self.assertEqual(
+            quota._allowed_profile('senior-code', common.task(normal['id']), self.c,
+                                   self.q)[1:],
+            (False, 'kimi_weekly_reserved_for_ultra'))
+        admitted = [item for item in (ultra_a, ultra_b) if selected[item['id']][0]]
+        deferred = [item for item in (ultra_a, ultra_b) if selected[item['id']][0] is None]
+        self.assertEqual(len(admitted), 1)
+        self.assertEqual(len(deferred), 1)
+        self.assertEqual(selected[admitted[0]['id']][0], 'ultra-reasoning')
+        self.assertTrue(selected[deferred[0]['id']][1].startswith(
+            'ultra_weekly_concurrency_limited:'))
 
-    def test_low_weekly_signal_is_unknown_when_only_five_hour_window_exists(self):
-        self.assertIsNone(quota.kimi_weekly_remaining_percent(self.q))
+    def test_weekly_signal_is_unknown_when_only_five_hour_window_exists(self):
+        only_short = {'kimi-for-coding': {
+            'state': 'ok', 'stale': False, 'sampled_at': time.time(), 'available': True,
+            'windows': [{'name': 'window_0', 'remaining_percent': 99,
+                         'duration_minutes': 300, 'valid': True}]}}
+        self.assertIsNone(quota.kimi_weekly_remaining_percent(only_short))
+        self.assertEqual(quota.kimi_weekly_state(only_short, self.c)['status'], 'unknown')
+        self.assertFalse(quota.kimi_request_allowed(
+            'kimi-for-coding/kimi-for-coding', self.c, only_short)[0])
 
-    def test_low_weekly_guard_also_applies_to_legacy_single_profile_routes(self):
-        self.c.update(kimi_low_weekly_threshold_percent=5, kimi_low_weekly_k3_limit=1,
+    def test_weekly_reserve_applies_to_legacy_single_profile_routes(self):
+        self.c.update(kimi_weekly_reserve_percent=30, kimi_low_weekly_threshold_percent=5,
                       routing={'fast': 'fallback', 'background': 'senior-code',
                                'deep': 'deep-research'})
         self.q['kimi-for-coding']['windows'] = [
-            {'name': 'overall', 'remaining_percent': 3, 'valid': True}]
+            {'name': 'overall', 'remaining_percent': 3, 'valid': True,
+             'duration_minutes': 10080}]
         normal = {'requested_profile': 'auto', 'tier': 'normal', 'complexity': 'normal'}
-        guarded, _ = quota.apply_kimi_low_weekly_guard(normal, self.c, self.q, [])
-        self.assertEqual(quota.route(guarded, self.c, self.q),
-                         (None, 'routing_guard_excluded_profile'))
+        self.assertEqual(quota.route(normal, self.c, self.q),
+                         (None, 'kimi_weekly_reserved_for_ultra'))
         deep = {'requested_profile': 'auto', 'tier': 'deep', 'complexity': 'deep'}
-        guarded, _ = quota.apply_kimi_low_weekly_guard(deep, self.c, self.q, [])
-        self.assertEqual(quota.route(guarded, self.c, self.q)[0], 'deep-research')
+        self.assertEqual(quota.route(deep, self.c, self.q),
+                         (None, 'kimi_weekly_reserved_for_ultra'))
+        explicit = {'requested_profile': 'senior-code', 'tier': 'normal',
+                    'complexity': 'normal'}
+        self.assertEqual(quota.route(explicit, self.c, self.q),
+                         (None, 'kimi_weekly_reserved_for_ultra'))
 
     def test_expired_zero_stays_unavailable_until_positive_refresh(self):
         q = {'deepseek': {'state': 'unavailable', 'sampled_at': time.time() - 1000, 'available': False}}
@@ -635,6 +671,26 @@ class PoolTests(unittest.TestCase):
         messages[0]['parts'][0]['text'] = 'Note.\n```json\n{"outcome":"done"}\n```'
         self.assertIsNone(worker.summarize_messages(messages)['structured'])
 
+    def test_report_parses_object_amid_prose_without_eval(self):
+        report = {'outcome': 'done', 'summary': 'Observed', 'evidence': ['a.py:1'], 'tests': [], 'unresolved': []}
+
+        def structured(value):
+            messages = [{'info': {'role': 'assistant'}, 'parts': [{'type': 'text', 'text': value}]}]
+            return worker.summarize_messages(messages)['structured']
+
+        # Exactly the native Max probe shape: prose preface, then a JSON object.
+        self.assertEqual(structured('Review complete. Final report:\n\n' + json.dumps(report)), report)
+        # Trailing prose and an unrelated brace before the object are tolerated.
+        self.assertEqual(structured('Set {not json} then\n' + json.dumps(report) + '\nAll done.'), report)
+        # A repeated identical object is one report, not an ambiguity.
+        self.assertEqual(structured(json.dumps(report) + '\n' + json.dumps(report)), report)
+        # Two distinct valid reports remain ambiguous and rejected.
+        other = dict(report, summary='Different')
+        self.assertIsNone(structured('First ' + json.dumps(report) + ' second ' + json.dumps(other)))
+        # Malformed JSON-ish prose is ignored; model text is never executed.
+        self.assertIsNone(structured('answer = 1 + 1\n{"outcome":"done"}'))
+        self.assertIsNone(structured('no report here'))
+
     def test_parent_relationship_inherits_caller_group(self):
         a = self.new(group_id='group-a', group_title='Parent project')
         b = self.new(group_id='group-a', parent_task_id=a['id'])
@@ -673,7 +729,10 @@ class PoolTests(unittest.TestCase):
         self.assertIsNone(profile)
         self.assertEqual(why, 'provider_billing_blocked')
         rec = quota.recovery(t, self.c, self.q)
-        self.assertEqual([a['profile'] for a in rec['alternatives']], ['fallback'])
+        # A Deep task never downgrades to the Flash cash profile: the
+        # alternative list stays empty and the deliberate action is to wait or
+        # raise the tier explicitly.
+        self.assertEqual([a['profile'] for a in rec['alternatives']], [])
 
     def test_topup_recovers_and_old_errors_never_relatch(self):
         quota.trip('deepseek', 'Insufficient Balance', 'm1', occurred_at=time.time() - 100)
@@ -739,6 +798,9 @@ class PoolTests(unittest.TestCase):
     def test_wait_on_blocked_queue_requests_reselection(self):
         t = self.new()
         quota.trip('deepseek', 'Insufficient Balance', 'm1')
+        # Live recovery reads the shared cache; publish this fixture's sample so
+        # the ordinary Kimi alternative is known rather than unknown/fail-closed.
+        (self.state / 'quota.json').write_text(json.dumps(self.q))
         common.update(t['id'], recovery=quota.recovery(t, self.c, self.q))
         result = delegate.wait_result(common.task(t['id']), 1)
         self.assertFalse(result['terminal'])
@@ -826,14 +888,16 @@ class PoolTests(unittest.TestCase):
         self.assertIn('do not ask the user', action['instruction'])
         self.assertIn('do not wait for quota', action['instruction'])
         deep = self.new(profile='deep-research', complexity='deep')
-        # Monthly exhaustion is advisory, not an absolute prohibition: an explicitly
-        # requested profile may still try, while candidates keep avoiding the provider.
+        # A named Kimi profile no longer bypasses the monthly circuit; the
+        # operator must run the executable manual release first.
         self.assertEqual(quota.route(deep, self.c, self.q),
-                         ('deep-research', 'explicit_profile_monthly_retry'))
-        self.assertEqual([a['profile'] for a in quota.alternatives(deep, self.c, self.q)], ['fallback'])
+                         (None, 'provider_billing_blocked'))
+        self.assertEqual([a['profile'] for a in quota.alternatives(deep, self.c, self.q)], [])
         explicit = self.new(profile='senior-code')
         self.assertEqual(quota.route(explicit, self.c, self.q),
-                         ('senior-code', 'explicit_profile_monthly_retry'))
+                         (None, 'provider_billing_blocked'))
+        self.assertTrue(quota.retry_provider('kimi-for-coding')['released'])
+        self.assertEqual(quota.route(explicit, self.c, self.q)[0], 'senior-code')
 
     def test_monthly_recovery_reaches_status_wait_collect_read_only(self):
         t, result = self.fail_monthly()
@@ -1019,16 +1083,18 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(rec['billing_reason'], 'monthly_usage_limit')
         self.assertEqual(rec['alternatives'], [])
         self.assertFalse(rec['autonomous_reselection'])
-        self.assertEqual(rec['suggested_action'], 'top_up_or_authorize_manual_retry')
+        self.assertEqual(rec['suggested_action'], 'release_manual_retry_then_resubmit')
         self.assertFalse(rec['autonomous_next_action']['wait_for_quota'])
         self.assertIn('quota --retry-provider kimi-for-coding',
                       rec['autonomous_next_action']['retry_command'])
-        self.assertIn('explicit requested_profile',
+        self.assertIn('named profile no longer bypasses',
+                      rec['autonomous_next_action']['instruction'])
+        self.assertIn('manual release',
                       rec['autonomous_next_action']['instruction'])
         waited = delegate.wait_result(common.task(t['id']), 0)
         self.assertTrue(waited['terminal'])
         self.assertTrue(waited['attention'])
-        self.assertEqual(waited['next_action'], 'top_up_or_authorize_manual_retry')
+        self.assertEqual(waited['next_action'], 'release_manual_retry_then_resubmit')
 
     def running(self, owner, scope, profile='fallback', group=None):
         t = self.new(scopes=[scope], profile=profile)

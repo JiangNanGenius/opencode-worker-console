@@ -121,3 +121,92 @@ test('quota ignores unknown windows and shows the limiting window reset', () => 
   assert.match(html,/38%/);
   assert.match(html,/↻/);
 });
+
+test('quota rows surface exhaustion, snapshots and Credits amounts honestly', () => {
+  const t = (key) => ({ 'hostov.quotaExhausted': 'exhausted', 'hostov.quotaStale': 'stale',
+                        'hostov.quotaSnapshotStale': 'snapshot stale' }[key] || key);
+  const blocked = View.quotaRowHTML({ id: 'kimi-for-coding', name: 'Kimi', state: 'ok',
+    available: false, billing: { reason: 'monthly_usage_limit', monthly_exhausted: true },
+    windows: [{ remaining_percent: 10, resets_at: 1800000000 }], balances: [] }, t);
+  assert.match(blocked, /exhausted/);
+  assert.match(blocked, /critical/);
+  const snapshot = View.quotaRowHTML({ id: 'bailian-token-plan', name: '阿里百炼', state: 'ok',
+    available: null, stale: true, snapshot: { freshness: 'stale', expired: false },
+    windows: [{ remaining_percent: 99.9, remaining: 99926.94, limit: 100000, unit: 'credits',
+                resets_at: 1800000000 }], balances: [] }, t);
+  assert.match(snapshot, /99,926\.94 Credits/);
+  assert.match(snapshot, /snapshot stale/);
+  const expired = View.quotaRowHTML({ id: 'bailian-token-plan', state: 'ok', available: null,
+    snapshot: { freshness: 'fresh', expired: true }, windows: [], balances: [] }, t);
+  assert.match(expired, /snapshot stale/);
+  assert.match(expired, /—/);
+  const unknown = View.quotaRowHTML({ id: 'bailian-token-plan', state: 'ok', available: null,
+    windows: [], balances: [] }, t);
+  assert.doesNotMatch(unknown, /0%/);
+  assert.match(unknown, /—/);
+});
+
+test('quota rows keep live percentages when no exhaustion is reported', () => {
+  const healthy = View.quotaRowHTML({ id: 'deepseek', name: 'DeepSeek', state: 'ok',
+    windows: [{ remaining_percent: 42 }], balances: [] });
+  assert.match(healthy, /42%/);
+  assert.match(healthy, /healthy/);
+});
+
+test('Codex tasks expose exact relationships as escaped read-only details without invented progress', () => {
+  const group = {state:'ok', items:[
+    {id:'owner',title:'<Owner>',status:'running',model:'model',workers:[{id:'job-1',title:'<Worker>',status:'completed'}]},
+    {id:'child',parent_thread_id:'owner',title:'Child',status:'unknown'}],
+    missing_owners:[{id:'missing',status:'unknown',workers:[{id:'job-2',title:'Other',status:'running'}]}]};
+  const html = View.codexHTML(group, 100);
+  assert.match(html,/data-codex-thread="owner"/);
+  assert.match(html,/data-codex-thread="child"/);
+  assert.match(html,/&lt;Owner&gt;/);
+  assert.match(html,/&lt;Worker&gt;/);
+  assert.match(html,/data-host-task="job-1"/);
+  assert.match(html,/Owner task unavailable/);
+  assert.ok(!html.includes('progressbar'));
+  assert.ok(!html.includes('data-cancel-task'));
+  assert.ok(!html.includes('data-delete-task'));
+  const combined = View.tasksHTML({codex:group,opencode:{items:[{id:'job-1',title:'duplicate',status:'running'}]}},100);
+  assert.ok(!combined.includes('duplicate'));
+});
+
+test('Codex task source reports unavailable and stale independently of empty content', () => {
+  assert.match(View.codexHTML({state:'unavailable',items:[]}),/unavailable or out of date/);
+  assert.match(View.codexHTML({state:'ok',stale:true,items:[]}),/unavailable or out of date/);
+  assert.match(View.codexHTML({state:'ok',items:[]}),/No recent local Codex tasks/);
+  assert.match(View.tasksHTML({opencode:{state:'ok',stale:true,items:[]}}),/OpenCode task status/);
+});
+
+test('Kimi overview highlights account total while preserving tighter weekly and short limits',()=>{
+ const quota={id:'kimi-for-coding',name:'Kimi',state:'ok',available:true,windows:[
+  {kind:'short',remaining_percent:99.94,source:'kimi_code_account'},
+  {kind:'weekly',remaining_percent:15.37,source:'kimi_code_account'},
+  {kind:'month_total',remaining_percent:66.73,source:'kimi_web_membership'}]};
+ const html=View.quotaRowHTML(quota,k=>k);
+ assert.match(html,/<strong>66[.,]73%<\/strong>/);
+ assert.match(html,/Kimi · quota.accountTotal/);
+ assert.match(html,/quota.weekly 15[.,]37%/);
+ assert.match(html,/quota.fiveHour 99[.,]94%/);
+ assert.match(html,/hostov-quota tight/);
+ assert.match(html,/aria-valuenow="66.73"/);
+ assert.doesNotMatch(html,/kimiAccount.totalMissing/);
+ const zero=View.quotaRowHTML({...quota,windows:quota.windows.map(w=>w.kind==='month_total'?{...w,remaining_percent:0}:w)},k=>k);
+ assert.match(zero,/<strong>0%<\/strong>/);assert.match(zero,/hostov-quota critical/);
+});
+
+test('missing Kimi total labels the actual weekly balance and never calls it total quota',()=>{
+ const html=View.quotaRowHTML({id:'kimi-for-coding',name:'Kimi',state:'ok',windows:[{kind:'weekly',remaining_percent:15.37},{kind:'short',remaining_percent:99.94}]},k=>k);
+ assert.match(html,/<strong>15[.,]37%<\/strong>/);
+ assert.match(html,/Kimi · quota.weekly/);
+ assert.match(html,/kimiAccount.totalMissing/);
+ assert.doesNotMatch(html,/Kimi · quota.accountTotal/);
+ const other=View.quotaRowHTML({id:'other',name:'Other',state:'ok',windows:[{kind:'month_total',remaining_percent:66.73},{kind:'weekly',remaining_percent:15.37}]},k=>k);
+ assert.match(other,/<strong>15%<\/strong>/);
+ assert.doesNotMatch(other,/Other · quota.accountTotal/);
+});
+test('Kimi monthly subscription expiry is labeled expiry instead of a reset arrow',()=>{
+ const html=View.quotaRowHTML({id:'kimi-for-coding',name:'Kimi',state:'ok',windows:[{kind:'month_total',remaining_percent:66.73,resets_at:null,expires_at:'2026-11-18T06:47:51Z'}]},(key,v={})=>key+(v.time?':'+v.time:''));
+ assert.match(html,/quota.expiresAt:/);assert.doesNotMatch(html,/↻/);
+});

@@ -3,52 +3,114 @@
 [简体中文](routing.zh-CN.md)
 
 Prefer complete outcomes, usable subscription allowance and enough model/context capacity.
-Subscriptions are already paid for; direct DeepSeek balance is incremental spend. In the built-in
-Ark preset, the capability order is explicit: K3 routes, K2.8/Evolving, Ark Auto, then direct
-DeepSeek as the lowest-capability final fallback. A temporarily large DeepSeek share under severe
-conservation protects subscription runway; it does not reverse that capability order. Do not split
-a coherent task or replay its context merely to change providers.
+Subscriptions are already paid for; direct DeepSeek balance is incremental spend.
+Model selection follows the four-tier contract below. Do not replay completed work when changing
+models; entering Ultra starts a fresh model session with a checked handoff.
+
+## Four tiers and Kimi quota protection
+
+| Tier | Current model | Use |
+| --- | --- | --- |
+| Fast | DeepSeek Flash | Clear work whose model latency affects a concrete milestone |
+| Normal | K2.8 Preview / Qwen3.8 Flash | Default investigation, implementation and tests |
+| Deep | Qwen3.8 Max | Complex work needing strong reasoning |
+| Ultra | Kimi K3.1 Pro, standard speed, max reasoning | Hard architecture, stubborn root causes, long-horizon work and ineffective-task escalation |
+
+Old native and Ark K3 models are retired from new-task choices and routing; historical model
+records remain accurate. Start clearly extreme reasoning work on Ultra. After two rounds without
+material progress, the coordinator reviews a checkpoint before upgrading. Repair authentication,
+permissions and environment blockers directly. Use Normal for routine implementation once the
+uncertainty is resolved. Ultra waits when unavailable and never silently downgrades.
+
+Entering Ultra preserves the task ID, authority and checkpoint, but creates a fresh model session.
+Carry completed work, evidence, decisions and remaining goals; do not replay completed operations.
+The base / maximum weekly protection defaults to 30%; only K3.1 Pro can use quota at or below
+the current effective threshold. Dynamic release (`kimi_weekly_reserve_dynamic`, default `true`)
+keeps the base in the first half-cycle and, during an idle final half, applies
+`floor + (base - floor) * clamp(seconds_until_weekly_reset / (7 days / 2), 0, 1)`, where
+`floor = min(base, 5)`. A base of 30% therefore protects 30% at 84 hours, 17.5% at 42 hours,
+12.14% at 24 hours, and 5% near reset. This follows the real weekly reset, not weekdays.
+Queued or active Ultra work, or native K3.1 Pro activity within 30 minutes, pauses release at
+the base; unknown or stale weekly, reset or demand signals also keep the base. Missing weekly
+quota retains ordinary Kimi admission blocking. Disabling the switch keeps fixed base protection.
+Released percentage points are the reduction in the protection threshold, not a spendable balance;
+spent quota cannot be reclaimed. The account panel shows the base, effective protection, released
+points, pause reason and next weekly reset from backend policy telemetry. Weekly quota, five-hour
+quota and account total are independent limits; never estimate the total as four weekly windows.
+Missing/stale values remain unknown; official plans without a weekly window show not applicable.
+Account total must be obtained from a real account query whose identity matches the inference key.
+A successful login alone does not establish that total quota was obtained. This is a scheduling
+reserve: in-flight requests and upstream accounting delay can briefly cross the boundary. At or
+below 5% weekly remainder with insufficient runway to reset, Ultra concurrency is one.
 
 ## Generic routing patterns
 
 Worker Desk does not require any particular provider or number of plans. Configure profiles first,
 then choose one of these patterns in **Models & routing**:
 
-- **One model per tier:** the simple `routing` map selects one profile for fast, background and deep work.
+- **One model per tier:** the simple `routing` map selects one profile for fast, background, deep and ultra work.
 - **Primary + backup:** put each profile in its own ordered stage. The next stage is considered only when every model in the earlier stage is unavailable.
 - **Fixed weighted pool:** put two or more profiles in one stage and assign integer weights. The weights stay fixed.
-- **Quota-adaptive pool:** explicitly enable a bounded continuous curve for one two-provider stage. Its ratios are control points, the saved weight is the neutral anchor, and fresh quota runway interpolates between them. Missing or stale telemetry keeps the baseline.
+- **Quota-adaptive pool:** explicitly enable a bounded continuous curve for a stage. A
+  two-provider stage accepts ratio control points (`ladder`); a stage with two or more
+  providers accepts a generalized `curve` where each provider's baseline weight is
+  multiplied by `min(1, runway) ** strength`. One on-pace runway is neutral, a zero
+  runway removes that provider, and unknown or stale telemetry keeps that provider's
+  configured prior instead of erasing known pressure on its peers. Pay-as-you-go
+  balances carry no window, so they are never compared as a subscription runway.
 
 Ordered fallback and weighted sharing can be mixed independently for each task tier. A user with
 one subscription needs no policy at all; a user with one paid plan and one pay-as-you-go backup can
-use two one-model stages. The Ark/Kimi policy below is an optional example, not a platform default.
+use two one-model stages. Ultra is restricted to K3.1 Pro and has no lower-capability fallback.
 
-Tier selection is based on unresolved ambiguity, not workload size or a weak-to-strong model
-ranking. Fast and Normal are both expected to complete work correctly. Fast can own a complete
-feature, fix, test, documentation change, migration or deployment when its direction, material
-constraints and acceptance are clear; it may choose ordinary implementation details. Normal is
-for a concrete outcome whose execution still needs open investigation or synthesis, even when it reads a large repository, changes
-many files, runs for a long time, or includes implementation, tests, documentation, packaging
-and deployment. Deep is for an
-abstract or unclear objective, an unresolved system-wide root cause, architecture trade-offs or
-logic with unusually difficult invariants. Large context and task importance alone are not Deep
-criteria. There is no separate total-task cap for work that genuinely needs Deep.
+Tier selection weighs unresolved ambiguity and the expected benefit of faster model work, not
+workload size or a weak-to-strong model ranking. Normal is the default for ordinary executable
+work: a concrete outcome whose direction, material constraints and acceptance are known, including
+clear/bounded implementation, investigation, tests, documentation, packaging, migration and
+deployment, even when it reads a large repository, changes many files or runs for a long time.
+Known direction or low uncertainty alone is not a reason to select or switch Fast. Fast is the
+capable latency-priority tier for work whose direction, constraints and acceptance are clear AND
+whose faster completion is reasonably expected to materially advance a concrete near-term
+milestone: an explicitly urgent delivery or deadline, or a coordinator-identified dependent task
+or phase that is actually ready and currently blocked by this work. Fast can own a complete
+feature, fix, test, documentation change, migration or deployment, and may choose ordinary local
+details; it is not weak or simple-only and needs no line-by-line prescription or fully pre-read
+repository. Deep handles complex reasoning. Ultra handles especially difficult architecture,
+stubborn root causes and long-horizon reasoning, and is considered after two rounds without
+material progress following checkpoint review. Large context, task size and importance alone are not
+Deep criteria, and urgency alone cannot bypass unresolved reasoning needs. There is no separate
+total-task cap for work that genuinely needs Deep.
 
-Choose the lowest tier that covers the ambiguity the worker must remove. A firm direction,
-governing constraints and acceptance are Fast; the method need not be prescribed line by line.
-A clear outcome whose execution still requires open investigation, classification or several
-interdependent choices is Normal. Defining the goal or rules, reconciling unclear requirements,
+Choose one tier from the uncertainty the worker must remove and the expected benefit of faster
+model work. Ordinary executable work with a firm direction and clear acceptance is Normal; an
+explicit urgency/deadline, or a genuinely identified bottleneck node whose remaining model-driven
+work is the consequential current blocker, with clear direction, is
+Fast; defining the goal or rules, reconciling unclear requirements,
 designing a new system structure, finding an unknown system-wide cause or solving unusually
 complex logic is Deep. The task's label does not decide the tier: an explicit document move is
-Fast, while sorting mixed evidence into keep, merge and delete decisions is Normal.
+Normal, while sorting mixed evidence into keep, merge and delete decisions is also Normal; a
+known patch that directly blocks a ready next build, with clear direction and acceptance, may be
+Fast, while preparing a future-beta component whose other prerequisites still run is Normal.
 
 A practical Fast gate is: the outcome, direction or governing constraints, and observable
-completion evidence are known before dispatch. Difficult planning performed earlier does not
-make the remaining implementation Normal. Fast may discover local details; use Normal when the
-execution still needs open investigation or significant interdependent judgments.
+completion evidence are known before dispatch, AND there is a reasonable, evidence-backed
+expectation that faster model work materially advances a concrete near-term milestone — an
+actually ready dependent task or phase currently blocked by this work, or an explicitly urgent
+delivery or deadline. A routine serial dependency — someone will eventually need the output — is
+not by itself a Fast trigger, and owning a critical resource alone does not prove the speed
+benefit; do not call each successive routine pipeline stage critical and move the entire chain to
+Fast. Queue or resource contention, compilation, external CI/test execution and pure waiting are
+not sped up by faster model output: keep Normal unless the remaining model-driven work is itself
+the consequential current blocker. Difficult planning performed earlier does not by itself make
+the remaining implementation Fast;
+resolve Deep uncertainty into Normal unless a concrete latency benefit justifies Fast. Fast may
+discover local details; use Normal when the execution still needs open investigation or
+significant interdependent judgments.
 
 Quota never participates in coordinator tier selection. The coordinator chooses Fast, Normal or
-Deep solely from unresolved uncertainty and submits `profile=auto`; the bridge applies quota and
+Deep solely from unresolved uncertainty and the expected benefit of faster model work,
+defaulting to Normal, and
+submits `profile=auto`; the bridge applies quota and
 provider policy afterward. `delegate-opencode quota --tier-guidance --compact` returns only this
 stable contract. Use verbose `quota --tier-guidance` for operator investigation. The primary runway signal is
 observed working pace: each window's remaining allowance percent is divided by its fitted active
@@ -114,8 +176,53 @@ pay-as-you-go balance and follows subscription runway only.
 
 Budget guidance is provider-neutral. In **Models & routing**, each configured provider can use
 live telemetry when available, a manually entered rolling window (remaining percentage, duration
-and an explicit-zone reset time), a monetary balance threshold for pay-as-you-go accounts, or
-`ignore`. A manual current balance may stand in for a missing balance API. The configurable Fast
+and an explicit-zone reset time), a monetary balance threshold for pay-as-you-go accounts,
+`ignore`, or `prepaid`. A manual current balance may stand in for a missing balance API.
+
+`prepaid` marks refillable credit capacity such as an Alibaba Token Plan seat group, not a
+use-it-or-lose-it allowance that must last until its renewal date. The existing provider record
+carries it without a new top-level setting:
+
+```json
+{"budget_signals": {"bailian-token-plan": {"mode": "prepaid"}}}
+```
+
+Positive callable Credits remain a hard-checked admission source, and real zero, expiry and
+inference-credential circuits still block. Calendar burn-before-renewal never creates
+conservation, provider weight attenuation, proactive downgrades, a Max-to-Flash substitution,
+or spillover of that provider's allocation because another renewable plan is low. Its control
+runway is neutral (`1.0`, provider level `0`) while other plans continue to protect their own
+quotas; global conservation also does not replace a Normal stage that still has usable prepaid
+capacity. The console keeps the live Credits reading, observed runtime estimate and real
+renewal timestamp, but does not label refillable capacity as about to run out merely because
+the renewal is far away.
+
+Prepaid recovery is current-key specific. A positive whole-account Credits aggregate never
+clears a confirmed exhausted or rejected inference key, because the aggregate may include a
+different seat. Replacing the inference key changes its opaque file identity and detaches the
+old block; a verified completed success on the current key or the explicit
+`quota --retry-provider` path can also recover. Rotating the separate quota-query AK/SK pair is
+never inference recovery, and a failed control query is unknown telemetry rather than an
+inference-key failure.
+
+### Manual allowance snapshots
+
+A subscription without a supported balance API (for example Alibaba Cloud Token Plan Credits)
+can be tracked with an imported console snapshot instead of fabricated live telemetry:
+
+```sh
+delegate-opencode quota --import-snapshot /private/path/snapshot.json
+```
+
+The payload carries the provider, the plan limit and remaining amount, the reset time, the
+capture time, an optional source label and an optional freshness horizon in minutes. The
+snapshot is shown with explicit freshness and is never labeled as a live reading. A reading
+whose reset has passed, or whose capture is older than its freshness horizon when imported,
+is history only: it cannot release a recorded depletion or a billing circuit. Only a newer
+positive reading from its still-current period, a verified completed model success, or an
+explicit manual retry proves recovery. Out-of-order imports are rejected, and an exact
+re-import of the same reading is an idempotent no-op. Alibaba Max and Flash share the one
+Credits snapshot; each plan pool keeps its own separate signal. The configurable Fast
 tie-breaker runway threshold applies to live and manual windows; monetary providers use their own
 low-balance threshold. Unknown signals preserve ordinary routing instead of pretending the budget
 is full or empty.
@@ -123,10 +230,14 @@ Do not restart productive work merely to change tiers and replay its context.
 
 ## Capability floor (optional)
 
-A task spec may set `capability_floor` (`fast`/`normal`/`deep`) with a required, nonempty
+Deep and Ultra always have an effective floor at their own tier, including retained tasks;
+omitting the field or supplying a weaker floor cannot enable an automatic downgrade.
+
+A task spec may set `capability_floor` (`fast`/`normal`/`deep`/`ultra`) with a required, nonempty
 `capability_reason` (1-500 characters). The floor must not exceed the requested tier; for a
-`normal` floor only profiles in the Normal/Deep first stages are eligible, and for a `deep`
-floor only the Deep first stage. Fallback, spillover and in-session rerouting never select a
+`normal` floor only profiles in the Normal/Deep/Ultra first stages are eligible, and for a `deep`
+floor only the Deep/Ultra first stages. An `ultra` floor permits only the Ultra first stage.
+Fallback, spillover and in-session rerouting never select a
 profile below the floor — if none is available the task queues with
 `capability_floor_unavailable` rather than downgrading. Parent-task continuations inherit the
 floor. This is a deliberate no-downgrade requirement (for example a task whose correctness
@@ -165,115 +276,6 @@ because they happen to be `1:1` or `2:1`.
 `level2_offpeak_share_percent` is retained as the compatible configuration key; it now represents
 the Level 2 high-pressure ceiling used immediately off-peak and reached progressively at peak.
 
-## Ark Agent Plan
-
-Connect `volcengine-agent-plan` through OpenCode's private auth store. Never paste a credential
-into a task, tracked config, command argument or report. Worker Desk supplies this Responses API
-provider when a matching profile is enabled:
-
-| Profile example | Model | Context / output | Reasoning |
-| --- | --- | --- | --- |
-| `ark-auto` | `volcengine-agent-plan/ark-code-latest` | 1,024,000 client ceiling / 32,000 | `max` |
-| `ark-evolving` | `volcengine-agent-plan/doubao-seed-evolving` | 1,024,000 / 65,536 | `max` |
-| `ark-k3` | `volcengine-agent-plan/kimi-k3` | 1,024,000 / 65,536 | `max` |
-| manual only | `volcengine-agent-plan/deepseek-v4.1-flash` | 1,024,000 / 65,536 | `max` |
-
-The SDK is `@ai-sdk/openai` and the subscription base URL is
-`https://ark.cn-beijing.volces.com/api/plan/v3`. Provider keys stay in OpenCode's private
-authentication store; the generated runtime overlay contains no key. `ark-code-latest` follows
-Ark's console selection and can route unpredictably, so use fixed Evolving or K3 when model
-identity matters. The 1,024,000 client ceiling prevents local compaction at 256K; the selected
-backend remains authoritative.
-
-AFP telemetry is separate. `GetAFPUsage` and `GetPersonalPlan` use a Volcengine control-plane
-AccessKey ID/Secret. Register the two metadata-only references described in
-[credentials](credentials.md). Worker Desk signs the fixed Ark OpenAPI requests in-process and
-returns only plan/window metadata. Missing telemetry leaves quota unknown without breaking
-inference. The four windows share one provider runway, and all Ark profiles consume it.
-
-Sources: [OpenCode integration](https://www.volcengine.com/docs/82379/2373741),
-[plan overview](https://www.volcengine.com/docs/82379/2366394),
-[GetAFPUsage](https://www.volcengine.com/docs/82379/2479847),
-[GetPersonalPlan](https://www.volcengine.com/docs/82379/2546382).
-
-## Optional Ark/Kimi subscription-first preset
-
-A fresh `--preset ark-agent-plan` installation creates:
-
-```json
-{
-  "routing_policy": {
-    "fast": [
-      [{"profile": "ark-auto", "weight": 1}],
-      [{"profile": "fallback", "weight": 1}]
-    ],
-    "background": [
-      [{"profile": "senior-code", "weight": 1}, {"profile": "ark-evolving", "weight": 1}],
-      [{"profile": "ark-auto", "weight": 1}],
-      [{"profile": "fallback", "weight": 1}]
-    ],
-    "deep": [
-      [{"profile": "deep-research", "weight": 2}, {"profile": "ark-k3", "weight": 1}],
-      [{"profile": "senior-code", "weight": 1}, {"profile": "ark-evolving", "weight": 1}],
-      [{"profile": "ark-auto", "weight": 1}],
-      [{"profile": "fallback", "weight": 1}]
-    ]
-  }
-}
-```
-
-Only the first stage with an available candidate participates. Coordinators submit a tier with
-`profile=auto`; explicit profiles are reserved for user-required model pins and controlled tests.
-Weighted admission is durable and counts admitted jobs, not tokens or money. Waiting for owner
-capacity, scope locks or provider recovery consumes no turn.
-
-The preset also defaults to a 5% Kimi weekly/overall guard with one global native-K3 slot.
-At or below that threshold, automatic Normal work excludes Kimi; automatic Deep work may use
-one native K3 job while other jobs select Ark K3 or later stages. The bridge prefers the valid
-`overall` aggregate and otherwise an exact seven-day window, never the five-hour window. Both
-the threshold and slot count are editable under **Models & routing**.
-
-If automatic routing reaches the configured `fallback` after skipping at least one preferred
-stage, the operator console and retained ledger record `fallback_used` and route history. Ordinary
-coordinator results omit both model choices and fallback transitions for automatic tasks. Capacity
-is surfaced only when no usable route remains and action is required.
-
-The baseline favors native Kimi because buying the same Kimi model through Ark is usually a poor
-economic trade. Each pool has its own continuous, reset-aware curve:
-
-| Pool | Baseline | Allowed range |
-| --- | --- | --- |
-| native Kimi K3 : Ark K3 | 2:1 | continuously from 3:1 through 2:1 to 1:1; Ark K3 never leads |
-| native Kimi K2.8 : Ark Evolving | 1:1 | continuously from 7:3 through 1:1 to 1:2 |
-
-Runway is estimated from observed working-pace burn: remaining allowance hours at the fitted
-active burn rate divided by wall-clock time to the reset. The tightest of a provider's windows
-is its bottleneck; conservation pressure across subscription providers is the MAX of their
-bottleneck runways when all configured subscription signals are reliable; otherwise combined
-pressure is unknown. The console shows a separate descriptive combined-pool fit. The old `remaining fraction / time fraction
-left` ratio is only the cold-start prior before burn samples exist. Stale, missing or
-unauthenticated telemetry is excluded from the combined signal and keeps the baseline ratio.
-Ordinary nonzero ladders use a gentle curve whose 4x runway difference reaches the configured
-outer bound. A ladder that explicitly declares a 0% endpoint reaches real exclusion at a 2x
-advantage, avoiding cosmetic 99:1 allocations. The Fast tier's fallback share, level 1
-conservation and level 2 conservation use separate curves. When level 2 reuses a
-multi-provider Fast pool, it also inherits that pool's own curve. Ark Auto, Evolving and K3
-share one runway, so heavy Auto use naturally reduces later Ark share. Endpoint-confirmed zero
-removes the provider. A confirmed quota/window stop or model-origin HTTP 429 can continue
-within the same OpenCode session on the next route. The transition keeps the transcript and
-workspace, adds the failed provider to the exclusion set, and instructs the new model not to
-repeat completed or external side effects.
-
-When conservation is active, an optional long-task rule can also queue one same-session model
-change after the configured age for automatically routed Fast or Normal tasks. This waits for the
-current model turn to finish and never aborts it. Deep tasks and explicit profile pins remain
-stable. The task keeps its ID, workspace and transcript; route history records
-`queued_boundary_switch`, and the continuation must inspect existing work before acting. The
-console can send Bark notifications for conservation changes, provider exhaustion/recovery and
-these model transitions. Ordinary bridge-owned changes are silent to the coordinator and remain
-in route history for diagnostics; only final fallback or an inability to continue is surfaced.
-Notifications observe routing decisions; they never make them.
-
 ## AFP-equivalent
 
 Worker Desk stores cost assumptions separately from real quota. Defaults are configurable in the
@@ -287,20 +289,12 @@ Kimi CNY 699 = 349,500 AFP-equivalent (nominal purchase-cost comparison only)
 
 This does **not** mean Kimi supplies 349,500 AFP or a known token allowance. If a completed Kimi
 billing cycle processed `M` million observed tokens, `349500 / M` is only that cycle's blended
-nominal AFP-equivalent per million. It cannot separate K3 from K2.8 without per-model usage or
+nominal AFP-equivalent per million. It cannot separate individual models without per-model usage or
 multiple independently observed mixes.
 
-With configurable assumptions Auto=50, Evolving=250 and Ark K3=1000 AFP per million tokens, and
-baseline shares K3 2:1 plus K2.8/Evolving 1:1:
-
-```text
-Ark AFP = 333.33D + 125N + 50S
-```
-
-`D`, `N` and `S` are millions of deep, normal and small-task tokens. Under dynamic shares the
-general expression is `1000*rD*D + 250*rN*N + 50*S`, where `rD` is 1/4, 1/3 or 1/2 and `rN` is
-1/3, 1/2 or 2/3. These coefficients are estimates and promotion terms can change. The live Ark
-`Used` value is authoritative; the console shows it separately from estimates and nominal cost.
+Cost estimates use the currently enabled models and observed per-model tokens. Do not
+reuse retired-model ratios. Official live usage remains authoritative; the console keeps actual
+usage, estimates and nominal costs separate.
 
 ### Stable telemetry and source-pool protection
 

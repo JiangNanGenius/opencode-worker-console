@@ -75,11 +75,12 @@ python3 scripts/install.py --preset ark-agent-plan
 # Append --no-start to provision files without starting services.
 ```
 
-A custom model initially backs all three profiles. `deepseek-kimi` configures DeepSeek V4.1 Flash,
-Kimi K2.8 Preview and Kimi K3. `ark-agent-plan` adds Ark Auto, Seed Evolving and Ark K3 plus the
-subscription-first weighted policy described in [routing](routing.md). Both use `max` reasoning.
-A preset does not create provider accounts or grant model access. Existing configurations are
-preserved even when model/preset flags are supplied.
+Custom installs use the supplied model. The four-tier preset uses DeepSeek Flash, K2.8 Preview,
+Qwen3.8 Max and Kimi K3.1 Pro with maximum supported reasoning. Old native/Ark K3 models are
+retired from new-task choices. See [routing](routing.md) for the Ultra capability floor and weekly
+reserve. Presets do not create accounts or grant model access; existing installs retain their
+configuration, and migration requires separate verification.
+
 
 After installation, **Models & routing** can express one plan, a primary with one backup, a fixed
 multi-model pool or opt-in quota adaptation. Start with `--model` when the user has only one

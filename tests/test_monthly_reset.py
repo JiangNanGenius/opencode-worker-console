@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import common
 import management
 import quota
+import routing
 import worker
 
 MONTHLY = ("You've reached your monthly usage limit for this billing cycle. "
@@ -44,13 +45,18 @@ class MonthlyResetTests(unittest.TestCase):
         self.patchers = [patch.object(common, 'STATE', self.state), patch.object(quota, 'STATE', self.state),
                          patch.object(common, 'CONFIG', self.config),
                          patch.object(quota, 'credential_identity',
-                                      lambda p: self.ident if p == 'kimi-for-coding' else 'cred-ds')]
+                                      lambda p: self.ident if p == 'kimi-for-coding' else 'cred-ds'),
+                         # Historical profile names here stand in for two ordinary
+                         # Kimi models; retirement is covered separately.
+                         patch.object(routing, 'RETIRED_MODELS', frozenset())]
         for p in self.patchers:
             p.start()
         common.init()
         self.q = {p: {'state': 'ok', 'stale': False, 'sampled_at': time.time(), 'available': True,
                       'windows': [{'name': 'window_0', 'remaining_percent': 80.0}]}
                   for p in ('deepseek', 'kimi-for-coding')}
+        self.q['kimi-for-coding']['windows'].append(
+            {'name': 'overall', 'remaining_percent': 80.0, 'duration_minutes': 10080})
 
     def tearDown(self):
         for p in reversed(self.patchers):
@@ -372,18 +378,33 @@ class MonthlyResetTests(unittest.TestCase):
         self.assertEqual(quota.route(auto, self.c, self.q)[0], 'senior-code')
 
     # -- advisory exhaustion vs auto routing ------------------------------
-    def test_explicit_profile_may_retry_while_auto_and_alternatives_avoid(self):
+    def test_explicit_kimi_profile_requires_a_release_while_auto_avoids(self):
         self.open_block(time.time() - 100)
         auto = {'profile': 'auto', 'requested_profile': 'auto', 'complexity': 'normal'}
         self.assertIsNone(quota.route(auto, self.c, self.q)[0])
         self.assertEqual(quota.route(auto, self.c, self.q)[1], 'provider_billing_blocked')
-        explicit = {'profile': 'senior-code', 'requested_profile': 'senior-code', 'complexity': 'normal'}
+        explicit = {'profile': 'senior-code', 'requested_profile': 'senior-code',
+                    'complexity': 'normal', 'status': 'queued'}
         self.assertEqual(quota.route(explicit, self.c, self.q),
-                         ('senior-code', 'explicit_profile_monthly_retry'))
+                         (None, 'provider_billing_blocked'))
         deep = {'profile': 'deep-research', 'requested_profile': 'deep-research', 'complexity': 'deep'}
-        self.assertEqual(quota.route(deep, self.c, self.q)[0], 'deep-research')
+        self.assertEqual(quota.route(deep, self.c, self.q),
+                         (None, 'provider_billing_blocked'))
         # Candidate alternatives still avoid the exhausted provider.
         self.assertEqual([a['profile'] for a in quota.alternatives(explicit, self.c, self.q)], ['fallback'])
+        # Guidance exposes manual-release eligibility, never "profile can infer now".
+        rec = quota.guidance(explicit, self.c, self.q)
+        self.assertTrue(rec['explicit_retry_allowed'])
+        self.assertTrue(rec['manual_release_required'])
+        self.assertTrue(rec['autonomous_next_action']['manual_release_required'])
+        self.assertIn('quota --retry-provider kimi-for-coding',
+                      rec['autonomous_next_action']['retry_command'])
+        self.assertFalse(rec['autonomous_next_action']['profile_inference_available'])
+        # A viable alternative still owns the autonomous reselection action.
+        self.assertEqual(rec['suggested_action'], 'resubmit_same_tier_auto')
+        # The executable release restores inference; a true empty window still blocks.
+        self.assertTrue(quota.retry_provider('kimi-for-coding')['released'])
+        self.assertEqual(quota.route(explicit, self.c, self.q)[0], 'senior-code')
         # A non-monthly block stays an absolute prohibition even for an explicit profile.
         common.write_json(self.state / 'billing.json', {'kimi-for-coding': {
             'credential': self.ident, 'opened_at': time.time() - 100, 'message': 'Insufficient Balance',
@@ -393,8 +414,12 @@ class MonthlyResetTests(unittest.TestCase):
 
     def test_explicit_retry_never_overrides_endpoint_exhaustion(self):
         self.open_block(time.time() - 100)
-        for profile in ('senior-code', 'deep-research'):
-            task = {'requested_profile': profile, 'complexity': 'deep'}
+        # This test covers endpoint exhaustion, not capability tiers: the
+        # Normal profile runs a Normal fixture (a Deep pin to a Normal-only
+        # profile is intentionally rejected by the capability floor).
+        for profile, complexity in (('senior-code', 'normal'),
+                                    ('deep-research', 'deep')):
+            task = {'requested_profile': profile, 'complexity': complexity}
             for stale in (False, True):
                 q = copy.deepcopy(self.q)
                 q['kimi-for-coding'].update(available=False, stale=stale,

@@ -136,11 +136,15 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(c['routing_dynamics'], install.DEFAULT_ROUTING_DYNAMICS)
         self.assertEqual(c['quota_spillover'], install.DEFAULT_QUOTA_SPILLOVER)
         self.assertEqual(c['routing_policy']['deep'][0], [
-            {'profile': 'deep-research', 'weight': 2}, {'profile': 'ark-k3', 'weight': 1}])
+            {'profile': 'deep-research', 'weight': 1}])
         self.assertEqual(c['routing_policy']['background'][0], [
             {'profile': 'senior-code', 'weight': 1}, {'profile': 'ark-evolving', 'weight': 1}])
-        self.assertEqual(c['routing_policy']['fast'][0], [{'profile': 'ark-auto', 'weight': 1}])
+        self.assertEqual(c['routing_policy']['fast'][0], [{'profile': 'fallback', 'weight': 1}])
+        self.assertEqual(c['routing_policy']['ultra'][0], [
+            {'profile': install.KIMI_ULTRA_PROFILE, 'weight': 1}])
         self.assertNotIn('ark-deepseek', c['profiles'])
+        self.assertNotIn('ark-k3', c['profiles'])
+        self.assertNotIn('kimi-k3', json.dumps(c['profiles']))
 
     def test_existing_config_unchanged_except_missing_defaults(self):
         existing = {'version': 1, 'server_url': 'http://127.0.0.1:41234',
@@ -215,7 +219,14 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(c['provider_limits'], {'kimi-for-coding': 1})
         self.assertEqual(c['max_parallel'], 2)
         self.assertEqual(c['max_parallel_per_owner'], 4)
-        self.assertEqual(c['profiles'], existing['profiles'])
+        upgraded = dict(existing['profiles'])
+        upgraded[install.KIMI_ULTRA_PROFILE] = {
+            'model': install.KIMI_ULTRA_MODEL, 'variant': 'max',
+            'label': 'Kimi K3.1 Pro · Ultra', 'enabled': True}
+        self.assertEqual(c['profiles'], upgraded)
+        self.assertEqual(c['routing']['ultra'], install.KIMI_ULTRA_PROFILE)
+        self.assertEqual(c['kimi_weekly_reserve_percent'], 30)
+        self.assertEqual(c['kimi_gate'], {'enabled': True, 'port': 51531})
 
     def test_fresh_install_sets_console_network_defaults_and_admin_login(self):
         self.run_install('--model', 'acme/worker')

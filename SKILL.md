@@ -1,215 +1,230 @@
 ---
 name: delegate-opencode
-description: Delegate complete authorized outcomes to general-purpose OpenCode agents. Every task category is eligible. Classify Fast/Normal/Deep only from the uncertainty the worker must resolve, keep profile=auto, and use the bound shared/main workspace unless isolation is genuinely required. The bridge privately selects providers and models, including conservation and fallback.
+description: Delegate executable work early to general-purpose OpenCode workers when an authorized task needs investigation, implementation, verification or routine operations. Pass sufficient context, default ordinary executable work to Normal, improve workflow efficiency without automatically selecting Fast, reserve Fast for a concrete model-latency bottleneck, use Deep for strong reasoning and Ultra for the hardest unresolved work, and keep profile=auto; retain coordination, critical judgment and complex device interaction upstream.
 ---
 
 # Delegate OpenCode work
 
-OpenCode is a general-purpose execution layer for an upstream harness. Every authorized outcome is eligible for
-delegation by default; name, domain, importance and whether code changes never decide it. When the
-worker has the needed tools, delegate the whole workflow — investigation, implementation, repair
-and verification — instead of keeping an unlisted category or handing out low-level fragments.
-The harness supplies context and authority, reviews evidence and owns final acceptance. Keep only a step
-that truly requires the harness's Computer Use, nuanced visual judgment, or a user-only login, MFA, legal
-acceptance or approval; let the worker finish every other supported step and report the exact
-remaining handoff with evidence. Workers can implement interface code and run terminal or headless
-verification; do not duplicate their repository reading locally.
+Use OpenCode as the execution layer, not just as a helper for leftovers. After the minimum
+entry checks needed to identify the workspace, authority and existing work, delegate a coherent,
+verifiable package before doing its substantive investigation or implementation yourself. An
+unfamiliar repository is a reason to delegate discovery, not to read it all before handing off.
+Do not wait for the user to ask for workers. Task domain, importance, size and personal familiarity
+do not determine eligibility; actual execution tools and authority do.
 
-## Scope the authority
+The upstream harness owns planning, dependencies, critical decisions, integration and final
+acceptance. Workers own their package's investigation, implementation, relevant verification and
+local repair. Review their critical evidence without repeating all their repository reading or
+checks. Direct execution remains reasonable for a genuinely trivial, self-contained action or a
+step that specifically needs the upstream harness; do not manufacture tasks to meet a quota.
 
-- Local `scopes` name repository files/directories that may change. Authorize a whole relevant
-  subsystem (or an isolated repository) up front when investigation must discover touched files.
-- Operational `targets` name authorized remote hosts, services, APIs, databases or remote data. A
-  remote-only write needs a target, not a dummy local scope or repo; state environment and allowed
-  effects in the objective. Targets convey authority, never credentials or access-control bypass.
-- `mode: read` is inspection only, including remote systems. `mode: write` needs scopes, targets,
-  or both. Use the bound shared/main workspace by default and omit `workspace` or set it to
-  `shared`. This remains the default for large, important, long-running and broad repository edits;
-  none of those traits justifies a second checkout. Overlapping scopes and resources are serialized
-  by the bridge. Never ask the worker to create its own Git worktree. Use explicit `--workspace
-  isolated` only when the user requests isolation, conflicting writes truly must proceed at the
-  same time, or a destructive experiment needs a disposable checkout. Prefer locks or sequential
-  work when either can avoid duplicating dependencies and build products. Give tasks acting on one
-  deployment, service, database or device a single stable `--resource` lock name (for example
-  `ssh:host:service`), not per-model locks.
-- Auto Approve is on by default: ordinary tools and commands are allowed; supplied `commands` are
-  suggested checks, not an exclusive allowlist, and no artificial iteration, tool-call or runtime
-  limit applies. Task authority still applies.
-- Existing user authorization carries into the handoff; ask only for a genuinely missing decision
-  or access. New logins, QR scans and persistent consents remain user steps. `--group-title` names
-  the main outcome, `--parent-task-id` continues one; preserve other tasks' ownership.
-  `--notify-on-complete` sends one Bark alert for a key milestone only.
+## Delegate at useful boundaries
 
-## Hand off a self-contained outcome
+- Hand over an observable outcome and its checks, not an individual search or command. Split large
+  goals at decision or delivery boundaries; do not send an entire project to Deep and disengage.
+- Start independent packages concurrently when their authority, inputs and resources are ready.
+  While they run, handle coordination, user decisions or independent work rather than duplicating
+  the assigned package. Dependent stages consume verified outputs; overlapping writes or live
+  resources require serialization, not extra worktrees or empty-slot targets.
+- Treat requests to "improve efficiency", "speed things up" or "unblock work" as workflow goals,
+  not automatic Fast requests. Identify the actual bottleneck: improve package boundaries and
+  handoffs, dispatch ready independent work, resolve dependency/resource conflicts, and reuse
+  verified outputs rather than repeating investigation or checks. These changes do not by
+  themselves change a task's tier.
+- At a meaningful result, reassess the remaining work. Use a linked task for a distinct deliverable
+  and `task retier` for the same outcome, preserving its session and handoff. Resolved Deep
+  uncertainty normally continues as Normal. Select Fast only under the criteria below; reassess
+  it when the bottleneck changes and return to Normal when its speed benefit is gone and
+  meaningful work remains. Cost, quota and elapsed time are bridge routing concerns, not reasons
+  for the coordinator to change a task's tier.
 
-The initial handoff must pass a cold-start test: a capable engineer who cannot see the upstream
-conversation can finish the outcome without guessing any decision or redoing known work. Always
-pass conversation-only facts that affect execution: the intended result, relevant current state,
-settled decisions and their practical rationale, concrete evidence or artifact IDs/paths/URLs,
-authority and constraints, acceptance evidence, open questions, and anything that must not be
-repeated. For a continuation, state `Done`, `In progress`, `Remaining`, and `Do not repeat`.
+## Give enough context without delaying dispatch
 
-Let the worker rediscover repository facts, commands and conventions from the workspace; do not
-omit facts it cannot discover there. Be concise but lossless: there is no arbitrary prompt-length
-cap for a substantial task. Do not dump the whole chat, private chain of thought, credentials or
-irrelevant history. Put substantial or continuing work in a private JSON spec with a structured
-multiline `objective`; use `steer` later only for material new information, not to repair an
-intentionally thin initial handoff. Use the template and examples in
-[the handoff contract](references/handoff.md).
+For a simple, self-contained task, a short objective, necessary context and concrete acceptance
+are sufficient. Do not impose the full handoff template on it. For substantial or continuing work,
+use [the handoff contract](references/handoff.md) and a private JSON spec with a structured
+`objective`. Pass the relevant facts already known: goal, current state, settled decisions,
+evidence and artifact locations, authority, constraints, dependencies and acceptance. Include
+suggested direction and useful entry points when known; separate facts from hypotheses and let
+the worker adjust its method to evidence. For continuations, identify done, in-progress and
+remaining work, including side effects that must not be repeated.
 
-## Submit reliably
+The cold-start test is whether a capable engineer without the upstream chat can proceed without
+guessing a settled decision or redoing known work. Missing repository facts can be the worker's
+investigation; missing context already held by the coordinator should not be. Do not turn the
+handoff into a command-by-command recipe or include credentials, raw chat or irrelevant history.
+There is no arbitrary word limit for necessary context. Use `steer` for material new information,
+not to repair a deliberately thin initial assignment.
+
+## Allocate interface work by tools and judgment
+
+Workers can implement interfaces, run terminal/headless checks and use reliable available tools
+for lightweight UI interaction. Delegate DOM or structured-element operations and straightforward
+clicks, input and state checks when the goal is clear, the path is stable, the result is observable
+and failure is recoverable. Decide by uncertainty and feedback, not by a fixed number of clicks.
+Check the execution runtime's actual capabilities; never assume it has the harness's Computer Use,
+connector or authenticated session. Do not install a new UI tool solely to force delegation.
+
+Keep complex device/cross-application interaction, sustained visual interpretation, ambiguous
+popups, aesthetic direction and final experience judgment with the upstream harness (Codex in
+this workflow). Transfer only the steps requiring those capabilities; the worker can complete
+implementation, builds, supported deployment and other verification around them. If a lightweight
+flow becomes ambiguous or lacks a reliable tool, hand over completed actions, current state,
+observations/screenshots, artifacts, the remaining goal and any uncertain side effect. Do not
+restart the whole assignment or improvise blind coordinate/terminal GUI workarounds. See
+[the UI operations boundary](references/operations.md#interface-operation-boundary).
+
+## Set authority and workspace
+
+`mode: read` is inspection only. Writes require local `scopes`, operational `targets`, or both;
+authorized remote work needs no dummy repository scope. Give sufficient subsystem authority to
+complete the package and preserve other tasks' changes. Targets convey scope, not credentials
+or permission to bypass controls. Existing user authorization carries into the handoff; ask only
+for a genuinely missing decision, access or authorization. Return a platform-required user step
+precisely without handing back the supported work.
+
+Use the bound shared/main checkout (`workspace: shared` or omit it), including large and
+long-running changes. Prefer scope/resource locks or sequential work over duplicated dependencies
+and build products. Neither coordinator nor worker should create a Git worktree for convenience.
+Request `--workspace isolated` only for user-requested isolation, unavoidable conflicting writes
+that must run concurrently, or a destructive experiment. Include integration and safe release in
+that package. Give tasks sharing a deployment, service, database or device one stable `--resource`
+name, not separate per-model locks.
+
+Auto Approve is on by default: ordinary tools are allowed and `commands` are suggested checks,
+not an exclusive list. No artificial iteration, tool-call or runtime limit applies; task authority
+still does. Workers may use SSH, authenticated CLIs, APIs and available native/MCP tools. Reuse
+existing authentication; pass extra secrets only through metadata-only references and `credential
+run` ([credentials](references/credentials.md)), never prompts, argv, reports or commits.
+
+## Choose one tier by uncertainty and latency value
+
+Keep `profile=auto`; the bridge chooses providers, models, balancing and fallback.
+
+| Remaining task shape | Tier |
+| --- | --- |
+| Ordinary executable work: clear/bounded implementation, investigation, tests, docs, deployment, finalization | `normal` (default) |
+| Direction, constraints and acceptance are clear; remaining model-driven work is the current bottleneck, and faster output has an evidence-backed benefit for a named near-term milestone or explicit deadline | `fast` |
+| Complex investigation or implementation needing strong reasoning | `deep` |
+| Especially difficult architecture, stubborn unknown root causes, long-horizon reasoning, or two rounds without material progress after checkpoint review | `ultra` |
+
+The four-tier service uses Fast (DeepSeek Flash), Normal (K2.8 Preview / Qwen3.8 Flash),
+Deep (Qwen3.8 Max) and Ultra (native Kimi K3.1 Pro, standard speed, maximum supported
+reasoning). Old native and Ark K3 routes are retired; historical records remain unchanged.
+Start clearly extreme reasoning work directly on Ultra. After two rounds without material
+progress, review the checkpoint and upgrade when reasoning is the blocker. Authentication,
+permissions, missing tools and environment failures need their own repair before escalation.
+When uncertainty is resolved, give routine implementation to Normal. Ultra never silently
+falls back to a lower model; it waits for capacity. Ordinary coordinators still use `profile=auto`.
+
+Kimi weekly protection has a base / maximum of 30% by default. The bridge may release idle
+protection to Normal in the final half of the real weekly cycle; Ultra demand, including activity
+within 30 minutes, or unknown/stale signals keep the base. This is routing policy, not a reason
+for the coordinator to change task tiers. Released percentage points are not available quota and
+cannot reclaim spent allowance. Operators may disable `kimi_weekly_reserve_dynamic` to keep the
+base fixed; ordinary coordinators continue to use `profile=auto` without inspecting quota.
+
+Entering Ultra creates a fresh native model session while keeping the bridge task, authority and
+checkpoint. Carry completed work, evidence, decisions and remaining work; do not replay completed
+side effects or inject the old model's reasoning trace. See [routing](references/routing.md).
+
+Normal remains the default even when work is simple or its direction is known. Generic efficiency
+or urgency wording, a routine downstream dependency, and critical-resource ownership do not by
+themselves justify Fast. Before selecting or switching to Fast, identify the remaining
+model-driven bottleneck and explain which concrete milestone earlier output will advance.
+Queue/resource contention, compilation, external CI/test execution and pure waiting call for
+workflow changes, not a faster model. Do not promote an entire pipeline because each stage has
+an eventual consumer.
+
+Fast is a capable latency-priority tier, not a weak simple-only tier. It can own a complete
+outcome and investigate ordinary local details without line-by-line prescription or a full
+upstream repository read. Select it proactively when the criteria hold; no explicit user Fast
+instruction is required. Deep covers complex reasoning; Ultra handles especially difficult or stalled reasoning.
+Size, importance and context alone do not imply either tier, and urgency alone cannot bypass unresolved reasoning needs. Fast and Normal can both
+deliver complete outcomes. Do not carry a parent's Deep or Ultra tier into all implementation, or disguise
+a genuinely difficult problem as many Fast lookups. There is no Deep or Ultra task-count limit. Ordinary
+handoffs do not inspect quota, conservation, provider health or prices, and never change tier to
+protect a plan. Use `quota --tier-guidance` only for explicit operator troubleshooting. Ordinary
+task results hide route choices; the console retains operator telemetry. Explicit model pins and
+capability floors are exceptions for deliberate requirements; see [routing](references/routing.md)
+and [operations](references/operations.md). Keep the highest verified supported reasoning variant
+on continuations.
+
+## Submit and continue
 
 Use `~/.local/bin/delegate-opencode` (or this skill's `scripts/delegate.py`). `submit` starts
 missing services and installs the pinned official OpenCode when needed; `service start` precedes
-`doctor` when services are down; `console --open` opens the dashboard. Delegate one coherent
-outcome early with objective, context, acceptance evidence and authorized target; let the worker
-discover commands, conventions and runbooks. For installation/upgrades follow
-[the agent install runbook](references/agent-install.md)
-([中文](references/agent-install.zh-CN.md)), with noninteractive flags and separate verification of
-installation, provider connection and real execution. A read example:
+`doctor` when services are down. Example read-only investigation:
 
 ```sh
 delegate-opencode submit --directory "$PWD" --tier normal --profile auto \
-  --group-title 'Main outcome' --title 'Investigate and recommend a fix' \
-  --acceptance 'Return the cause, evidence, affected paths and uncertainties.' \
-  'Investigate the reported problem and recommend a complete fix without changing systems.'
+  --group-title 'Main outcome' --title 'Investigate the reported failure' \
+  --acceptance 'Return the cause, evidence, affected paths and remaining uncertainty.' \
+  'Investigate the reported failure and recommend a complete fix without changing systems.'
 ```
 
-For writes add `--mode write` with `--scope` and/or `--target`. Substantial and complex specs go in a private JSON
-file: `submit --spec /absolute/private/task.json`. Never use `--spec -` unless the caller actually
-writes JSON to process stdin — a command string alone does not supply an in-memory object.
-Prefer a private spec file unless the payload is explicitly piped to stdin. For independent in-memory specs submit
-concurrently with `--spec-urlencoded`, passing
-`encodeURIComponent(JSON.stringify(spec)).replace(/'/g, "%27")` in single quotes. Inspect every
-result and wait only on returned job IDs. Fields and examples are in [operations](references/operations.md).
+For writes add `--mode write` and `--scope`/`--target`. Use `--group-title` for the main outcome
+and `--parent-task-id` for a linked child. Prefer `submit --spec /absolute/private/task.json` for
+substantial specs; `--spec -` only works when JSON is actually supplied on stdin. In-memory spec
+encoding, fields and CLI examples are in [operations](references/operations.md); inspect every
+submission result and wait on returned job IDs. Installation/upgrades use the
+[agent install runbook](references/agent-install.md) ([中文](references/agent-install.zh-CN.md));
+LAN and reverse-proxy setup is in [remote access](references/remote-access.md).
 
-## Tools, remote access and credentials
+For the same outcome, change tier with `task retier JOB_ID --tier normal --reason 'Root cause
+and acceptance rule are now known; the remaining work is ordinary bounded implementation.'
+--handoff-file /private/checkpoint.json --request-id STABLE_ID`. The owner-only (`0600`)
+checkpoint has `done`, `remaining`, `decisions`, `evidence` and `do_not_repeat`; use the actual
+state, not example claims. For Fast, identify the remaining model-driven bottleneck and the
+concrete milestone earlier output will advance. The bridge preserves task, session, workspace,
+authority and cumulative
+usage and switches at a safe continuation boundary. `pending` is not `applied`; observe
+`tier_change.status` and never replay an uncertain acknowledgement. Reuse an ID only with identical
+content; keep waiting on the same task. See [handoff checkpoints](references/handoff.md#same-task-tier-checkpoint).
 
-A worker may use SSH, scp/rsync, shell programs, Git, authenticated CLIs, HTTP APIs and whatever
-native or MCP tools its runtime exposes. Reuse authorized SSH aliases, ssh-agent and existing
-authenticated tooling; never put a private key or password in a task. A deployment covers the real
-running version, service health and intended outcome, not just a successful command. Check concrete
-availability rather than assuming a Codex-only connector exists; conversely, an existing CLI/API may
-make a branded skill unnecessary. If one browser/desktop step is unavailable, complete the supported
-work and return that exact step — never hand back the whole task. For an extra secret, register a
-metadata-only reference and run the command through `credential run`
-([credentials](references/credentials.md)); never place raw credentials in prompts, argv, task JSON,
-reports or commits. LAN, provisioning and reverse-proxy setup is in
-[remote access](references/remote-access.md).
+## Wait through completion
 
-## Choose one tier by uncertainty
+Use `wait JOB_ID` without `--seconds`: Fast observes for 5 minutes, Normal 30 and Deep/Ultra 60, returning
+immediately on completion, failure or actionable attention. These are observation windows, not
+execution deadlines. Follow a yielded command session with empty-stdin blocking polls for the
+longest duration the host permits; do not interleave repeated `status` or fresh short waits.
+If `continue_waiting: true`, call `wait` again in the same turn. Keep the turn active until terminal
+or genuine coordinator input; do not stop with a request for the user to manually continue.
 
-For every handoff choose exactly one capability tier and keep `--profile auto`. The tier measures
-ambiguity the worker must remove — not intelligence, importance, duration, files or context size —
-and Fast and Normal both deliver complete outcomes.
+For long builds, tests, deployments, migrations or CI, request phase reports through `progress
+report`. Percentage and ETA require real item/step counts; otherwise use indeterminate progress.
+Quiet output, no diff, long runtime or high token use do not establish a stall. Workers own their
+repair loops. Use `steer JOB_ID 'material guidance' --request-id STABLE_ID` and let accepted guidance
+execute. Cancellation is only for `user_requested`, `superseded`, `wrong_scope`, `duplicate` or
+`side_effect_risk`, never impatience.
 
-| Task shape | Tier |
-| --- | --- |
-| Outcome, governing constraints and observable acceptance are known; the worker may discover local details and methods | `--tier fast` |
-| Clear result, but execution needs open investigation, synthesis or several interdependent judgments | `--tier normal` |
-| Worker must define the goal or rules, reconcile conflicting requirements, design system structure, find an unknown system-wide cause, or reason through unusually complex invariants | `--tier deep` |
+A confirmed model-origin 429, window exhaustion, 402/insufficient balance or monthly exhaustion
+may trigger automatic same-session fallback. Keep waiting; route changes are progress. If no
+route remains, rerouting is disabled or acknowledgement is uncertain, read `recovery` and existing
+work before a deliberate same-tier `profile=auto` continuation with `--parent-task-id`. Auth,
+transport and ordinary model errors do not trigger automatic rerouting. A transport failure may
+follow accepted dispatch: observe, never blindly replay the prompt or completed side effects.
 
-Fast is the capable baseline, not a mechanical-work bucket: it can own a complete feature, known bug
-fix, tests, docs, migration or routine deployment when the direction is firm. Use the three-question
-gate — what changes, what constraints govern it, what evidence proves it done. If all three are
-answerable, prior planning difficulty or a large, long-running implementation does not upgrade the
-tier. Moving a listed set of documents into predetermined folders is Fast; judging mixed material
-for retention is Normal; redesigning an information architecture with no rules can be Deep. A failed
-or materially uncertain Normal investigation justifies a Deep continuation; never split a coherent
-outcome to avoid Deep, and give one complete outcome instead of many tiny lookups. Do not restart
-productive work only to change tier; apply the new tier to the next handoff.
+## Review, memory and notifications
 
-Choose the tier only from unresolved uncertainty. Do not read quotas, conservation state, provider
-health, prices or model identity before an ordinary handoff, and never change a tier to protect a
-plan. Keep `profile=auto`; policy stages, provider balancing, conservation, fallback and same-session
-model changes are private bridge decisions. Use `quota --tier-guidance` only for explicit operator
-troubleshooting. The console retains full route telemetry for auditing, but ordinary submit, status,
-wait and collect results deliberately omit automatic provider/model choices and route changes.
+Review the compact report, critical diff and relevant evidence. Passing tests, actual deployment,
+rendered/device behavior and user acceptance are distinct facts; static checks alone do not prove
+UI behavior. For isolated work, review then `integrate JOB_ID`, apply with `--apply`, verify and
+release the managed checkout; preserve unintegrated changes. An `uncertain` task retains ownership
+until its state is resolved.
 
-Optional: set `capability_floor` to `fast`/`normal`/`deep` only for a deliberate requirement that
-conservation or fallback must never serve the task below that tier. It cannot exceed the requested
-tier, continuations inherit it, and a nonempty `capability_reason` (1–500 characters) is required,
-explaining why lower capability is unacceptable; ordinary tasks omit both fields. Only a direct
-user requirement for a named model, or a controlled comparison, pins a profile with an explicit
-profile plus concrete `profile_reason`. Keep the highest **verified supported** reasoning variant on
-continuations (the built-in Kimi, DeepSeek and Ark profiles currently support `max`).
+When project memory is enabled, use `memory search --directory "$PWD" 'topic'` before repeating
+broad discovery. Both upstream and workers can retain verified project decisions; never store
+secrets or speculation. Read/update/pin/delete through the CLI or console; see
+[OpenViking memory](references/openviking-memory.md) for backend, migration and management details.
 
-## Wait until it is terminal
+Use `--notify-on-complete` only for a key milestone worth one Bark alert. For a verified milestone
+outside one worker task, use `notify --title 'Title' --body 'Result'`. Routine progress stays silent;
+configured clients receive each event independently and quota alerts remain automatic. Endpoints
+are private credential references, never task text.
 
-Observe with `wait JOB_ID` (no `--seconds` for the tier window: Fast 5 min, Normal 30, Deep 60). It
-is an event-driven blocking observation that returns immediately on completion, failure or actionable
-attention — not a sleep, deadline or polling schedule. If the command runner yields a
-process/session ID, keep following that same process with an empty-stdin blocking poll for the
-longest window the host supports; do not interleave `status`, reconsider, or new short `wait` calls.
-A nonterminal response with `continue_waiting: true` means call `wait` again **in the same turn**.
-Keep the turn active until terminal or genuine coordinator input; never end with a progress message
-asking the user to "continue".
-
-For a build, test, deployment, migration or CI run expected to exceed three minutes, ask the worker
-to publish phase changes with `delegate-opencode progress report TASK_ID ...`. A real item count or
-GitHub Actions step count may produce a percentage and ETA; otherwise the console deliberately shows
-indeterminate progress. Do not invent a percentage. `progress status TASK_ID` reads the durable last
-report, while `wait` remains the event-driven completion path.
-
-Quiet output, unchanged status, no visible diff, a long investigation, high token use or the
-coordinator's desire to take over are not stalls and never cancellation reasons; after an accepted
-`steer`, let the guidance execute and keep waiting. `cancel JOB_ID --reason` is reserved for
-`user_requested`, `superseded`, `wrong_scope`, `duplicate` or `side_effect_risk` — never relabel
-impatience. Use `steer JOB_ID 'guidance' --request-id STABLE_ID` for batched corrections read at the
-next model-step boundary; workers own their own test-and-fix and routine repair loops.
-
-## Recover without duplicating work
-
-A model-origin HTTP 429, explicit window exhaustion, HTTP 402/insufficient balance, or unequivocal
-monthly-plan exhaustion is a confirmed capacity stop. With automatic rerouting, the bridge stops the
-attempt, excludes the provider and sends an in-session continuation on the next route — same OpenCode
-session and workspace — explicitly told to inspect prior work and never repeat completed edits,
-deployments, messages, payments or other external side effects. Keep waiting on the same job;
-Route changes are progress, not cancellation signals. If rerouting is disabled, no route remains,
-or acknowledgement is uncertain, inspect `recovery`, keep
-the tier, and submit a deliberate `profile=auto` continuation with `--parent-task-id` after reading
-existing state. Authentication, transport and ordinary model errors do not trigger rerouting; a
-transport error after dispatch may still mean the prompt was accepted — observe the session, never
-blindly resubmit, and never replay a prompt whose acceptance is uncertain. Automatic route changes
-stay silent; surface capacity only when no usable route remains and coordinator action is required.
-
-## Review evidence and manage sessions
-
-Review the compact report, critical diff and evidence before accepting. A successful tool call, a
-passing test, a deployment command and an observed production/device or rendered-UI result are
-different facts; report CLI/API results, headless/UI checks and physical observations separately,
-and request original detail only where needed. For isolated work review the patch, run `integrate
-JOB_ID` then `integrate JOB_ID --apply`, and verify afterward; integration never commits or deploys.
-After integration, release the managed worktree once evidence is retained. Preserve and report any
-unintegrated changes instead of silently deleting them. An `uncertain` task keeps its ownership —
-recover and inspect it before any replacement.
-
-## Use durable project memory
-
-When project memory is enabled, search it before repeating broad repository discovery:
-`memory search --directory "$PWD" 'topic'`. The upstream harness may add, edit, pin or permanently
-delete project memories through the CLI or console. Store durable, verified decisions, commands,
-constraints and outcomes; never store passwords, tokens, private keys or speculative conclusions.
-OpenCode's memory plugin performs recall and capture inside worker sessions, while the bridge remains
-the management and audit boundary. Use `memory status`, `memory list --directory "$PWD"`,
-`memory add 'verified fact' --directory "$PWD"`, `memory pin URI`, and `memory delete URI --yes`.
-The backend (opencode-mem or OpenViking) is reported by `memory status`; migration state stays
-visible through `memory migration`. See references/openviking-memory.md for the full protocol.
-
-## Notify the user at meaningful milestones
-
-Use `--notify-on-complete` on a delegated task when its successful completion matters away from
-the desk, such as a finished deployment or processed TestFlight build. Routine tasks omit it.
-For a verified milestone outside one worker task, send a deliberate message with
-`notify --title 'Title' --body 'Result'`; do not use Bark for ordinary progress polling. The bridge
-fans each message out to every configured Bark client, while quota protection/exhaustion/recovery
-alerts remain automatic. Endpoints are private credential references, never prompt or task text.
-
-`transcript JOB_ID` reads actual messages, tool I/O and errors (paged, or `--full --output
-/private/path.json`; `--saved` reads retained evidence offline). `sessions --search`,
-`session rename/archive/restore/fork/bind/delete` and `cleanup` manage native sessions and retained
-data. To permanently remove a finished bridge task, its linked OpenCode session, evidence and
-managed worktree in one transaction, use `task delete JOB_ID --yes`; use `task clear-finished
---yes` only for an explicit bulk-cleanup request. The compact usage ledger remains until its
-configured expiry. Full
-usage, lifecycle, retention and service maintenance are in [operations](references/operations.md).
+For original evidence, use paged `transcript JOB_ID` or `--full --output /private/path.json`
+(`--saved` reads retained evidence). Sessions support binding, archive and deletion. An explicit
+cleanup request may use `task delete JOB_ID --yes` or `task clear-finished --yes` to remove linked
+sessions and releasable evidence/worktrees while the compact usage ledger follows its retention.
+See [operations](references/operations.md) for lifecycle and maintenance details.

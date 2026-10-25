@@ -23,7 +23,8 @@ import routing
 from workspace import conflicts, git_root, integrate, relative_scope
 from worker import run_task
 
-WAIT_DEFAULT_SECONDS = {'fast': 300, 'normal': 1800, 'deep': 3600}
+WAIT_DEFAULT_SECONDS = {'fast': 300, 'normal': 1800, 'deep': 3600, 'ultra': 3600}
+TIERS = ('fast', 'normal', 'deep', 'ultra')
 WAIT_MIN_SECONDS = 60
 WAIT_POLL_SECONDS = 0.5
 
@@ -79,6 +80,8 @@ def wait_result(t, waited_seconds):
         waited_seconds=max(0, round(waited_seconds, 3)),
         next_action=(
             'resubmit_same_tier_auto' if actionable and alternatives else
+            'release_manual_retry_then_resubmit' if actionable and monthly and
+            isinstance(recovery, dict) and recovery.get('manual_release_required') else
             'top_up_or_authorize_manual_retry' if actionable and monthly else
             'retry_or_reselect_after_usage_window' if actionable and window else
             'top_up_provider_account_then_resubmit' if billing_terminal else
@@ -192,8 +195,8 @@ def submit(spec):
         raise ValueError('Explicit profile requires profile_reason when routing policy is enabled; '
                          'use profile=auto for subscription-first routing')
     tier = spec.get('tier')
-    if tier is not None and tier not in ('fast', 'normal', 'deep'):
-        raise ValueError('Tier must be fast, normal or deep')
+    if tier is not None and tier not in TIERS:
+        raise ValueError('Tier must be fast, normal, deep or ultra')
     legacy_urgency = spec.get('urgency')
     legacy_complexity = spec.get('complexity')
     if legacy_urgency is not None and legacy_urgency not in ('fast', 'background'):
@@ -209,14 +212,16 @@ def submit(spec):
     floor = spec.get('capability_floor')
     floor_reason = spec.get('capability_reason')
     if floor is not None:
-        if floor not in ('fast', 'normal', 'deep') or ('fast', 'normal', 'deep').index(floor) > ('fast', 'normal', 'deep').index(tier):
+        if floor not in TIERS or TIERS.index(floor) > TIERS.index(tier):
             raise ValueError('Capability floor must be a tier no higher than the requested tier')
         if not isinstance(floor_reason, str) or not 1 <= len(floor_reason.strip()) <= 500:
             raise ValueError('Capability floor requires a capability_reason of 1-500 characters')
     elif floor_reason is not None:
         raise ValueError('Capability reason requires capability_floor')
     urgency = 'fast' if tier == 'fast' else 'background'
-    complexity = 'deep' if tier == 'deep' else 'normal'
+    # Ultra is the reserved high-capability tier; it inherits the deep reasoning
+    # mirror so legacy consumers never read it as ordinary work.
+    complexity = 'deep' if tier in ('deep', 'ultra') else 'normal'
     mode = spec.get('mode', 'read')
     if mode not in ('read', 'write'):
         raise ValueError('Mode must be read or write')
@@ -270,7 +275,7 @@ def submit(spec):
             raise ValueError('Parent task must belong to the same group')
         if not t.get('capability_floor') and parent.get('capability_floor'):
             inherited = parent['capability_floor']
-            if ('fast', 'normal', 'deep').index(inherited) > ('fast', 'normal', 'deep').index(tier):
+            if inherited in TIERS and TIERS.index(inherited) > TIERS.index(tier):
                 raise ValueError('Continuation tier cannot fall below the parent capability floor')
             t.update(capability_floor=inherited, capability_reason=parent.get('capability_reason'))
         parent_recovery = parent.get('recovery') if isinstance(parent.get('recovery'), dict) else {}
@@ -317,18 +322,30 @@ def choose_ready(all_tasks, c, q, admissions=None):
             choices.append((t, None, 'owner_at_capacity'))
             continue
         explicit = (t.get('requested_profile') or 'auto') != 'auto'
-        # At the configured low-weekly threshold, normal work leaves Kimi and
-        # native K3 deep work has one global slot by default. Other concurrency
-        # remains per owning upstream-harness conversation.
-        route_task, guard = quota.apply_kimi_low_weekly_guard(t, c, q, active)
-        profile, why = quota.route(route_task, c, q, admissions)
-        if guard:
-            why += ':kimi_low_weekly_guard_' + str(round(guard['remaining_percent'], 3)) + 'pct'
+        profile, why = quota.route(t, c, q, admissions)
         if profile is None:
             if admissions is not None:
                 admissions.discard()
             choices.append((t, None, why))
             continue
+        # The weekly reserve blocks ordinary Kimi models inside admission itself
+        # (explicit requests included). The admitted concurrency of the reserved
+        # Ultra model is capped uniformly by the ACTUAL selected model, so an
+        # explicit profile or alias can no longer bypass the low-weekly limit.
+        selected_model = (c.get('profiles', {}).get(profile) or {}).get('model')
+        if selected_model == routing.KIMI_RESERVED_MODEL:
+            low, remaining = quota.kimi_ultra_low_weekly(q, c)
+            if low:
+                running = sum(
+                    1 for item in active
+                    if (c.get('profiles', {}).get(item.get('profile')) or {}).get('model')
+                    == routing.KIMI_RESERVED_MODEL)
+                if running >= quota.kimi_ultra_limit(c):
+                    if admissions is not None:
+                        admissions.discard()
+                    choices.append((t, None, 'ultra_weekly_concurrency_limited:' +
+                                    str(round(remaining, 3)) + 'pct'))
+                    continue
         if any(conflicts(t, a) for a in active):
             if admissions is not None:
                 admissions.discard()
@@ -408,6 +425,17 @@ def daemon():
                     daemon=True, name='memory-maintenance')
                 memory_thread.start()
             all_tasks = tasks()
+            # Publish the compact Ultra demand snapshot from this already-read
+            # listing. The reserve helper and the native gate never rescan task
+            # history; a failed or absent snapshot stays conservatively unknown
+            # and therefore keeps the base weekly reserve.
+            try:
+                import kimi_reserve
+                if kimi_reserve.uses_kimi(c):
+                    kimi_reserve.publish_task_demand(c, all_tasks,
+                                                     kimi_reserve.current_identity())
+            except Exception:
+                pass
             just_finished = any(not th.is_alive() for th in threads.values())
             needs_poll = any(t['status'] in ACTIVE | {'queued'} for t in all_tasks)
             has_queue = any(t['status'] == 'queued' for t in all_tasks)
@@ -561,9 +589,11 @@ def main():
     s.add_argument('--directory', default=os.getcwd())
     s.add_argument('--profile', default='auto')
     s.add_argument('--profile-reason', help='Why this task must bypass automatic routing')
-    s.add_argument('--tier', choices=['fast', 'normal', 'deep'],
-                   help='Worker capability tier; the bridge selects the model')
-    s.add_argument('--capability-floor', choices=['fast', 'normal', 'deep'])
+    s.add_argument('--tier', choices=['fast', 'normal', 'deep', 'ultra'],
+                   help='Worker capability tier; the bridge selects the model. Ultra is the '
+                        'reserved native Kimi K3.1 Pro tier for the most extreme-complexity work '
+                        'and is never silently downgraded')
+    s.add_argument('--capability-floor', choices=['fast', 'normal', 'deep', 'ultra'])
     s.add_argument('--capability-reason', help='Why this task cannot use lower capability routes')
     s.add_argument('--mode', choices=['read', 'write'], default='read')
     s.add_argument('--urgency', choices=['fast', 'background'], help=argparse.SUPPRESS)
@@ -603,7 +633,16 @@ def main():
                    help='Concrete cancellation cause; elapsed time or lack of a diff is not a cause')
     s = sub.add_parser('wait'); s.add_argument('id')
     s.add_argument('--seconds', type=int,
-                   help='Observation window; defaults by tier to fast=300, normal=1800, deep=3600; minimum 60')
+                   help='Observation window; defaults by tier to fast=300, normal=1800, deep=3600, '
+                        'ultra=3600; minimum 60')
+    s = sub.add_parser('kimi', help='Official Kimi account quota: status, device login and explicit binding')
+    ksub = s.add_subparsers(dest='action', required=True)
+    for action in ('status', 'start', 'login-status', 'usage'):
+        ksub.add_parser(action)
+    kl = ksub.add_parser('login'); kl.add_argument('--region', choices=['mainland-cn', 'global'], default='mainland-cn')
+    kb = ksub.add_parser('bind', help='Only after the user confirms this account owns the inference key')
+    kb.add_argument('--confirm', action='store_true',
+                    help='Explicit confirmation that the logged-in account is the inference-key account')
     s = sub.add_parser('quota'); s.add_argument('--refresh', action='store_true')
     s.add_argument('--compact', action='store_true', help='Return the stable tier-classification contract without routing telemetry')
     s.add_argument('--tier-guidance', action='store_true',
@@ -612,6 +651,13 @@ def main():
                    help='Explicit local authorization to allow new attempts on a billing-blocked provider '
                         'until a further billing error re-blocks it; manual retry authorization, not proof '
                         'of recovery')
+    s.add_argument('--import-snapshot', metavar='FILE',
+                   help='Import one manual console reading for a provider without a balance API. JSON object: '
+                        'provider, remaining, limit, resets_at, captured_at (optional), source (optional), '
+                        'fresh_for_minutes (optional)')
+    s = sub.add_parser('usage-report', help='Observed per-model tokens and estimated Credits by window')
+    s.add_argument('--windows', default='1,24,48', help='Comma-separated rolling window hours (default 1,24,48)')
+    s.add_argument('--output', help='Write the report to a private JSON file and return only its location')
     s = sub.add_parser('integrate'); s.add_argument('id'); s.add_argument('--apply', action='store_true')
     for name in ('doctor', 'daemon', 'stats'):
         sub.add_parser(name)
@@ -651,11 +697,31 @@ def main():
     s = sub.add_parser('steer'); s.add_argument('id'); s.add_argument('text'); s.add_argument('--request-id')
     s = sub.add_parser('sessions'); s.add_argument('--search', default=''); s.add_argument('--directory'); s.add_argument('--archived', action='store_true')
     s = sub.add_parser('session'); s.add_argument('action', choices=['rename','archive','restore','fork','delete','bind']); s.add_argument('id'); s.add_argument('--title'); s.add_argument('--directory'); s.add_argument('--yes', action='store_true')
-    s = sub.add_parser('task', help='Delete bridge tasks and their linked sessions/worktrees')
+    s = sub.add_parser('task', help='Delete bridge tasks or retier one running task')
     tsub = s.add_subparsers(dest='action', required=True)
     td = tsub.add_parser('delete'); td.add_argument('ids', nargs='+'); td.add_argument('--yes', action='store_true')
     tc = tsub.add_parser('clear-completed'); tc.add_argument('--yes', action='store_true')
     tf = tsub.add_parser('clear-finished'); tf.add_argument('--yes', action='store_true')
+    tr = tsub.add_parser('retier', help='Change the capability tier of the same task at a safe native boundary')
+    tr.add_argument('id')
+    tr.add_argument('--tier', required=True, choices=['fast', 'normal', 'deep', 'ultra'])
+    tr.add_argument('--reason', required=True,
+                    help='Why the tier changes now: Normal is the default for ordinary executable '
+                         'work; Fast needs clear direction, constraints and acceptance plus a '
+                         'reasonable expectation that faster model work materially advances a '
+                         'concrete near-term milestone (an actually ready blocked consumer or an '
+                         'explicit urgent delivery/deadline; a mere sequential dependency or '
+                         'resource ownership is not enough); Deep needs high uncertainty; Ultra is '
+                         'reserved for extreme-complexity work where a wrong architecture or a '
+                         'missed constraint dominates, or after an ordinary task made no '
+                         'substantive progress in two consecutive rounds at a checkpoint. Ultra '
+                         'never silently downgrades and an explicit reason is required')
+    tr.add_argument('--handoff-file', required=True,
+                    help='Absolute path to a private owner-only JSON checkpoint: '
+                         'done, remaining, decisions, evidence, do_not_repeat (text or arrays). '
+                         'remaining must explain the concrete remaining work')
+    tr.add_argument('--request-id', required=True, dest='request_id',
+                    help='Stable request ID; the same ID with the same contents never replays the continuation')
     s = sub.add_parser('cleanup'); s.add_argument('--apply', action='store_true'); s.add_argument('--force', action='store_true')
     s = sub.add_parser('credential', help='Metadata-only local credential references and a redacting runner')
     csub = s.add_subparsers(dest='action', required=True)
@@ -699,23 +765,31 @@ def main():
             body.update(confirm_session_id=args.id, confirm_title=raw['title'])
         result = management.update_session(args.id, body)
     elif args.cmd == 'task':
-        if not args.yes:
-            raise ValueError('Use --yes only for a user-authorized permanent task deletion')
-        import management
-        action = {'delete': 'delete', 'clear-completed': 'clear_completed',
-                  'clear-finished': 'clear_finished'}[args.action]
-        body = {
-            'action': action,
-            # One confirmed task deletion owns the complete bridge lifecycle:
-            # compact usage is retained, while the linked native session,
-            # evidence and any managed terminal worktree are removed together.
-            'close_uncertain': True,
-            'discard_cancelled_worktrees': True,
-            'discard_unintegrated_worktrees': True,
-        }
-        if args.action == 'delete':
-            body['ids'] = args.ids
-        result = management.delete_tasks(body)
+        if args.action == 'retier':
+            import retier
+            # The handoff file is read privately here; only the validated
+            # normalized checkpoint crosses into the backend, and no response
+            # or log line echoes its path or contents.
+            result = retier.send(args.id, args.tier, args.reason,
+                                 retier.read_handoff_file(args.handoff_file), args.request_id)
+        else:
+            if not args.yes:
+                raise ValueError('Use --yes only for a user-authorized permanent task deletion')
+            import management
+            action = {'delete': 'delete', 'clear-completed': 'clear_completed',
+                      'clear-finished': 'clear_finished'}[args.action]
+            body = {
+                'action': action,
+                # One confirmed task deletion owns the complete bridge lifecycle:
+                # compact usage is retained, while the linked native session,
+                # evidence and any managed terminal worktrees are removed together.
+                'close_uncertain': True,
+                'discard_cancelled_worktrees': True,
+                'discard_unintegrated_worktrees': True,
+            }
+            if args.action == 'delete':
+                body['ids'] = args.ids
+            result = management.delete_tasks(body)
     elif args.cmd == 'cleanup':
         import cleanup
         result = cleanup.run(apply=args.apply, force=args.force)
@@ -746,14 +820,44 @@ def main():
         result = coordinator_task(request_cancel(args.id, args.reason, source='cli'))
     elif args.cmd == 'wait':
         result = wait_for_task(args.id, args.seconds)
+    elif args.cmd == 'kimi':
+        import management
+        result = management.kimi_account_command(
+            args.action, region=getattr(args, 'region', None),
+            confirmed=getattr(args, 'confirm', False))
     elif args.cmd == 'quota':
         if args.retry_provider:
             result = quota.retry_provider(args.retry_provider)
+        elif args.import_snapshot:
+            payload = json.loads(Path(args.import_snapshot).read_text())
+            if not isinstance(payload, dict):
+                raise ValueError('Snapshot file must contain one JSON object')
+            provider = payload.pop('provider', None)
+            result = quota.import_snapshot(provider, payload)
         else:
             snapshot = quota.refresh(force=args.refresh)
             guidance = quota.tier_guidance(config(), snapshot) if args.tier_guidance or args.compact else None
             result = quota.compact_guidance(guidance) if args.compact else (
                 {'providers': snapshot, 'tier_guidance': guidance} if args.tier_guidance else snapshot)
+    elif args.cmd == 'usage-report':
+        import analytics
+        windows = []
+        for part in str(args.windows).split(','):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                windows.append(float(part))
+            except ValueError:
+                raise ValueError('--windows must be comma-separated numbers of hours')
+        report = analytics.usage_report(window_hours=tuple(windows) or (1, 24, 48))
+        if args.output:
+            target = Path(args.output).expanduser()
+            target.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
+            os.chmod(str(target), 0o600)
+            result = {'report': str(target), 'windows': [w['hours'] for w in report['windows']]}
+        else:
+            result = report
     elif args.cmd == 'integrate':
         with locked():
             t = task(args.id)
@@ -781,11 +885,11 @@ def main():
         if args.action == 'version':
             result = opencode_update.status()
         elif args.action == 'check':
-            result = opencode_update.run(check_only=True)
+            result = opencode_update.run(check_only=True, force_check=True)
         else:
             if not args.yes:
                 raise ValueError('Use --yes to install and activate an available OpenCode update')
-            result = opencode_update.run(check_only=False)
+            result = opencode_update.run(check_only=False, force_check=True)
     elif args.cmd == 'memory':
         import memory_manager
         if args.action == 'status': result = memory_manager.status()

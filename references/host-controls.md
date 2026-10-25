@@ -26,8 +26,20 @@ terminal and no file browser** in this surface.
   `uptime_hours`) alongside the richer new names, so existing firmware keeps
   working. Board consumers read the file; their presence or absence never
   affects the collector. Quota IDs on this board-only payload retain the
-  firmware identifiers `codex`, `kimi`, `ark`, `deepseek`; the web snapshot
-  retains full provider IDs such as `volcengine-agent-plan`.
+  firmware identifiers `codex`, `kimi`, `ark`, `deepseek`, and the additive
+  Alibaba alias `aliyun`; the web snapshot retains full provider IDs such as
+  `volcengine-agent-plan` and `bailian-token-plan`.
+  Each quota row also carries safe status metadata for both consumers:
+  `available` (true/false/null — null is unknown, never a fabricated balance),
+  `billing` (`reason`, `monthly_exhausted`) from the durable exhaustion circuit,
+  `stale` when a reading is old or a snapshot is stale/reset-expired, and for
+  imported snapshots a bounded `snapshot` object (`captured_at`, `freshness`,
+  `expired`) plus window rows with `remaining`, `limit` and `unit`
+  (`credits` for Alibaba, `afp` for Ark) where the provider reports them. A
+  confirmed monthly exhaustion therefore never renders as a healthy percentage.
+  The board firmware's own renderer is versioned separately: 0.3.1 hardcodes two
+  quota pages (Codex/Kimi and Ark/DS), so a fourth provider needs the board-side
+  owner to extend the firmware; the JSON contract above is already additive.
 - `scripts/host_controls.py` — fixed action dispatch with validated
   parameters, metadata-only audit (`STATE/host/audit.log`, size-bounded), and
   capability probes.

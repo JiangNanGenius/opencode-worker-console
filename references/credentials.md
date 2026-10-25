@@ -6,7 +6,15 @@ they should not be mixed:
 1. **Provider authentication is owned by OpenCode.** The bridge reads existing
    OpenCode credentials only in-process to make its fixed official quota calls.
    Provider keys are not collected by this bridge in prompts, argv, task JSON,
-   browser data or this CLI. Keep logging in through OpenCode.
+   browser data or this CLI. Keep logging in through OpenCode. A provider whose
+   runtime credential is a key-file reference (`provider_api_key_files`, for
+   example Alibaba Token Plan) gets an opaque credential identity derived from
+   the provider name, the resolved file path and the file's stat identity
+   (device, inode, size, mtime, ctime). The bridge never opens or copies the key
+   contents for this identity. Rotation or removal changes the identity, so a
+   success captured before the change cannot release a later exhaustion block,
+   and a missing file fails closed. Providers without that override keep the
+   OpenCode auth-store key identity.
 2. **Bridge/server authentication is generated locally.** The OpenCode server
    binds to loopback with an owner-only generated password that the bridge
    supplies deliberately through the local process environment and loopback
@@ -66,6 +74,24 @@ delegate-opencode quota --refresh
 ```
 
 The same two references can be registered from **Models & routing → Quota query credentials** in the authenticated console. The form accepts only an environment-variable name or an absolute owner-only file path; it never accepts, stores in configuration, or echoes the secret value itself.
+
+Alibaba Token Plan live quota telemetry uses the official read-only Model Studio OpenAPI
+(`GetSubscriptionStats` on `modelstudio.cn-beijing.aliyuncs.com`, ACS3-HMAC-SHA256 signed;
+documented at help.aliyun.com Model Studio CLI/Token Plan, 2026-10-12). It is an account
+AccessKey pair — deliberately separate from the Token Plan inference API key file and from
+the Volcengine pair above — and no browser login or QR flow is involved. Put each value in
+its own owner-only file outside every repository and register these fixed metadata names:
+
+```sh
+delegate-opencode credential register aliyun-control-ak --file /private/path/aliyun-control-ak
+delegate-opencode credential register aliyun-control-sk --file /private/path/aliyun-control-sk
+delegate-opencode quota --refresh
+```
+
+The same two references are managed from the console's Quota query credentials rows
+(metadata only). If live query credentials are absent or a query fails, the Alibaba row
+falls back to the last genuine reading or an imported console snapshot with an explicit
+`live_error`; neither is ever presented as a refreshed live balance.
 
 Optional Bark notifications use the same boundary. Put each complete private Bark endpoint in its
 own owner-only file outside every repository. Register `bark-endpoint` for the first client and a

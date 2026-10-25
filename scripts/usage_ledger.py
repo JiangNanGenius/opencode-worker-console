@@ -62,14 +62,89 @@ def _usage(value):
 
 def _entry(value):
     """Re-validate a stored entry so only compact usage leaves the ledger."""
+    import task_activity
     cleaned = dict(value)
     cleaned['usage'] = _usage(value.get('usage'))
+    events = task_activity.normalize_usage_events(value.get('usage_events'))
+    if events:
+        cleaned['usage_events'] = events
+    else:
+        cleaned.pop('usage_events', None)
     return cleaned
 
 
 def _path(task_id):
     common.task_path(task_id)  # validate the identifier
     return common.STATE / 'usage-ledger' / (task_id + '.json')
+
+
+# Timestamped per-response usage events. Retention covers the rolling comparison
+# windows with margin; the file is bounded so a long task cannot grow without
+# limit, and events survive task cleanup inside the retained ledger entry.
+EVENTS_DIR = 'usage-events'
+EVENT_RETENTION_SECONDS = 72 * 3600
+
+
+def _events_path(task_id):
+    common.task_path(task_id)  # validate the identifier
+    return common.STATE / EVENTS_DIR / (task_id + '.json')
+
+
+def _clean_events(value, now):
+    import task_activity
+    events = task_activity.normalize_usage_events(value)
+    return [event for event in events if now - event['at'] <= EVENT_RETENTION_SECONDS]
+
+
+def load_events(task_id, now=None):
+    """Retained timestamped events for one task, pruned to the event window."""
+    now = time.time() if now is None else now
+    return _clean_events(common.read_json(_events_path(task_id), []), now)
+
+
+def events_for_task(task_id, now=None):
+    """Safe event read: an invalid identifier yields no events."""
+    try:
+        return load_events(task_id, now=now)
+    except ValueError:
+        return []
+
+
+def record_events(task_id, events, now=None):
+    """Merge new timestamped events into the bounded per-task store.
+
+    Deduplicates by assistant message ID, so repeated observation of the same
+    session never double counts, and writes only when the merged set changed.
+    """
+    import task_activity
+    now = time.time() if now is None else now
+    incoming = task_activity.normalize_usage_events(events)
+    if not incoming:
+        return False
+    with common.locked('usage-events'):
+        merged = load_events(task_id, now=now)
+        by_id = {event['id']: event for event in merged}
+        changed = False
+        for event in incoming:
+            if by_id.get(event['id']) != event:
+                by_id[event['id']] = event
+                changed = True
+        if not changed:
+            return False
+        stored = sorted(by_id.values(), key=lambda item: (item['at'], item['id']))
+        stored = [event for event in stored if now - event['at'] <= EVENT_RETENTION_SECONDS]
+        stored = stored[-task_activity.MAX_USAGE_EVENTS:]
+        common.write_json(_events_path(task_id), stored)
+        return True
+
+
+def drop_events(task_id):
+    """Remove the event store for a task after its ledger entry is durable."""
+    try:
+        _events_path(task_id).unlink(missing_ok=True)
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def record(task, retention_days, now=None):
@@ -98,6 +173,16 @@ def record(task, retention_days, now=None):
         'usage': _usage(usage),
         'deleted_at': now, 'expires_at': now + retention_days * 86400,
     }
+    events = events_for_task(task['id'], now=now)
+    if not events:
+        # Backfill from retained session messages so cleanup keeps exact windows.
+        try:
+            events = task_activity.normalize_usage_events(task_activity.saved_usage_events(task))
+        except Exception:
+            events = []
+    events = [event for event in events if now - event['at'] <= EVENT_RETENTION_SECONDS]
+    if events:
+        entry['usage_events'] = events[-task_activity.MAX_USAGE_EVENTS:]
     common.write_json(_path(task['id']), entry)
     return entry
 

@@ -9,6 +9,7 @@ public; everything else is gated before any backend Basic credential is injected
 """
 import base64
 import http.client
+import ipaddress
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -22,6 +23,7 @@ import urllib.parse
 from common import (STATE, api, artifact_dir, config, public_task, read_json, redact,
                     request_cancel, task, tasks)
 import console_auth
+import console_webauthn
 import quota
 import service
 import management
@@ -37,11 +39,13 @@ WEB = Path(__file__).resolve().parent.parent / 'web'
 
 # The login page reuses the existing translation bundle, so it is public too.
 PUBLIC_ASSETS = {'login.js': 'text/javascript', 'style.css': 'text/css', 'i18n.js': 'text/javascript',
+                 'passkeys.js': 'text/javascript', 'passkeys.css': 'text/css',
                  'worker-desk-icon.svg': 'image/svg+xml', 'worker-desk-icon.png': 'image/png'}
 # Authenticated application assets are never served anonymously.
 PRIVATE_ASSETS = {'app.js': 'text/javascript', 'manage.js': 'text/javascript', 'i18n.js': 'text/javascript',
                   'setup.js': 'text/javascript', 'task-view.js': 'text/javascript',
-                  'host.js': 'text/javascript', 'memory.js': 'text/javascript'}
+                  'host.js': 'text/javascript', 'memory.js': 'text/javascript',
+                  'kimi-account-view.js': 'text/javascript', 'voice-settings.js': 'text/javascript'}
 MAX_LOGIN_BODY = 4096
 MAX_API_BODY = 65536
 # Long-lived streams and WebSockets re-check the server-side session this often
@@ -104,7 +108,8 @@ def start_host_aux():
 
 def quota_credential_refs():
     """Return only console-managed reference metadata, never secret values."""
-    allowed = {'volcengine-control-ak', 'volcengine-control-sk'}
+    allowed = {'volcengine-control-ak', 'volcengine-control-sk',
+               'aliyun-control-ak', 'aliyun-control-sk'}
     return {'credentials': [{key: item.get(key) for key in
                              ('name', 'source', 'available', 'registered_at')}
                             for item in credentials.listing().get('credentials', [])
@@ -202,7 +207,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Length', str(len(raw)))
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
-        self.send_header('Referrer-Policy', 'same-origin')
+        self.send_header('Referrer-Policy', 'no-referrer')
         self.send_header('X-Frame-Options', 'DENY')
         if self.command not in ('GET', 'HEAD'):
             # Authentication/guard responses may precede reading a request body.
@@ -244,12 +249,29 @@ class Handler(BaseHTTPRequestHandler):
         Network-level client identity (used for login throttle buckets) is a
         separate decision handled by ``client_identity``.
         """
+        if getattr(self.server, 'enforce_lan_peer', False):
+            try:
+                peer = ipaddress.ip_address(self.peer())
+                networks = ('127.0.0.0/8', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16')
+                if not any(peer in ipaddress.ip_network(value) for value in networks):
+                    raise ValueError()
+            except ValueError:
+                self.reply(403, {'error': 'Use the public passkey site'})
+                return False
         if not console_auth.host_allowed(self.headers.get('Host', ''), self.origins()):
             self.reply(403, {'error': 'Invalid local host'})
             return False
         if self.headers.get('Sec-Fetch-Site') == 'cross-site':
-            self.reply(403, {'error': 'Cross-origin request rejected'})
-            return False
+            # An enrollment link deliberately navigates from a LAN origin to
+            # the public HTTPS RP. Permit only top-level, read-only entry
+            # documents; APIs, upgrades and mutations retain the strict guard.
+            entry_navigation = self.command == 'GET' and \
+                self.headers.get('Sec-Fetch-Mode') == 'navigate' and \
+                self.headers.get('Sec-Fetch-Dest') == 'document' and \
+                urllib.parse.urlsplit(self.path).path in ('/', '/console', '/console-login', '/console-passkeys')
+            if not entry_navigation:
+                self.reply(403, {'error': 'Cross-origin request rejected'})
+                return False
         origin = self.headers.get('Origin')
         if origin is not None:
             # The Origin must both be allowed and match the actual request Host,
@@ -274,7 +296,8 @@ class Handler(BaseHTTPRequestHandler):
         if not token:
             return None
         try:
-            return console_auth.session_username(token, self.auth_root())
+            context = self.auth_context(token)
+            return context['username'] if context else None
         except Exception:
             return None
 
@@ -308,7 +331,7 @@ class Handler(BaseHTTPRequestHandler):
         if not token:
             return False
         try:
-            return console_auth.session_username(token, self.auth_root()) is not None
+            return self.auth_context(token) is not None
         except Exception:
             return False
 
@@ -323,16 +346,45 @@ class Handler(BaseHTTPRequestHandler):
         return console_auth.client_identity(self.peer(), self.headers.get('X-Forwarded-For'),
                                             self.trusted_proxies())
 
+    def public_access(self):
+        host = console_auth._normalize_host_header(self.headers.get('Host', ''))
+        return getattr(self.server, 'listener_role', 'lan') == 'public' or bool(
+            host and host[0] == self.passkey_settings()[0])
+
+    def passkey_settings(self):
+        return getattr(self.server, 'passkey_settings', None) or console_webauthn.rp_settings(config())
+
+    def auth_context(self, token=None):
+        if self.public_access():
+            if not console_webauthn.enabled(config()) or not console_webauthn.available() or \
+                    self.passkey_settings() != console_webauthn.rp_settings(config()):
+                return None
+        return console_auth.session_context(token or self.session_token(), self.auth_root(),
+                                            require_passkey=self.public_access())
+
+    def passkey_origin(self):
+        host = console_auth._normalize_host_header(self.headers.get('Host', ''))
+        rp_id, origin = self.passkey_settings()
+        return bool(host and host[0] == rp_id and host[1] in (None, 443)
+                    and self.headers.get('Origin') == origin)
+
     # --- auth endpoints ---------------------------------------------------
 
     def auth_status(self):
-        user = self.authenticated_user()
-        if user:
-            self.reply(200, {'authenticated': True, 'username': user})
-        else:
-            self.reply(200, {'authenticated': False})
+        context = self.auth_context()
+        enabled = console_webauthn.enabled(config())
+        methods = (['passkey'] if enabled else []) if self.public_access() else ['password']
+        self.reply(200, {'authenticated': bool(context),
+            'username': context['username'] if context else None,
+            'auth_method': context['auth_method'] if context else None,
+            'allowed_methods': methods, 'passkey_available': enabled and console_webauthn.available(),
+            'passkey_enabled': enabled,
+            'passkey_origin': self.passkey_settings()[1]})
 
     def auth_login(self):
+        if self.public_access():
+            self.reply(403, {'error': 'Use a passkey to sign in through the public site'})
+            return
         root = self.auth_root()
         peer = self.client_identity()
         # Reserve the attempt atomically before hashing so a concurrent burst
@@ -371,6 +423,62 @@ class Handler(BaseHTTPRequestHandler):
             pass
         self.reply(200, {'authenticated': True, 'username': username},
                    headers={'Set-Cookie': self.set_cookie(token)})
+
+    def passkey_action(self, path):
+        """Authentication endpoints never issue a session from an enrollment grant."""
+        if not console_webauthn.enabled(config()):
+            self.reply(404, {'error': 'Passkeys are not enabled'})
+            return
+        root = self.auth_root()
+        try:
+            if self.passkey_settings() != console_webauthn.rp_settings(config()):
+                self.reply(503, {'error': 'Passkey configuration changed; restart the console'})
+                return
+            body = self.read_body(MAX_API_BODY)
+            if path == '/console-api/auth/enrollment-grant':
+                if self.public_access() or not self.require_session():
+                    if self.public_access():
+                        self.reply(403, {'error': 'Create enrollment links from the LAN console'})
+                    return
+                retry = console_auth.admit_login_attempt(self.client_identity(), root)
+                if retry:
+                    self.reply(429, {'error': 'Too many login attempts'}, headers={'Retry-After': str(retry)})
+                    return
+                user = self.authenticated_user()
+                if not console_auth.verify_credentials(user, body.get('password'), root):
+                    self.reply(401, {'error': LOGIN_ERROR})
+                    return
+                console_auth.record_login_success(self.client_identity(), root)
+                self.reply(200, {'enrollment_url': console_webauthn.create_grant(root), 'expires_in': 600})
+                return
+            if not self.passkey_origin():
+                self.reply(403, {'error': 'Use the configured HTTPS passkey site'})
+                return
+            if path.endswith('/authenticate/options'):
+                retry = console_auth.admit_login_attempt(self.client_identity(), root)
+                if retry:
+                    self.reply(429, {'error': 'Too many login attempts'}, headers={'Retry-After': str(retry)})
+                    return
+                self.reply(200, console_webauthn.authentication_options(root))
+            elif path.endswith('/authenticate/verify'):
+                token = console_webauthn.authenticate(body, root)
+                console_auth.record_login_success(self.client_identity(), root)
+                self.reply(200, {'authenticated': True}, headers={'Set-Cookie': self.set_cookie(token)})
+            elif path.endswith('/register/options'):
+                self.reply(200, console_webauthn.registration_options(root, self.session_token(), body.get('grant')))
+            elif path.endswith('/register/verify'):
+                self.reply(200, console_webauthn.register(body, root, self.session_token()))
+            elif path == '/console-api/auth/passkeys/delete':
+                if not self.require_session():
+                    return
+                self.reply(200, console_webauthn.delete(body.get('id'), self.session_token(), root,
+                                                       public=self.public_access()))
+            else:
+                self.reply(404, {'error': 'Unknown authentication action'})
+        except console_auth.AuthStateError:
+            self.reply(503, {'error': 'Passkey authentication is unavailable'})
+        except (ValueError, TypeError, KeyError):
+            self.reply(400, {'error': 'Passkey request failed; sign in again or request a new enrollment link'})
 
     def auth_logout(self):
         token = self.session_token()
@@ -433,6 +541,14 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/console-login':
             self.serve_login()
             return
+        if path == '/console-passkeys':
+            page = WEB / 'passkeys.html'
+            if page.is_file():
+                self.reply(200, page.read_bytes(), 'text/html; charset=utf-8',
+                           {'Content-Security-Policy': CSP, 'Referrer-Policy': 'no-referrer'})
+            else:
+                self.reply(404, {'error': 'Passkey page unavailable'})
+            return
         if path.startswith('/console-assets/'):
             # Only a bare allowlisted filename is served; traversal never matches.
             name = path[len('/console-assets/'):]
@@ -448,6 +564,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == '/console-api/auth/status':
             self.auth_status()
+            return
+        if path == '/console-api/auth/passkeys':
+            if self.require_session():
+                try:
+                    self.reply(200, {'passkeys': console_webauthn.listing(self.auth_root())})
+                except console_auth.AuthStateError:
+                    self.reply(503, {'error': 'Passkey state is unavailable'})
             return
         if path == '/console':
             if not self.require_session(redirect_html=self.wants_html()):
@@ -518,9 +641,32 @@ class Handler(BaseHTTPRequestHandler):
             except (HttpFailure, OSError, RuntimeError) as error:
                 self.reply(503, {'error': 'Local memory service could not complete the request: ' + str(error)})
             return
+        if path in ('/console-api/kimi-account/status', '/console-api/kimi-account/login'):
+            # Ordinary console session + host/CSRF guards apply. The adapter's
+            # output is already normalized and secret-free; redact() is a final
+            # belt-and-braces boundary. An unavailable CLI/account service is a
+            # 503, never a fabricated zero quota.
+            try:
+                if path.endswith('/login'):
+                    self.reply(200, redact(management.kimi_account_login_status()))
+                else:
+                    self.reply(200, redact(management.kimi_account_status()))
+            except (RuntimeError, ValueError, OSError) as error:
+                self.reply(503, {'error': 'Kimi account service unavailable: ' + str(error)})
+            return
+        if path == '/console-api/local-voice':
+            # Read-only status for the installed local Qwen notify skill: catalog,
+            # effective default and bounded playback state. A GET never plays audio.
+            try:
+                local_voice = __import__('local_voice')
+                self.reply(200, redact(local_voice.view()))
+            except (RuntimeError, OSError) as error:
+                self.reply(503, {'error': 'Local voice runtime unavailable: ' + str(error)})
+            return
         if path in ('/console-api/models', '/console-api/settings', '/console-api/sessions',
                     '/console-api/workspaces', '/console-api/cleanup', '/console-api/usage-history',
                     '/console-api/credentials', '/console-api/stats', '/console-api/opencode-version',
+                    '/console-api/usage-report',
                     '/console-api/memory/status', '/console-api/memory/projects',
                     '/console-api/memory/profile', '/console-api/memory/stats'):
             try:
@@ -531,7 +677,10 @@ class Handler(BaseHTTPRequestHandler):
                       '/console-api/usage-history':
                           lambda: __import__('usage_ledger').summary(include_entries=True),
                       '/console-api/credentials': quota_credential_refs,
-                      '/console-api/stats': lambda: __import__('analytics').summary(),
+                      '/console-api/stats': lambda: __import__('analytics').summary(
+                          days=urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                          .get('days', ['30'])[0]),
+                      '/console-api/usage-report': lambda: __import__('analytics').usage_report(),
                       '/console-api/opencode-version': lambda: __import__('opencode_update').status(),
                       '/console-api/memory/status': memory.status,
                       '/console-api/memory/projects': memory.projects,
@@ -595,6 +744,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/console-api/auth/logout':
             self.auth_logout()
             return
+        if path.startswith('/console-api/auth/passkey/') or path in (
+                '/console-api/auth/enrollment-grant', '/console-api/auth/passkeys/delete'):
+            self.passkey_action(path)
+            return
         if path.startswith('/console-api/auth/'):
             self.reply(404, {'error': 'Unknown console action'})
             return
@@ -609,13 +762,28 @@ class Handler(BaseHTTPRequestHandler):
                 result = host_controls.dispatch(body.get('action'), body.get('params'), user,
                                                 peer=self.client_identity())
             elif path == '/console-api/quota':
-                result = quota.refresh()
+                result = quota.refresh(force=True)
+            elif path == '/console-api/local-voice':
+                # Fixed-argv, bounded control over the installed Qwen notify skill.
+                # Only catalog voice IDs are accepted; preview text, commands,
+                # paths and environment values are never taken from the body.
+                # Invalid input is a 400, a missing runtime a 503 (common handler).
+                local_voice = __import__('local_voice')
+                action = body.get('action')
+                if action == 'save':
+                    result = local_voice.save(body)
+                elif action == 'preview':
+                    result = local_voice.preview(body)
+                elif action == 'stop':
+                    result = local_voice.stop()
+                else:
+                    raise ValueError('Unknown local voice action')
             elif path == '/console-api/opencode-version':
                 action = body.get('action')
                 if action not in ('check', 'update'):
                     raise ValueError('Unknown OpenCode version action')
                 updater = __import__('opencode_update')
-                result = updater.run(check_only=action == 'check')
+                result = updater.run(check_only=action == 'check', force_check=True)
             elif path == '/console-api/memory':
                 memory = __import__('memory_manager')
                 action = body.get('action')
@@ -661,7 +829,8 @@ class Handler(BaseHTTPRequestHandler):
                 # bounded Bark client names.
                 # Values are never accepted or returned; source metadata points
                 # to an owner-only local file or a service environment variable.
-                if name not in ('volcengine-control-ak', 'volcengine-control-sk') and not \
+                if name not in ('volcengine-control-ak', 'volcengine-control-sk',
+                                'aliyun-control-ak', 'aliyun-control-sk') and not \
                         re.fullmatch(r'bark-[a-z0-9][a-z0-9_.-]{0,58}', name or ''):
                     raise ValueError('Unsupported credential reference')
                 if action == 'register':
@@ -678,6 +847,23 @@ class Handler(BaseHTTPRequestHandler):
             elif path.startswith('/console-api/task/') and path.endswith('/steer'):
                 import steering
                 result = steering.send(path.split('/')[-2], body.get('text'), body.get('request_id'))
+            elif path.startswith('/console-api/task/') and path.endswith('/retier'):
+                # Same ordinary session + host/CSRF guards as /steer. The body
+                # carries the normalized checkpoint inline; the response is the
+                # compact tier_change only (never the handoff, never a file path,
+                # never a profile/model choice).
+                import retier
+                result = retier.send(path.split('/')[-2], body.get('tier'), body.get('reason'),
+                                     body.get('handoff'), body.get('request_id'))
+            elif path == '/console-api/kimi-account/login':
+                # Starts the isolated official CLI if needed, then requests one
+                # device login. No token, code or account secret is returned by
+                # this bridge; only the sanitized device-flow metadata is.
+                result = management.kimi_account_login(body.get('region') or 'mainland-cn')
+            elif path == '/console-api/kimi-account/bind':
+                # Binding is a human decision: only an explicit confirmed=true
+                # writes the account/inference identity pair.
+                result = management.kimi_account_bind(body.get('confirmed') is True)
             elif path == '/console-api/tasks':
                 result = delegate.submit(body)
             elif path == '/console-api/tasks/manage':
@@ -713,6 +899,10 @@ class Handler(BaseHTTPRequestHandler):
         self.proxy()
 
     # --- native gateway proxy --------------------------------------------
+
+    @staticmethod
+    def safe_upstream_header(name):
+        return name.lower() != 'set-cookie' and not name.lower().startswith('access-control-')
 
     def upstream(self):
         """Validated loopback upstream; never connect anywhere else."""
@@ -752,7 +942,7 @@ class Handler(BaseHTTPRequestHandler):
                 upstream_socket = getattr(raw, '_sock', None)
             self.send_response(response.status)
             for k, v in response.getheaders():
-                if k.lower() not in {'transfer-encoding', 'connection', 'set-cookie', 'access-control-allow-origin', 'content-length'}:
+                if self.safe_upstream_header(k) and k.lower() not in {'transfer-encoding', 'connection', 'content-length'}:
                     self.send_header(k, v)
             self.send_header('Connection', 'close')
             self.end_headers()
@@ -832,6 +1022,44 @@ class Handler(BaseHTTPRequestHandler):
             headers.update(Host=upstream.netloc, Authorization=auth)
             head = self.command + ' ' + self.path + ' HTTP/1.1\r\n' + ''.join(k + ': ' + v + '\r\n' for k, v in headers.items()) + '\r\n'
             remote.sendall(head.encode())
+            # Sanitize the HTTP upgrade response before switching to raw frames.
+            # A read may contain the first frame, which must survive intact.
+            remote.settimeout(STREAM_IO_TIMEOUT)
+            pending = bytearray()
+            deadline = time.monotonic() + 15
+            while b'\r\n\r\n' not in pending:
+                if len(pending) > 65536 or time.monotonic() >= deadline:
+                    self.reply(502, {'error': 'Invalid OpenCode upgrade response'})
+                    return
+                try:
+                    chunk = remote.recv(4096)
+                except socket.timeout:
+                    continue
+                if not chunk:
+                    self.reply(502, {'error': 'Incomplete OpenCode upgrade response'})
+                    return
+                pending.extend(chunk)
+            response_head, first_frame = bytes(pending).split(b'\r\n\r\n', 1)
+            if len(response_head) > 65536:
+                self.reply(502, {'error': 'OpenCode upgrade response is too large'})
+                return
+            lines = response_head.decode('iso-8859-1').split('\r\n')
+            status = lines[0].split(' ', 2)
+            if len(status) < 2 or status[0] not in ('HTTP/1.0', 'HTTP/1.1') or not status[1].isdigit():
+                self.reply(502, {'error': 'Invalid OpenCode upgrade status'})
+                return
+            forwarded = [lines[0]]
+            for line in lines[1:]:
+                if ':' not in line or line[0].isspace():
+                    self.reply(502, {'error': 'Invalid OpenCode upgrade headers'})
+                    return
+                name, _ = line.split(':', 1)
+                if self.safe_upstream_header(name):
+                    forwarded.append(line)
+            if not self.session_valid(token):
+                self.reply(401, {'error': 'Authentication required'})
+                return
+            self.connection.sendall(('\r\n'.join(forwarded) + '\r\n\r\n').encode('iso-8859-1') + first_frame)
             self.close_connection = True
             # Finite timeouts also bound a stalled WebSocket send/receive so a
             # peer that stops reading cannot block this thread indefinitely.
@@ -863,15 +1091,49 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
 
-def main():
-    parsed = urllib.parse.urlsplit(config()['console_url'])
+def build_servers(settings, root=STATE):
+    """Bind all listeners before starting background services. Role is server-owned."""
+    parsed = urllib.parse.urlsplit(settings['console_url'])
     if parsed.hostname != '127.0.0.1' or not parsed.port:
         raise ValueError('Console URL must be plain HTTP on a loopback host')
-    bind = console_auth.console_bind(config())
+    bind = console_auth.console_bind(settings)
     # Validate configured origins/trusted proxies up front so an unsafe list
     # never starts serving.
-    allowed_origins = console_auth.origin_tuples(config())
-    trusted_proxies = console_auth.trusted_proxy_networks(config())
+    allowed_origins = console_auth.origin_tuples(settings)
+    trusted_proxies = console_auth.trusted_proxy_networks(settings)
+    passkeys = console_webauthn.enabled(settings)
+    rp_settings = console_webauthn.rp_settings(settings)
+    specs = [('lan', bind, parsed.port, allowed_origins)]
+    if passkeys:
+        port = settings.get('console_public_port', 51529)
+        if isinstance(port, bool) or not isinstance(port, int) or not 1024 <= port <= 65535 or port == parsed.port:
+            raise ValueError('console_public_port must be a distinct port from 1024 to 65535')
+        specs[0] = ('lan', bind, parsed.port,
+                    [origin for origin in allowed_origins if origin[1] != rp_settings[0]])
+        specs.append(('public', '127.0.0.1', port, [('https', rp_settings[0], 443)]))
+    servers = []
+    try:
+        for role, host, port, origins in specs:
+            server = ThreadingHTTPServer((host, port), Handler)
+            servers.append(server)
+            server.daemon_threads = True
+            server.listener_role = role
+            server.passkey_settings = rp_settings
+            server.enforce_lan_peer = passkeys and role == 'lan'
+            server.cookie_name = '__Host-workerdesk_session' if role == 'public' else 'delegate_console_session_' + str(parsed.port)
+            server.allowed_origins = origins
+            server.trusted_proxy_networks = trusted_proxies if role == 'public' else []
+            server.auth_root = root
+        return servers
+    except Exception:
+        for server in servers:
+            server.server_close()
+        raise
+
+
+def main():
+    settings = config()
+    servers = build_servers(settings)
     # Cold start creates the documented fresh default only when no account exists;
     # existing credentials and sessions are preserved. Malformed state fails closed.
     console_auth.ensure_default_account(STATE)
@@ -883,15 +1145,15 @@ def main():
         host_controls._ensure_supervisor()
     except Exception:
         pass
-    server = ThreadingHTTPServer((bind, parsed.port), Handler)
-    server.daemon_threads = True
-    # Cookies are host-scoped, not port-scoped. Separate concurrent local installations
-    # and preserve server-side sessions through observer/UI process restarts.
-    server.cookie_name = 'delegate_console_session_' + str(parsed.port)
-    server.allowed_origins = allowed_origins
-    server.trusted_proxy_networks = trusted_proxies
-    server.auth_root = STATE
-    server.serve_forever()
+    for server in servers[1:]:
+        threading.Thread(target=server.serve_forever, daemon=True, name='console-public-listener').start()
+    try:
+        servers[0].serve_forever()
+    finally:
+        for server in servers[1:]:
+            server.shutdown()
+        for server in servers:
+            server.server_close()
 
 
 if __name__ == '__main__':

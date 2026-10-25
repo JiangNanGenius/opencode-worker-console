@@ -6,11 +6,12 @@ from datetime import datetime, timezone
 import time
 from concurrent.futures import ThreadPoolExecutor
 from common import config, STATE, HttpFailure, auth_key, credential_identity, locked, read_json, redact, request, write_json
-from providers import ARK_PROVIDER
+from providers import ARK_PROVIDER, BAILIAN_PROVIDER
 import ark_quota
+import bailian_quota
 import routing
 
-BUDGET_MODES = {'manual_window', 'monetary', 'ignore'}
+BUDGET_MODES = {'manual_window', 'monetary', 'prepaid', 'ignore'}
 
 
 def validate_budget_signals(value, profiles):
@@ -27,7 +28,7 @@ def validate_budget_signals(value, profiles):
             raise ValueError('budget_signals provider must be configured')
         mode = raw.get('mode')
         if mode not in BUDGET_MODES:
-            raise ValueError('budget signal mode must be manual_window, monetary or ignore')
+            raise ValueError('budget signal mode must be manual_window, monetary, prepaid or ignore')
         item = {'mode': mode}
         if mode == 'manual_window':
             remaining = raw.get('remaining_percent')
@@ -74,6 +75,32 @@ def normalized_budget_signals(value, profiles):
         return {}
 
 
+def prepaid_providers(c):
+    """Providers whose capacity is refillable prepaid credit, not a use-it-or-lose-it allowance.
+
+    The mode is provider-scoped inside the existing budget_signals record, so no
+    extra top-level setting is required. It changes calendar conservation and
+    recovery only: live/positive capacity, expiry, credential and billing gates
+    still apply through allowed(), trip() and billing_block().
+    """
+    if not isinstance(c, dict):
+        return set()
+    try:
+        settings = normalized_budget_signals(c.get('budget_signals'), c.get('profiles'))
+    except Exception:
+        settings = {}
+    return {provider for provider, item in settings.items()
+            if isinstance(item, dict) and item.get('mode') == 'prepaid'}
+
+
+def provider_is_prepaid(provider, c=None):
+    """True for a provider explicitly configured with the prepaid budget mode."""
+    try:
+        return provider in prepaid_providers(config() if c is None else c)
+    except Exception:
+        return False
+
+
 def _telemetry_identity(provider):
     """Identity of the credential the quota sampler actually uses.
 
@@ -88,6 +115,8 @@ def _telemetry_identity(provider):
     """
     if provider == ARK_PROVIDER:
         return ark_quota.credential_identity()
+    if provider == BAILIAN_PROVIDER:
+        return bailian_quota.credential_identity()
     return credential_identity(provider)
 
 try:
@@ -102,20 +131,42 @@ ENDPOINTS = {
 
 # Control-plane (AK/SK signed) providers use a private fetch instead of the
 # bearer-token ENDPOINTS path; credentials never travel through this module.
-CONTROL_PLANE = {ARK_PROVIDER: ark_quota.fetch}
+# Alibaba Token Plan queries the official ModelStudio GetSubscriptionStats
+# OpenAPI (separate account AccessKeys from the Volcengine pair and from the
+# Token Plan inference API key), so its row is live telemetry, not a frozen
+# manual number. Its manual snapshot import stays allowed as the fallback
+# anchor for the window before the first genuine live reading.
+CONTROL_PLANE = {ARK_PROVIDER: ark_quota.fetch, BAILIAN_PROVIDER: bailian_quota.fetch}
 
 
 BILLING = 'billing.json'
 HISTORY = 'quota-history.json'
+SNAPSHOTS = 'quota-snapshots.json'
+# Manual/imported snapshot support for subscription pools: a snapshot is an
+# observed console reading with its own capture time and freshness horizon. It
+# is never fabricated as live telemetry, an aging snapshot reads as unknown, and
+# a recorded depletion survives a reset clock or missing telemetry until a newer
+# positive reading proves replenishment. Alibaba Token Plan now also has the
+# official live Credits query (ModelStudio GetSubscriptionStats): the snapshot
+# import stays accepted there purely as the fallback anchor and baseline before
+# a first genuine live reading, while a fresh live reading always takes
+# precedence over the stored snapshot.
+SNAPSHOT_WINDOW = 'CreditsPool'
+SNAPSHOT_FRESH_DEFAULT_MINUTES = 1440
+SNAPSHOT_MAX_FRESH_MINUTES = 10080
 HISTORY_RETENTION_SECONDS = 35 * 86400
 HISTORY_MAX_SAMPLES = 720
 MONTHLY_REASON = 'monthly_usage_limit'
 BALANCE_REASON = 'insufficient_balance'
+# A confirmed model-origin credential rejection (HTTP 401) is bound to the
+# inference credential, never to a quota-query AK/SK pair. It is not a billing
+# reason: the fix is to check/replace the inference key, not to buy capacity.
+AUTH_REASON = 'credential_rejected'
 GENERIC_REASON = 'billing_error'
 # Explicit short usage-window exhaustion (for example a 5-hour limit). It is a real,
 # self-resolving window, not a monthly plan block and not a durable billing circuit.
 WINDOW_REASON = 'usage_window_limit'
-REASON_SEVERITY = {GENERIC_REASON: 1, BALANCE_REASON: 2, MONTHLY_REASON: 3}
+REASON_SEVERITY = {GENERIC_REASON: 1, AUTH_REASON: 2, BALANCE_REASON: 2, MONTHLY_REASON: 3}
 MANUAL_RETRY_NOTE = ('Manual retry authorization: releases the block so new attempts may run until a further '
                      'billing error re-opens it. It is not proof the provider quota was restored. Seen message '
                      'IDs and recovery watermarks are preserved, and a retry that is still exhausted re-blocks.')
@@ -131,6 +182,15 @@ MONTHLY_RESET_KEY = 'kimi_monthly_reset'
 MONTHLY_RESET_DEFAULTS = {'enabled': False, 'day': 1, 'time': '12:00', 'timezone': 'Asia/Shanghai'}
 SCHEDULED_RESET_RELEASE = 'scheduled_reset'
 MODEL_SUCCESS_RELEASE = 'model_success'
+SNAPSHOT_RELEASE = 'snapshot_replenishment'
+# The official Alibaba account API (ModelStudio GetSubscriptionStats) reports
+# authoritative Credits remaining for the whole subscription, so a fresh
+# positive unexpired reading is genuine recovery evidence even for monthly
+# exhaustion. That is specific to this account-wide source: other providers'
+# window telemetry (for example Kimi) keeps reporting window allowances while a
+# hidden monthly pool is exhausted, so their MONTHLY_REASON behavior is
+# deliberately unchanged and this evidence kind is never produced for them.
+API_RELEASE = 'openapi_account_recovery'
 _MONTHLY_TIME = re.compile(r'^([01][0-9]|2[0-3]):[0-5][0-9]$')
 
 
@@ -250,16 +310,27 @@ def monthly_reset_view(now=None):
     return out
 
 
-def trip(provider, message='', message_id=None, occurred_at=None, reason=None):
+def trip(provider, message='', message_id=None, occurred_at=None, reason=None,
+         identity=None):
     """Open the provider billing circuit on an unequivocal model billing error.
 
-    Durable and credential-aware: the block binds to the current credential. Each seen
-    message ID is retained without eviction, and an occurrence watermark at recovery
-    ignores errors predating it, so an old session error can never reopen a recovered
-    circuit. The reason kind separates a replenishable balance failure from hidden
-    monthly plan exhaustion, which fresh usage telemetry must never clear.
+    Durable and credential-aware: the block binds to the supplied dispatch
+    credential when one is recorded and still current (falling back to the
+    current credential for legacy callers); a stale old-key identity is ignored. Each seen message ID is retained without eviction, and an
+    occurrence watermark at recovery ignores errors predating it, so an old
+    session error can never reopen a recovered circuit. The reason kind separates
+    a replenishable balance failure from hidden monthly plan exhaustion, which
+    fresh usage telemetry must never clear.
     """
-    ident = credential_identity(provider)
+    if identity is not None:
+        # An explicitly recorded dispatch identity is authoritative. If the key
+        # has since been replaced, this is a late old-key failure: never bind it
+        # to (or overwrite a circuit for) the new key.
+        if not isinstance(identity, str) or not identity or credential_identity(provider) != identity:
+            return
+        ident = identity
+    else:
+        ident = credential_identity(provider)
     if reason not in REASON_SEVERITY:
         reason = GENERIC_REASON
     with locked('billing'):
@@ -293,17 +364,21 @@ def billing_block(provider):
     return b
 
 
-def clear(provider, sampled_since=None, identity=None, evidence='quota'):
+def clear(provider, sampled_since=None, identity=None, evidence='quota', evidence_at=None):
     """Close the circuit on fresh verified evidence; keep seen message IDs and watermarks.
 
-    evidence is 'quota' (fresh positive account query) or 'manual_retry' (explicit local
-    authorization). Monthly plan exhaustion never clears with 'quota': the plan's usage
+    evidence is 'quota' (fresh positive account query), 'manual_retry' (explicit local
+    authorization) or 'snapshot_replenishment' (a newer manually imported positive
+    balance snapshot). Monthly plan exhaustion never clears with 'quota': the plan's usage
     endpoint keeps reporting window allowance while the monthly cycle is exhausted, so
     quota telemetry is never accepted as evidence of monthly recovery, and reported reset
-    timestamps are never parsed into a recovery inference. Monthly blocks instead use the
-    separate, provenance-guarded paths scheduled_release (configured local-zone boundary)
-    and observe_model_success (verified completed model response); neither is inferred from
-    telemetry or from unverified session replies.
+    timestamps are never parsed into a recovery inference. A snapshot may clear a monthly
+    block only when it was captured strictly after the block opened. Monthly blocks
+    instead use the separate, provenance-guarded paths scheduled_release (configured
+    local-zone boundary) and observe_model_success (verified completed model response);
+    neither is inferred from telemetry or from unverified session replies. Prepaid
+    providers accept only manual_retry here; their account aggregate and manual
+    snapshots may describe a different seat than the current inference key.
 
     sampled_since/identity guard the race where an account query started before a
     concurrent trip: a stale in-flight sample must never clear a newer circuit.
@@ -313,8 +388,19 @@ def clear(provider, sampled_since=None, identity=None, evidence='quota'):
         b = blocks.get(provider)
         if not b or b.get('cleared_at'):
             return False
-        if b.get('reason') == MONTHLY_REASON and evidence != 'manual_retry':
+        # Prepaid capacity is cash-like and its account aggregate may include a
+        # different seat than the one behind the current inference key. A manual
+        # retry, a genuine key-file change (which detaches the credential-bound
+        # block) or a verified current-key model success are the only prepaid
+        # recovery paths; telemetry and imported snapshots never prove that an
+        # exhausted/rejected inference key started working again.
+        if evidence != 'manual_retry' and provider_is_prepaid(provider):
             return False
+        if b.get('reason') == MONTHLY_REASON and evidence != 'manual_retry':
+            opened = _epoch(b.get('opened_at'))
+            captured = routing._iso_seconds(evidence_at) if evidence == SNAPSHOT_RELEASE else None
+            if captured is None or opened is None or captured <= opened:
+                return False
         if identity is not None and b.get('credential') is not None and b['credential'] != identity:
             return False
         if sampled_since is not None and b.get('opened_at', 0) > sampled_since:
@@ -366,8 +452,280 @@ def scheduled_release(provider, now=None):
         return True
 
 
+def account_api_recovery(provider, query_started_at, inference_identity, control_identity,
+                         now=None, value=None):
+    """Bailian-only: clear the billing circuit on official account-API evidence.
+
+    GetSubscriptionStats returns the authoritative whole-subscription Credits
+    remaining, so a fresh positive unexpired live reading is real recovery even
+    for monthly exhaustion — unlike window telemetry on other plans, whose
+    MONTHLY_REASON behavior this path never touches. Guards: the inference
+    credential identity captured before dispatch must be current and equal to
+    the block binding; the control AK/SK pair identity captured at dispatch must
+    still match; the query must have started strictly after the circuit opened.
+    The control-plane hash is never passed to the generic clear(): recovery
+    binds to the inference credential exactly like trip/billing_block. Seen
+    message IDs and the cleared_at watermark are preserved.
+    """
+    if provider != BAILIAN_PROVIDER:
+        return False
+    # The Alibaba account aggregate is a multi-seat group value. In prepaid mode
+    # another assigned seat's positive balance must never clear a confirmed
+    # current-inference-key exhaustion or rejection. A combined multi-seat ledger
+    # (seat_groups) is refused below for the same reason in every budget mode. A
+    # key identity change, verified current-key success or explicit operator retry
+    # remains available.
+    if provider_is_prepaid(provider):
+        return False
+    now = time.time() if now is None else now
+    started = _epoch(query_started_at)
+    completed = _epoch(now)
+    if started is None or completed is None or completed < started or \
+            not isinstance(inference_identity, str) or not inference_identity or \
+            not isinstance(control_identity, str) or not control_identity:
+        return False
+    if not bailian_quota.positive_live_proof(value, now=completed) or \
+            _epoch(value.get('sampled_at')) != started:
+        return False
+    with locked('billing'):
+        blocks = read_json(STATE / BILLING, {})
+        b = blocks.get(provider)
+        if not b or b.get('cleared_at'):
+            return False
+        # A rejected inference key is never proven valid by account-level Credits
+        # telemetry, in any budget mode: that query uses the separate AK/SK pair.
+        if b.get('reason') == AUTH_REASON:
+            return False
+        if isinstance(value.get('seat_groups'), list) and value['seat_groups']:
+            # The account total spans independent seats on a shared cycle. A
+            # positive sum can come entirely from another seat, so it never
+            # proves this inference credential recovered: only a verified
+            # current-key model success or an explicit retry may release it.
+            return False
+        if credential_identity(provider) != inference_identity or \
+                b.get('credential') != inference_identity:
+            return False
+        if bailian_quota.credential_identity() != control_identity:
+            return False
+        opened = _epoch(b.get('opened_at'))
+        if opened is None or started <= opened:
+            return False
+        blocks[provider] = dict(b, cleared_at=completed, released=API_RELEASE)
+        write_json(STATE / BILLING, blocks)
+        return True
+
+
+def snapshot_store():
+    """Read-only map of imported manual snapshots keyed by provider."""
+    store = read_json(STATE / SNAPSHOTS, {})
+    return store if isinstance(store, dict) else {}
+
+
+def validate_snapshot(value):
+    """Strict validation for a manually imported Credits/allowance snapshot.
+
+    The payload is an observed console reading, not a live account query. It
+    always carries the capture time, the reset time and a freshness horizon so
+    the UI can distinguish a fresh reading from an aging one instead of showing
+    a fabricated live balance.
+    """
+    if not isinstance(value, dict):
+        raise ValueError('snapshot must be an object')
+    allowed = {'remaining', 'limit', 'resets_at', 'captured_at', 'source', 'fresh_for_minutes'}
+    unknown = [key for key in value if key not in allowed]
+    if unknown:
+        raise ValueError('snapshot contains unsupported fields: ' + ', '.join(sorted(unknown)))
+    out = {}
+    for key in ('remaining', 'limit'):
+        raw = value.get(key)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw) or \
+                (raw < 0 if key == 'remaining' else raw <= 0):
+            raise ValueError('snapshot.' + key + ' must be a finite number' +
+                             (' greater than zero' if key == 'limit' else ' at or above zero'))
+        out[key] = float(raw)
+    if out['remaining'] > out['limit']:
+        raise ValueError('snapshot.remaining cannot exceed snapshot.limit')
+    reset = value.get('resets_at')
+    if not isinstance(reset, str) or len(reset) > 64 or routing._iso_seconds(reset) is None or \
+            datetime.fromisoformat(reset.replace('Z', '+00:00')).tzinfo is None:
+        raise ValueError('snapshot.resets_at must be ISO-8601 with an explicit time zone')
+    out['resets_at'] = reset
+    captured = value.get('captured_at')
+    if captured is not None:
+        if not isinstance(captured, str) or len(captured) > 64 or routing._iso_seconds(captured) is None or \
+                datetime.fromisoformat(captured.replace('Z', '+00:00')).tzinfo is None:
+            raise ValueError('snapshot.captured_at must be ISO-8601 with an explicit time zone')
+        out['captured_at'] = captured
+    source = value.get('source')
+    if source is not None:
+        if not isinstance(source, str) or not source.strip() or len(source) > 200:
+            raise ValueError('snapshot.source must be non-empty text of at most 200 characters')
+        out['source'] = redact(source.strip())[:200]
+    fresh = value.get('fresh_for_minutes')
+    if fresh is not None:
+        if isinstance(fresh, bool) or not isinstance(fresh, int) or \
+                not 5 <= fresh <= SNAPSHOT_MAX_FRESH_MINUTES:
+            raise ValueError('snapshot.fresh_for_minutes must be an integer between 5 and ' +
+                             str(SNAPSHOT_MAX_FRESH_MINUTES))
+        out['fresh_for_minutes'] = fresh
+    return out
+
+
+def _snapshot_record(provider, snapshot, now=None):
+    """Telemetry-shaped record for one manual snapshot; freshness stays explicit.
+
+    A reading whose reset time has already passed belongs to the previous
+    subscription period: it is reported stale and its window stops being valid,
+    so positive old-period data can never look like current healthy allowance.
+    A recorded depletion stays latched regardless of age, reset clock or missing
+    telemetry until a newer positive snapshot arrives.
+    """
+    now = time.time() if now is None else now
+    captured = routing._iso_seconds(snapshot.get('captured_at')) or now
+    reset = routing._iso_seconds(snapshot.get('resets_at'))
+    limit = number(snapshot.get('limit'))
+    remaining = number(snapshot.get('remaining'))
+    fresh_for = number(snapshot.get('fresh_for_minutes'))
+    fresh_for = fresh_for if fresh_for and fresh_for > 0 else float(SNAPSHOT_FRESH_DEFAULT_MINUTES)
+    age = max(0.0, now - captured)
+    expired = bool(reset and reset <= now)
+    freshness = 'fresh' if age <= fresh_for * 60 and not expired else 'stale'
+    percent = round(remaining / limit * 100, 3) if limit and remaining is not None and limit > 0 else None
+    # The window duration identifies the snapshot window across imports, so it
+    # is persisted once per reset period instead of drifting with capture time.
+    duration = number(snapshot.get('duration_minutes'))
+    if duration is None or duration <= 0:
+        duration = max(1.0, (reset - captured) / 60) if reset and reset > captured else 43200.0
+    depleted = routing._iso_seconds(snapshot.get('depleted_at')) is not None
+    if depleted:
+        available = False
+    elif expired:
+        available = None  # Unknown, never healthy: the reading's period ended.
+    else:
+        available = remaining is not None and remaining > 0
+    valid = bool(limit and remaining is not None and 0 <= remaining <= limit) and not expired
+    window = {'name': SNAPSHOT_WINDOW, 'limit': limit, 'remaining': remaining,
+              'remaining_percent': percent, 'duration_minutes': duration,
+              'resets_at': snapshot.get('resets_at'), 'valid': valid,
+              'snapshot': True, 'expired': expired}
+    return {'state': 'ok', 'sampled_at': captured, 'checked_at': captured,
+            'windows': [window], 'balances': [], 'available': available,
+            'snapshot': {'captured_at': snapshot.get('captured_at'),
+                         'imported_at': snapshot.get('imported_at'),
+                         'age_seconds': round(age, 3),
+                         'freshness': freshness,
+                         'fresh_for_minutes': int(fresh_for),
+                         'source': snapshot.get('source'),
+                         'limit': limit, 'remaining': remaining,
+                         'remaining_percent': percent,
+                         'resets_at': snapshot.get('resets_at'),
+                         'expired': expired,
+                         'depleted_at': snapshot.get('depleted_at'),
+                         'replenished_at': snapshot.get('replenished_at')}}
+
+
+def import_snapshot(provider, payload, now=None):
+    """Import one manual console snapshot for a provider without live telemetry.
+
+    A non-positive reading records a durable depletion latch that only a newer
+    positive snapshot can clear; a reset clock or stale/missing telemetry never
+    does. A newer positive snapshot also releases a monthly billing block
+    through the provenance-guarded snapshot_replenishment path.
+    """
+    if not isinstance(provider, str) or not provider:
+        raise ValueError('Snapshot provider is required')
+    if provider not in known_providers():
+        raise ValueError('Unknown provider: ' + str(provider))
+    if provider in ENDPOINTS or (provider in CONTROL_PLANE and provider != BAILIAN_PROVIDER):
+        raise ValueError(provider + ' already has live telemetry; a manual snapshot is not accepted')
+    # The Alibaba Token Plan keeps accepting manual snapshots even with the live
+    # account API configured: a snapshot is the explicit pre-live baseline and
+    # the displayed fallback when a live query fails, and a fresh live reading
+    # always takes precedence over it in refresh/view.
+    value = validate_snapshot(payload)
+    now = time.time() if now is None else now
+    captured = routing._iso_seconds(value.get('captured_at')) or now
+    if captured > now + 300:
+        raise ValueError('snapshot.captured_at cannot be in the future')
+    if now - captured > 30 * 86400:
+        raise ValueError('snapshot.captured_at is older than 30 days')
+    captured_iso = datetime.fromtimestamp(captured, tz=timezone.utc).isoformat()
+    record = {'captured_at': captured_iso, 'imported_at': now,
+              'limit': value['limit'], 'remaining': value['remaining'],
+              'resets_at': value['resets_at'],
+              'fresh_for_minutes': value.get('fresh_for_minutes', SNAPSHOT_FRESH_DEFAULT_MINUTES),
+              'source': value.get('source')}
+    reset_epoch = routing._iso_seconds(value['resets_at'])
+    record['duration_minutes'] = (max(1.0, (reset_epoch - captured) / 60)
+                                  if reset_epoch and reset_epoch > captured else 43200.0)
+    fresh_for = record['fresh_for_minutes']
+    with locked('quota'):
+        store = snapshot_store()
+        previous = store.get(provider) if isinstance(store.get(provider), dict) else None
+        if previous is not None and previous.get('resets_at') == value['resets_at']:
+            # Same reset period: keep the window identity stable across imports.
+            record['duration_minutes'] = number(previous.get('duration_minutes')) or record['duration_minutes']
+        previous_depleted = previous.get('depleted_at') if previous else None
+        previous_replenished = previous.get('replenished_at') if previous else None
+        if previous is not None:
+            # Out-of-order readings are rejected: a positive older import must
+            # never erase a newer depletion latch or claim a later period. An
+            # exact re-import of the same reading is an idempotent no-op.
+            prior_captured = routing._iso_seconds(previous.get('captured_at'))
+            if prior_captured is not None and captured <= prior_captured:
+                same = (number(previous.get('remaining')) == value['remaining'] and
+                        number(previous.get('limit')) == value['limit'] and
+                        previous.get('resets_at') == value['resets_at'])
+                if same:
+                    return {'provider': provider, 'imported': False, 'reason': 'identical_snapshot',
+                            'snapshot': _snapshot_record(provider, previous, now)['snapshot']}
+                raise ValueError('snapshot.captured_at must be newer than the last imported reading')
+        # Only a positive reading from its own still-current period and not yet
+        # past its freshness horizon proves recovery. An expired-period or
+        # already-stale positive reading is stored as history but never clears a
+        # depletion latch or releases a billing circuit.
+        current_period = bool(reset_epoch and reset_epoch > max(captured, now))
+        freshness_ok = (now - captured) <= fresh_for * 60
+        usable_positive = value['remaining'] > 0 and current_period and freshness_ok
+        if value['remaining'] <= 0:
+            record['depleted_at'] = captured_iso
+            record['replenished_at'] = None
+        elif usable_positive:
+            record['depleted_at'] = None
+            record['replenished_at'] = captured_iso
+        else:
+            record['depleted_at'] = previous_depleted
+            record['replenished_at'] = previous_replenished
+            record['recovery_evidence'] = 'unusable_reading_not_recovery'
+        store[provider] = record
+        write_json(STATE / SNAPSHOTS, store)
+        cached = read_json(STATE / 'quota.json', {})
+        cached = cached if isinstance(cached, dict) else {}
+        live = cached.get(provider, {})
+        live_sample = _epoch(live.get('sampled_at')) if isinstance(live, dict) else None
+        keep_live = (provider == BAILIAN_PROVIDER and isinstance(live, dict) and
+                     live.get('source') == bailian_quota.SOURCE_LIVE and
+                     live_sample is not None and live_sample >= captured)
+        if not keep_live:
+            cached[provider] = _snapshot_record(provider, record, now)
+        write_json(STATE / 'quota.json', cached)
+    # In prepaid mode a manually imported snapshot is a display anchor only; it
+    # cannot prove that an already-confirmed exhausted/rejected inference key was
+    # replaced. A genuine key-file identity change or verified current-key success
+    # is needed (the block itself detaches on identity rotation), so the import
+    # never claims recovery there.
+    prepaid = provider_is_prepaid(provider)
+    released = False
+    if usable_positive and not keep_live and not prepaid:
+        released = clear(provider, evidence=SNAPSHOT_RELEASE, evidence_at=record['captured_at'])
+    return {'provider': provider, 'imported': True,
+            'recovery': usable_positive and not keep_live and not prepaid,
+            'released': released,
+            'snapshot': _snapshot_record(provider, record, now)['snapshot']}
+
+
 def observe_model_success(provider, identity, started_at, completed_at):
-    """Clear the current credential's monthly block after a verified completed success.
+    """Clear an eligible current-credential block after a verified completed success.
 
     The caller owns provenance: it passes the request credential identity captured
     privately for the actual provider plus that request's start and completion times from
@@ -376,8 +734,10 @@ def observe_model_success(provider, identity, started_at, completed_at):
     completion must not precede the start. All timestamps must be positive and finite, and
     the supplied identity must still equal the provider's current credential, so a rotated
     or removed credential can never clear a block. The completion time becomes the
-    watermark, preserving message IDs and the credential binding; another block reason
-    never clears. Returns True only when this call released the block.
+    watermark, preserving message IDs and the credential binding. Prepaid providers
+    may also clear a confirmed balance exhaustion or auth rejection with this
+    current-key proof; other block reasons never clear. Returns True only when this
+    call released the block.
     """
     if not isinstance(provider, str) or not provider:
         return False
@@ -390,7 +750,19 @@ def observe_model_success(provider, identity, started_at, completed_at):
     with locked('billing'):
         blocks = read_json(STATE / BILLING, {})
         b = blocks.get(provider)
-        if not b or b.get('cleared_at') or b.get('reason') != MONTHLY_REASON:
+        if not b or b.get('cleared_at'):
+            return False
+        # Prepaid credit is refillable cash-like capacity: a verified successful
+        # request bound to the current inference credential is genuine proof for
+        # a confirmed balance exhaustion or auth rejection too, not only for a
+        # monthly block. Other modes keep their existing monthly-only behavior.
+        # Auth rejection is credential-specific in every mode: a real success on
+        # the same key proves it works. Balance exhaustion is additionally
+        # recoverable this way only for prepaid capacity.
+        reasons = {MONTHLY_REASON, AUTH_REASON}
+        if provider_is_prepaid(provider):
+            reasons.add(BALANCE_REASON)
+        if b.get('reason') not in reasons:
             return False
         opened = _epoch(b.get('opened_at'))
         if opened is None or started <= opened:
@@ -775,6 +1147,35 @@ def fetch_one(provider):
         return {'state': 'unknown', 'attempted_at': now}
 
 
+def _bailian_display(value, last, anchor, now):
+    """Alibaba live-failure display: keep the genuine reading, never fake a refresh.
+
+    A failed live query (missing credential, auth rejection, unreachable or
+    malformed response) keeps the previous live reading with its original
+    sample time so consumers age it, or — before any live reading succeeded —
+    the manual snapshot anchor with its own explicit freshness. The
+    ``live_error`` states why the live API did not refresh the row. A failed
+    attempt never advances sampled_at, never fabricates numbers and never
+    reports recovery.
+    """
+    error = dict(value.get('live_error')) if isinstance(value.get('live_error'), dict) else {}
+    error.setdefault('state', value.get('state', 'unknown'))
+    error.setdefault('attempted_at', value.get('attempted_at') or now)
+    if isinstance(last, dict) and last.get('source') == bailian_quota.SOURCE_LIVE and last.get('sampled_at') and \
+            last.get('windows') and not isinstance(last.get('snapshot'), dict):
+        kept = dict(last)
+        kept.update(state=value.get('state', 'unknown'),
+                    attempted_at=value.get('attempted_at') or now)
+    elif isinstance(anchor, dict):
+        kept = _snapshot_record(BAILIAN_PROVIDER, anchor, now)
+        kept['live_error'] = error
+        return kept
+    else:
+        kept = dict(value)
+    kept['live_error'] = error
+    return kept
+
+
 def _providers_in_use():
     """Telemetry-bearing providers referenced by at least one configured profile."""
     try:
@@ -797,22 +1198,58 @@ def refresh(force=False):
         scheduled_release('kimi-for-coding', now)
         same = all(old.get(p, {}).get('_credential') == identities[p] for p in providers)
         recent = old and all(now - old.get(p, {}).get('checked_at', 0) < 60 for p in providers)
-        if not force and same and recent:
+        snapshots = {p: s for p, s in snapshot_store().items() if isinstance(s, dict)}
+        if not force and same and recent and all(p in old for p in snapshots):
             snapshot = view(old)
             observe_load(config(), snapshot, now)
             return snapshot
         result = {}
+        # Inference-credential identities are captured before dispatch and rebound to
+        # recovery afterwards: the Alibaba control-pair hash only invalidates cached
+        # telemetry, it never proves billing recovery.
+        inference_identities = {p: credential_identity(p) for p in providers}
         with ThreadPoolExecutor(max_workers=max(1, min(4, len(providers)))) as pool:
             for p, value in zip(providers, pool.map(fetch_one, providers)):
                 last = old.get(p, {}) if identities[p] == old.get(p, {}).get('_credential') else {}
-                if value['state'] not in ('ok', 'auth_error', 'no_credential') and last.get('sampled_at'):
+                if p == BAILIAN_PROVIDER and _telemetry_identity(p) != identities[p]:
+                    # A response from a rotated/removed control identity is not
+                    # a current-account reading. Force the next sampler retry.
+                    last = {}
+                    value = {'state': 'unknown', 'attempted_at': now,
+                             'live_error': {'state': 'unknown', 'attempted_at': now,
+                                            'detail': 'Quota credentials changed during the query'}}
+                if p == BAILIAN_PROVIDER and value.get('state') != 'ok':
+                    # A failed live query never fabricates a refresh: the last genuine
+                    # live reading is kept with its original sample time, or before any
+                    # live reading the manual snapshot anchor with its own explicit
+                    # freshness, each carrying the sanitized live_error.
+                    value = _bailian_display(value, last, snapshots.get(p), now)
+                elif value['state'] not in ('ok', 'auth_error', 'no_credential') and last.get('sampled_at'):
                     value = dict(last, **value)
                 value.update(checked_at=now, _credential=identities[p])
                 result[p] = value
                 if value['state'] == 'ok' and value.get('available') is True:
-                    # Fresh positive account query recovers; a query started before a
-                    # concurrent trip must never clear that newer circuit.
-                    clear(p, sampled_since=now, identity=identities[p])
+                    if p == BAILIAN_PROVIDER:
+                        # Only an official live account-API reading proves Alibaba
+                        # recovery; a snapshot-shaped fallback display never does.
+                        if value.get('source') == bailian_quota.SOURCE_LIVE:
+                            account_api_recovery(p, value.get('sampled_at'),
+                                                 inference_identities[p], identities[p], value=value)
+                    else:
+                        # Fresh positive account query recovers; a query started before a
+                        # concurrent trip must never clear that newer circuit.
+                        clear(p, sampled_since=now, identity=identities[p])
+        if KIMI_PROVIDER in result:
+            # The authenticated account reading is add-only: it never replaces the
+            # inference-key provider windows, never invents a missing month pool and
+            # never reports a failed fetch as a fresh successful sample.
+            result[KIMI_PROVIDER]['account'] = _kimi_account_snapshot(
+                result[KIMI_PROVIDER].get('account'))
+        # Manual snapshots are merged here so every consumer of the cached quota
+        # file sees them, while their freshness stays explicit in view().
+        for provider, record in snapshots.items():
+            if provider not in result:
+                result[provider] = _snapshot_record(provider, record, now)
         write_json(STATE / 'quota.json', result)
         _record_history(result, now)
         snapshot = view(result)
@@ -824,6 +1261,10 @@ def view(values):
     out = {}
     history = read_json(STATE / HISTORY, {})
     now = time.time()
+    try:
+        prepaid = prepaid_providers(config())
+    except Exception:
+        prepaid = set()
     import workload
     try:
         loads = workload.snapshot(config(), now)
@@ -836,7 +1277,22 @@ def view(values):
             priced = economics.recent_deepseek_spend(config(), now)
         except Exception:
             priced = None
-    for p, v in values.items():
+    snapshots = {p: s for p, s in snapshot_store().items() if isinstance(s, dict)}
+    merged = {}
+    for p in set(values) | set(snapshots):
+        stored = values.get(p)
+        if p in snapshots and (not isinstance(stored, dict) or isinstance(stored.get('snapshot'), dict)):
+            record = _snapshot_record(p, snapshots[p], now)
+            if p == BAILIAN_PROVIDER and isinstance(stored, dict) and \
+                    isinstance(stored.get('live_error'), dict):
+                # The stored live-query failure stays visible on the rebuilt
+                # snapshot display: the anchor is shown as the manual reading it
+                # is, plus why the live API did not refresh it.
+                record['live_error'] = stored['live_error']
+            merged[p] = record
+        elif isinstance(stored, dict):
+            merged[p] = stored
+    for p, v in merged.items():
         v = {k: x for k, x in v.items() if not k.startswith('_')}
         v['windows'] = [dict(item) for item in v.get('windows', [])]
         samples = history.get(p, {}).get('samples', []) if isinstance(history.get(p), dict) else []
@@ -849,8 +1305,22 @@ def view(values):
             estimate = balance_consumption_estimate(item, samples, now, priced if p == 'deepseek' else None)
             if estimate is not None:
                 item['consumption_estimate'] = estimate
-        v['stale'] = v.get('state') != 'ok' or time.time() - v.get('sampled_at', 0) > 900
-        if p == ARK_PROVIDER:
+        if isinstance(v.get('seat_groups'), list):
+            # Per-seat detail stays outside the combined Credits window: it is
+            # optional display metadata for independent seats sharing one cycle,
+            # never a second quota constraint for admission.
+            v['seat_groups'] = [{k: x for k, x in item.items() if not k.startswith('_')}
+                                for item in v['seat_groups'] if isinstance(item, dict)][:8]
+        if isinstance(v.get('snapshot'), dict):
+            # A manual snapshot is never shown as live telemetry: staleness
+            # follows its own freshness horizon instead of the 15-minute cache
+            # window, and an aging reading counts as unknown, not healthy.
+            v['stale'] = v.get('state') != 'ok' or v['snapshot'].get('freshness') != 'fresh'
+        else:
+            v['stale'] = v.get('state') != 'ok' or time.time() - v.get('sampled_at', 0) > 900
+        if p == BAILIAN_PROVIDER and isinstance(v.get('live_error'), dict):
+            v['stale'] = True
+        if p in (ARK_PROVIDER, BAILIAN_PROVIDER):
             # Safe metadata only: the credential source label, never a value or
             # identity. No AK/SK, hash or reference path leaves this boundary.
             source = v.get('credential_source')
@@ -872,13 +1342,43 @@ def view(values):
                 billing['warning'] = ('Monthly plan quota is exhausted for this billing cycle. Reported '
                                       'window remaining values are authentic account telemetry but do not '
                                       'mean the provider is callable until real evidence of recovery appears.')
-        if p == 'kimi-for-coding':
+        if p == KIMI_PROVIDER:
             # Read-only schedule exposure for the console: the same normalized setting plus
             # the next configured boundary in ISO8601 when the schedule is enabled.
             v['monthly_reset'] = monthly_reset_view()
+            # Weekly-reserve and account-pool metadata for display. The guard
+            # itself always re-derives from the same record, never from this view,
+            # and the effective-release fields come from the same authoritative
+            # helper admission and the native gate use, so they cannot drift.
+            try:
+                reserve_config = config()
+            except Exception:
+                reserve_config = {}
+            v['weekly_reserve'] = kimi_weekly_reserve_state(
+                reserve_config, {KIMI_PROVIDER: v})
+            account = v.get('account')
+            if isinstance(account, dict):
+                age = time.time() - account.get('sampled_at', 0)
+                account['stale'] = account.get('state') != 'ok' or age > KIMI_ACCOUNT_MAX_AGE
+            v['account_total'] = kimi_account_total_state({KIMI_PROVIDER: v})
         v['workload'] = loads.get(p, {})
         import capacity
         v['capacity_forecast'] = capacity.provider(v, now)
+        if p in prepaid:
+            # Prepaid Credits are refillable, so "will this allowance last until
+            # the renewal date" is not a valid calendar-pressure question. Keep
+            # the real reset time and observed runtime estimate, but neutralize
+            # only the display pace ratio so a far renewal does not label usable
+            # prepaid capacity as about to run out. Admission/control still use
+            # actual zero, expiry and credential gates.
+            v['prepaid'] = True
+            forecast = v['capacity_forecast']
+            if forecast.get('windows') and not forecast.get('exhausted'):
+                for item in forecast['windows']:
+                    if isinstance(item.get('remaining_percent'), (int, float)) and \
+                            item.get('remaining_percent') > 0:
+                        item['runway'] = 1.0
+                forecast['runway'] = 1.0
         fitted = iter(v['capacity_forecast']['windows'])
         for item in v['windows']:
             item['capacity_forecast'] = next(fitted, None) if capacity.window(item, now) is not None else None
@@ -886,136 +1386,444 @@ def view(values):
     return out
 
 
-def allowed(provider, q, complexity, threshold=0, retry_monthly=False):
+def allowed(provider, q, complexity, threshold=0, retry_monthly=False, prepaid=None):
     v = q.get(provider, {})
+    if prepaid is None:
+        prepaid = provider_is_prepaid(provider)
     # Preserve the account endpoint's verdict separately from the monthly-error overlay.
     # Explicit retries only bypass the hidden monthly flag, never confirmed empty quota.
     telemetry = v.get('billing') or {}
     state = telemetry.get('telemetry_state', v.get('state'))
     available = (telemetry.get('telemetry_available') if v.get('state') == 'billing_blocked'
                  else v.get('available'))
-    if state == 'auth_error':
+    # A quota-query AK/SK failure is control-plane telemetry, not an inference-key
+    # failure. For prepaid providers it must not disable otherwise usable
+    # inference by itself; a confirmed zero/expired window or an active
+    # inference-key circuit below still blocks. Other modes keep their hard gate.
+    if state == 'auth_error' and not prepaid:
         return False, 'credential_rejected'
-    if state == 'rate_limited':
+    if state == 'rate_limited' and not prepaid:
         return False, 'quota_endpoint_rate_limited'
     # Ark without control-plane credentials keeps quota unknown: the data plane
     # may still serve, and a zero-window check below only applies to real
     # telemetry. Unknown quota is never treated as unlimited or as empty.
+    windows = v.get('windows', [])
     empty_window = any(w.get('valid', True) and w.get('remaining') == 0
-                       for w in v.get('windows', []))
+                       for w in windows)
     if available is False or empty_window:
         return False, 'quota_exhausted_or_account_unavailable'
+    if prepaid:
+        # Retain confirmed expiry protection when there is no usable positive
+        # window left. A positive window alongside an expired seat-type group
+        # still represents callable capacity, so it is not blocked here.
+        usable = any(w.get('valid') is not False and
+                     isinstance(w.get('remaining'), (int, float)) and
+                     not isinstance(w.get('remaining'), bool) and w.get('remaining') > 0
+                     for w in windows)
+        expired = any(w.get('expired') is True for w in windows)
+        if expired and not usable:
+            return False, 'quota_exhausted_or_account_unavailable'
     block = billing_block(provider)
     if block and not (retry_monthly and block.get('reason') == MONTHLY_REASON):
         return False, 'provider_billing_blocked'
     fresh_enough = time.time() - v.get('sampled_at', 0) <= 900
-    # kimi_reserve_percent is explicitly Kimi-only by configuration contract;
-    # Ark headroom steers dynamic pool weights instead of a reserve threshold.
-    if provider == 'kimi-for-coding' and fresh_enough:
-        pcts = [w['remaining_percent'] for w in v.get('windows', []) if w.get('remaining_percent') is not None]
-        if pcts and min(pcts) < threshold and complexity != 'deep':
-            return False, 'reserve_kimi_for_complex_work'
+    # The former provider-level Kimi reserve is retired: the weekly allowance is
+    # now protected per MODEL (the reserved k3.1-pro Ultra model keeps the last
+    # slice) through kimi_request_allowed(), which runs in profile admission and
+    # in the loopback gate's preflight. The five-hour window never participates
+    # in that weekly decision, and a short-window dip must not fake depletion.
     if block:
         return True, 'explicit_profile_monthly_retry'
     return True, 'quota_unknown' if v.get('stale', True) or available is None else 'quota_available'
 
 
-def kimi_weekly_remaining_percent(q):
-    """Fresh authoritative Kimi weekly/overall remaining percent, else None.
+KIMI_PROVIDER = 'kimi-for-coding'
+KIMI_ACCOUNT_MAX_AGE = 900
+KIMI_ACCOUNT_WEEKLY_KIND = 'weekly'
+KIMI_ACCOUNT_MONTH_KINDS = ('month_total', 'month_code')
+KIMI_RESERVED_MODEL_ID = 'k3.1-pro'
+# Explicit seven-day window identities. The legacy ``overall`` aggregate is kept
+# as a separate, lower-priority shape: it described this endpoint's shared weekly
+# plan pool historically, but it must never be renamed into the account total and
+# must never override the authenticated account's own weekly verdict.
+KIMI_TELEMETRY_WEEKLY_NAMES = ('usages.limit_7d', 'limit_7d', 'limit7d')
+KIMI_LEGACY_WEEKLY_NAME = 'overall'
 
-    The live Kimi endpoint currently exposes the weekly plan pool as ``overall``
-    without a duration. Some versions instead expose a seven-day window. Prefer
-    the explicit overall aggregate, then the exact 10080-minute window; never use
-    the much shorter five-hour window as a weekly signal.
-    """
-    v = q.get('kimi-for-coding', {})
-    if not isinstance(v, dict) or v.get('stale', True):
+
+def _kimi_profile_record(q):
+    value = (q or {}).get(KIMI_PROVIDER) if isinstance(q, dict) else None
+    return value if isinstance(value, dict) else {}
+
+
+def _fresh_epoch(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return False
+    return 0 <= time.time() - float(value) <= KIMI_ACCOUNT_MAX_AGE
+
+
+def kimi_account_record(q):
+    """Fresh authenticated-account reading from the private adapter, else None."""
+    record = _kimi_profile_record(q).get('account')
+    if not isinstance(record, dict) or record.get('state') != 'ok':
         return None
-    windows = v.get('windows') if isinstance(v.get('windows'), list) else []
-    for name in ('overall',):
-        for w in windows:
-            if (isinstance(w, dict) and w.get('name') == name and w.get('valid', True)
-                    and isinstance(w.get('remaining_percent'), (int, float))):
-                return float(w['remaining_percent'])
-    for w in windows:
-        if (isinstance(w, dict) and w.get('duration_minutes') == 10080
-                and w.get('valid', True)
-                and isinstance(w.get('remaining_percent'), (int, float))):
-            return float(w['remaining_percent'])
+    if not _fresh_epoch(record.get('sampled_at')):
+        return None
+    return record
+
+
+def kimi_account_total_state(q):
+    """Account-pool state for the account currently bound to the inference key.
+
+    ``month_total``/``month_code`` are real account pools, never weekly pools and
+    never estimated from a four-week rule. A real zero in either pool blocks every
+    Kimi model, including the reserved Ultra model, but only while the adapter has
+    verified that the account is the inference-key account. An unverified or
+    mismatched binding is display-only and cannot block or clear inference, and a
+    missing month window stays ``not_reported`` until a real reading exists.
+    """
+    record = _kimi_profile_record(q).get('account')
+    empty = {'authority': 'none', 'status': 'not_reported', 'blocks': False,
+             'windows': [], 'remaining_percent': None}
+    if not isinstance(record, dict):
+        return empty
+    binding = record.get('account_binding') if isinstance(record.get('account_binding'), dict) else {}
+    state = binding.get('state')
+    authority = 'verified' if state == 'verified' else (
+        'mismatch' if state == 'mismatch' else 'unverified')
+    windows = [dict(w) for w in record.get('windows') or []
+               if isinstance(w, dict) and w.get('kind') in KIMI_ACCOUNT_MONTH_KINDS]
+    summary = {'authority': authority, 'status': 'not_reported', 'blocks': False,
+               'windows': [{key: w.get(key) for key in
+                            ('name', 'kind', 'remaining_percent', 'resets_at')}
+                           for w in windows],
+               'remaining_percent': None}
+    values = [float(w['remaining_percent']) for w in windows
+              if isinstance(w.get('remaining_percent'), (int, float))
+              and not isinstance(w.get('remaining_percent'), bool)
+              and math.isfinite(w['remaining_percent'])]
+    if values:
+        summary['remaining_percent'] = min(values)
+    if not windows:
+        summary['status'] = 'unverified' if authority != 'verified' else 'not_reported'
+        return summary
+    if not values:
+        summary['status'] = 'unknown'
+        return summary
+    if authority != 'verified':
+        summary['status'] = 'unverified'
+        summary['note'] = ('Account windows are display-only until the adapter verifies '
+                           'this account as the inference-key account.')
+        return summary
+    summary['status'] = 'exhausted' if any(value <= 0 for value in values) else 'available'
+    summary['blocks'] = summary['status'] == 'exhausted'
+    return summary
+
+
+def _weekly_window(windows, names=(), kind=None, allow_duration=True):
+    """One valid weekly-shaped window by kind, exact name, then explicit duration.
+
+    Exact names always win over a same-duration window, and the legacy ``overall``
+    aggregate is never picked up by the duration fallback: it is only ever read
+    through its own explicit legacy lookup.
+    """
+    entries = [window for window in (windows if isinstance(windows, list) else [])
+               if isinstance(window, dict) and window.get('valid', True) is True
+               and isinstance(window.get('remaining_percent'), (int, float))
+               and not isinstance(window.get('remaining_percent'), bool)
+               and math.isfinite(window['remaining_percent'])]
+    if kind is not None:
+        for window in entries:
+            if window.get('kind') == kind:
+                return dict(window)
+        return None
+    for window in entries:
+        if window.get('name') in names:
+            return dict(window)
+    if allow_duration and names != (KIMI_LEGACY_WEEKLY_NAME,):
+        for window in entries:
+            if window.get('duration_minutes') == 10080 and \
+                    window.get('name') != KIMI_LEGACY_WEEKLY_NAME:
+                return dict(window)
     return None
 
 
-def kimi_low_weekly(q, c):
-    threshold = c.get('kimi_low_weekly_threshold_percent', 5)
+def kimi_weekly_state(q, c=None):
+    """Weekly-pool state with explicit seven-day windows taking priority.
+
+    ``status`` is ``known`` (a fresh weekly percentage), ``not_applicable`` (the
+    authenticated account's plan has no weekly window; the weekly reserve cannot
+    apply and is not simulated from the account total) or ``unknown`` (no
+    trustworthy weekly reading; ordinary Kimi models then fail closed instead of
+    being treated as unlimited or as zero).
+
+    The verified account's weekly window wins, then this endpoint's explicit
+    ``limit_7d`` window, then the legacy ``overall`` aggregate. A five-hour window
+    never participates, and an unverified account can never override telemetry.
+    """
+    record = kimi_account_record(q)
+    if record is not None:
+        binding = record.get('account_binding') if isinstance(record.get('account_binding'), dict) else {}
+        if binding.get('state') == 'verified':
+            applicability = record.get('weekly_applicability')
+            if applicability == 'not_applicable':
+                return {'status': 'not_applicable', 'remaining_percent': None,
+                        'source': 'account', 'resets_at': None, 'window': None,
+                        'as_of': record.get('sampled_at')}
+            if applicability == 'applicable':
+                window = _weekly_window(record.get('windows'), kind=KIMI_ACCOUNT_WEEKLY_KIND)
+                if window is not None:
+                    return {'status': 'known',
+                            'remaining_percent': float(window['remaining_percent']),
+                            'source': 'account_weekly', 'resets_at': window.get('resets_at'),
+                            'window': window, 'as_of': record.get('sampled_at')}
+    view = _kimi_profile_record(q)
+    if view.get('stale', True) or view.get('state') != 'ok':
+        return {'status': 'unknown', 'remaining_percent': None, 'source': 'none',
+                'resets_at': None, 'window': None, 'as_of': None}
+    windows = view.get('windows') if isinstance(view.get('windows'), list) else []
+    window = _weekly_window(windows, names=KIMI_TELEMETRY_WEEKLY_NAMES)
+    source = 'telemetry_limit_7d'
+    if window is None:
+        window = _weekly_window(windows, names=(KIMI_LEGACY_WEEKLY_NAME,),
+                                allow_duration=False)
+        source = 'telemetry_overall'
+    if window is None:
+        return {'status': 'unknown', 'remaining_percent': None, 'source': 'none',
+                'resets_at': None, 'window': None, 'as_of': view.get('sampled_at')}
+    return {'status': 'known', 'remaining_percent': float(window['remaining_percent']),
+            'source': source, 'resets_at': window.get('resets_at'),
+            'window': window, 'as_of': view.get('sampled_at')}
+
+
+def kimi_weekly_remaining_percent(q):
+    """Fresh authoritative Kimi weekly remaining percent, else None.
+
+    Kept for callers that only need the number; explicit seven-day windows are
+    preferred and the legacy ``overall`` weekly aggregate is the fallback.
+    """
+    weekly = kimi_weekly_state(q)
+    return weekly['remaining_percent'] if weekly['status'] == 'known' else None
+
+
+def kimi_weekly_reserve_percent(c=None):
+    """Share of the Kimi weekly pool reserved for k3.1-pro (0-100, default 30).
+
+    The legacy ``kimi_reserve_percent`` is folded in as an additional floor so an
+    existing explicit operator value is preserved without doubling protection.
+    """
+    def value(raw, default):
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw):
+            return default
+        return max(0, min(100, int(raw)))
+    c = c if isinstance(c, dict) else {}
+    return max(value(c.get('kimi_weekly_reserve_percent'), 30),
+               value(c.get('kimi_reserve_percent'), 0))
+
+
+def kimi_weekly_reserve_state(c, q, now=None):
+    """One authoritative reserved-threshold contract for dispatch, gate, CLI and UI.
+
+    Existing display fields (``reserve_percent``, ``status``,
+    ``remaining_percent``, ``source``, ``resets_at``) are preserved, and the
+    effective-release fields are derived here only: ``effective_reserve_percent``,
+    ``released_percent``, ``emergency_reserve_percent``, ``dynamic_enabled``,
+    ``release_state``, ``remaining_hours`` and bounded demand metadata. Only a
+    verified seven-day weekly reading with a trustworthy future reset inside the
+    second half of its window, plus fresh quiet Ultra demand for the current
+    account, may lower the threshold. Unknown, stale, future-dated or
+    other-account evidence always keeps the configured base, and a verified plan
+    without a weekly pool reports ``not_applicable`` instead of a simulated
+    reserve. ``now`` is injectable so policy tests are deterministic; production
+    callers use the current clock.
+    """
+    import kimi_reserve
+    now = time.time() if now is None else float(now)
+    base = kimi_weekly_reserve_percent(c)
+    dynamic = kimi_reserve.dynamic_enabled(c)
+    weekly = kimi_weekly_state(q, c)
+    demand = None
+    if dynamic and weekly.get('status') == 'known':
+        try:
+            identity = credential_identity(KIMI_PROVIDER)
+        except Exception:
+            identity = None
+        demand = kimi_reserve.read_demand(identity, now)
+    return kimi_reserve.compute_reserve_state(base, dynamic, weekly, demand, now)
+
+
+def kimi_weekly_reserve_display(account_record=None, c=None):
+    """Reserve state for the account API without any additional live sample.
+
+    The console account endpoint already fetched one account reading; this helper
+    never starts another network or Keychain call. It reuses the shared quota
+    cache only when that cache is fresh and belongs to the current inference
+    credential, so the existing telemetry fallback still applies. Otherwise it
+    shapes the already-read account record into the same authoritative helper,
+    which keeps a missing weekly window unknown rather than inventing a reserve.
+    """
+    if c is None:
+        try:
+            c = config()
+        except Exception:
+            c = {}
+    state = None
+    try:
+        cached = read_json(STATE / 'quota.json', {})
+        record = cached.get(KIMI_PROVIDER) if isinstance(cached, dict) else None
+        checked = record.get('checked_at') if isinstance(record, dict) else None
+        if isinstance(record, dict) and not isinstance(checked, bool) and \
+                isinstance(checked, (int, float)) and 0 <= time.time() - checked <= KIMI_ACCOUNT_MAX_AGE and \
+                record.get('_credential') == credential_identity(KIMI_PROVIDER):
+            state = view({KIMI_PROVIDER: dict(record)})
+    except Exception:
+        state = None
+    if state is None:
+        raw = {'state': 'unavailable', 'stale': True, 'sampled_at': 0,
+               'available': None, 'windows': []}
+        record = _clean_account_record(account_record)
+        if record is not None:
+            raw['account'] = record
+        state = {KIMI_PROVIDER: raw}
+    return kimi_weekly_reserve_state(c, state)
+
+
+def kimi_request_allowed(model, c, q, now=None):
+    """Authoritative per-model Kimi admission shared by dispatch and the gate.
+
+    Every Kimi model first passes the ordinary provider admission gate: an
+    enforced-zero five-hour window, an unavailable account, a credential
+    rejection, control-plane rate limiting, confirmed prepaid expiry or an open
+    billing circuit blocks new requests even for the reserved model. Only after
+    that, the reserved ``k3.1-pro`` Ultra model may use the protected final
+    weekly slice, while every other Kimi model is paused at or below the
+    effective weekly reserve and fails closed while the weekly reading is
+    unknown; explicit profile requests cannot bypass either rule. A verified
+    same-account ``month_total``/``month_code`` reading of real zero blocks every
+    Kimi model including Ultra. Unauthenticated adapters, missing month windows
+    and unverified bindings never become a fabricated zero.
+
+    The reserve threshold is ``kimi_weekly_reserve_state``'s effective value, so
+    the dynamic release (and its demand/credential gates) applies identically to
+    pool dispatch, the loopback native gate, the CLI view and the console. That
+    helper returns the base whenever the weekly window or demand evidence is not
+    fully trustworthy, so this comparison can never widen admission on unknown
+    data. A monthly billing circuit is never relaxed by naming a profile: the
+    operator must run the explicit ``quota --retry-provider kimi-for-coding``
+    release first, which clears the circuit for new attempts. That release never
+    bypasses an empty window, an unavailable account, an auth failure or a
+    verified zero account pool, so this helper always enforces the circuit
+    itself.
+    """
+    if not isinstance(model, str) or not model.strip():
+        return False, 'unknown_model'
+    text = model.strip()
+    provider, sep, name = text.partition('/')
+    if sep and provider != KIMI_PROVIDER:
+        return True, 'not_a_kimi_model'
+    name = name if sep else text
+    full = text if sep else KIMI_PROVIDER + '/' + name
+    if routing.is_retired_model(full):
+        return False, 'retired_model'
+    # Base provider admission applies to EVERY Kimi model, the reserved Ultra
+    # model included: an enforced-zero five-hour window, an unavailable account,
+    # a credential rejection, control-plane rate limiting, confirmed prepaid
+    # expiry or an open billing circuit must stop new requests/rounds too.
+    # Ultra's only exemption is the weekly reserve below. allowed() no longer
+    # contains a Kimi-reserve branch, so this call cannot recurse.
+    admitted, why = allowed(KIMI_PROVIDER, q, 'ultra', threshold=0, prepaid=False)
+    if not admitted:
+        return False, why
+    if kimi_account_total_state(q).get('blocks') is True:
+        return False, 'kimi_account_total_exhausted'
+    if name == KIMI_RESERVED_MODEL_ID:
+        return True, 'weekly_reserve_beneficiary'
+    reserve = kimi_weekly_reserve_state(c, q, now)
+    if reserve['status'] == 'not_applicable':
+        return True, 'weekly_not_applicable'
+    if reserve['status'] != 'known':
+        return False, 'kimi_weekly_unknown'
+    if float(reserve['remaining_percent']) <= float(reserve['effective_reserve_percent']):
+        return False, 'kimi_weekly_reserved_for_ultra'
+    return True, 'kimi_weekly_available'
+
+
+def kimi_ultra_low_weekly(q, c):
+    """True when Ultra should drop to one concurrent task.
+
+    Requires a fresh weekly reading at or below the low threshold AND a
+    reset-aware runway below one (predicted not to last until the reset). Unknown
+    or not-applicable weekly data never invents pressure.
+    """
+    threshold = c.get('kimi_low_weekly_threshold_percent', 5) if isinstance(c, dict) else 5
     if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or threshold < 0:
         threshold = 5
-    remaining = kimi_weekly_remaining_percent(q)
-    if remaining is None or remaining > threshold:
-        return False, remaining
-    provider = q.get('kimi-for-coding', {})
-    weekly = None
-    for item in provider.get('windows', []) if isinstance(provider, dict) else []:
-        if not isinstance(item, dict):
-            continue
-        if item.get('name') == 'overall' or item.get('duration_minutes') == 10080:
-            weekly = dict(item)
-            if not isinstance(weekly.get('duration_minutes'), (int, float)):
-                weekly['duration_minutes'] = 10080
-            break
-    runway = routing._window_runway(weekly, time.time()) if weekly else None
-    # A low absolute balance is only guarded when it is also burning too fast
-    # to reach reset. Close to reset, a small remainder can still be on pace.
-    return runway is None or runway < 1.0, remaining
+    weekly = kimi_weekly_state(q, c)
+    if weekly['status'] != 'known' or float(weekly['remaining_percent']) > float(threshold):
+        return False, weekly['remaining_percent']
+    window = weekly.get('window')
+    runway = routing._window_runway(window, time.time()) if window else None
+    return runway is None or runway < 1.0, weekly['remaining_percent']
 
 
-def apply_kimi_low_weekly_guard(t, c, q, active=()):
-    """Return (routing task, guard metadata) for automatic low-weekly protection.
+def kimi_ultra_limit(c):
+    """Concurrent Ultra cap while the weekly reserve is nearly exhausted."""
+    def value(raw, default):
+        if isinstance(raw, bool) or not isinstance(raw, int) or not 0 <= raw <= 16:
+            return default
+        return raw
+    c = c if isinstance(c, dict) else {}
+    return value(c.get('kimi_low_weekly_ultra_limit'),
+                 value(c.get('kimi_low_weekly_k3_limit'), 1))
 
-    Explicit profile requests remain an operator override. Automatic normal work
-    excludes every Kimi profile. Automatic deep work may still use a Kimi profile
-    from the first deep stage while fewer than the configured number are active;
-    lower deep stages cannot consume Kimi's last weekly allowance.
+
+def _clean_account_record(record):
+    """Sanitized account-adapter schema from one already-fetched reading."""
+    if not isinstance(record, dict):
+        return None
+    sampled = record.get('sampled_at')
+    if isinstance(sampled, bool) or not isinstance(sampled, (int, float)):
+        sampled = time.time()
+    cleaned = {
+        'state': record.get('state') if record.get('state') in ('ok', 'unavailable') else 'unavailable',
+        'source': record.get('source') if isinstance(record.get('source'), str) else 'kimi_code_account',
+        'sampled_at': sampled,
+        'windows': [dict(w) for w in record.get('windows') or [] if isinstance(w, dict)][:8],
+        'weekly_applicability': record.get('weekly_applicability')
+            if record.get('weekly_applicability') in ('applicable', 'not_applicable', 'unknown') else 'unknown',
+        'account_binding': record.get('account_binding')
+            if isinstance(record.get('account_binding'), dict) else {'state': 'unverified'},
+        'available': record.get('available') if isinstance(record.get('available'), bool) else None,
+    }
+    account = record.get('account')
+    if isinstance(account, dict):
+        cleaned['account'] = {key: str(account[key])[:80] for key in ('nickname', 'userLevelName')
+                              if isinstance(account.get(key), str)}
+    error = record.get('error')
+    if isinstance(error, str) and error:
+        cleaned['error'] = error[:120]
+    return cleaned
+
+
+def _kimi_account_snapshot(previous=None):
+    """Account adapter reading for the cached view; never fabricates a reading.
+
+    Only the adapter's normalized, already-sanitized schema is carried. A failed
+    or unavailable fetch keeps the previous record with its original sample time
+    so consumers age it honestly; a missing month window stays absent.
     """
-    low, remaining = kimi_low_weekly(q, c)
-    if not low or (t.get('requested_profile') or 'auto') != 'auto':
-        return t, None
-    policy = routing.configured(c) or {}
-    first_deep_stage = (policy.get('deep') or [[]])[0]
-    native_k3_profiles = {
-        entry.get('profile') for entry in first_deep_stage
-        if isinstance(entry, dict)
-        and str((c.get('profiles', {}).get(entry.get('profile')) or {}).get('model', '')).split('/', 1)[0]
-        == 'kimi-for-coding'
-    }
-    native_k3_profiles.discard(None)
-    if not native_k3_profiles:
-        legacy_deep = (c.get('routing') or {}).get('deep')
-        legacy_profile = c.get('profiles', {}).get(legacy_deep) or {}
-        if (legacy_deep and str(legacy_profile.get('model', '')).split('/', 1)[0]
-                == 'kimi-for-coding'):
-            native_k3_profiles.add(legacy_deep)
-    all_kimi_profiles = {
-        name for name, value in c.get('profiles', {}).items()
-        if isinstance(value, dict)
-        and str(value.get('model', '')).split('/', 1)[0] == 'kimi-for-coding'
-    }
-    if not all_kimi_profiles:
-        return t, None
-    limit = c.get('kimi_low_weekly_k3_limit', 1)
-    if isinstance(limit, bool) or not isinstance(limit, int) or not 0 <= limit <= 16:
-        limit = 1
-    excluded = set(t.get('excluded_profiles') or []) | all_kimi_profiles
-    native_running = sum(1 for item in active if item.get('profile') in native_k3_profiles)
-    if tier_of(t) == 'deep' and native_running < limit:
-        excluded -= native_k3_profiles
-    routed = dict(t, excluded_profiles=sorted(excluded))
-    return routed, {'remaining_percent': remaining, 'native_k3_limit': limit,
-                    'excluded_profiles': sorted(excluded)}
+    try:
+        import kimi_account
+        record = kimi_account.fetch()
+    except Exception:
+        record = None
+    if not isinstance(record, dict):
+        return previous if isinstance(previous, dict) else None
+    return _clean_account_record(record)
 
 
 def tier_of(t):
     """Work tier used by legacy routing and by an opt-in routing_policy."""
-    if t.get('tier') in ('fast', 'normal', 'deep'):
+    if t.get('tier') in ('fast', 'normal', 'deep', 'ultra'):
         return 'background' if t['tier'] == 'normal' else t['tier']
     return 'deep' if t.get('complexity') == 'deep' else 'fast' if t.get('urgency') == 'fast' else 'background'
 
@@ -1027,7 +1835,13 @@ def _tier(t):  # Backward-compatible private alias.
 def _profile_name(t, c):
     requested = t.get('requested_profile', 'auto')
     legacy = c.get('routing', {'fast': 'fallback', 'background': 'senior-code', 'deep': 'deep-research'})
-    profile = requested if requested != 'auto' else legacy.get(tier_of(t))
+    tier = tier_of(t)
+    profile = requested if requested != 'auto' else legacy.get(tier)
+    if profile is None and tier == 'ultra':
+        # A legacy single-profile routing record has no ultra key: the reserved
+        # native model is the only legitimate Ultra destination.
+        profile = next((name for name, value in (c.get('profiles') or {}).items()
+                        if isinstance(value, dict) and value.get('model') == routing.KIMI_RESERVED_MODEL), None)
     return profile if profile in c['profiles'] else None
 
 
@@ -1087,18 +1901,56 @@ def _task_billing_kind(t):
     return GENERIC_REASON
 
 
+def _default_tier_profile(tier, c):
+    """Implicit legacy default for one tier, using the ordinary resolver.
+
+    Old three-tier installs may carry no ``routing`` record and no
+    ``routing_policy``. ``_profile_name`` then falls back to its built-in
+    fast/background/deep map (plus the reserved Ultra model). The capability
+    floor must agree with that resolver instead of building an empty eligible
+    set that rejects every Deep or Ultra task; the independent retired-model
+    admission check still runs after this floor.
+    """
+    return _profile_name({'requested_profile': 'auto', 'tier': tier}, c)
+
+
 def meets_capability_floor(name, t, c):
     floor = t.get('capability_floor')
-    if floor not in ('normal', 'deep'):
+    # Deep/Ultra describe an admission capability, including retained tasks
+    # created before explicit floors existed. A weaker explicit floor cannot
+    # turn an automatic fallback into an implicit task downgrade.
+    task_tier = tier_of(t)
+    ranks = {'fast': 0, 'normal': 1, 'deep': 2, 'ultra': 3}
+    if task_tier in ('deep', 'ultra') and ranks.get(floor, -1) < ranks[task_tier]:
+        floor = task_tier
+    if floor not in ('normal', 'deep', 'ultra'):
         return True
     policy = routing.configured(c) or {}
     eligible = set()
-    for tier in (('background', 'deep') if floor == 'normal' else ('deep',)):
+    # A capability floor means the profile must sit in the PRIMARY stage of a tier
+    # at or above the requested capability. Ultra is the highest tier, so an ultra
+    # floor only accepts the configured Ultra stage itself.
+    tiers = {'normal': ('background', 'deep', 'ultra'),
+             'deep': ('deep', 'ultra'),
+             'ultra': ('ultra',)}[floor]
+    for tier in tiers:
         stages = policy.get(tier) or []
         if stages:
             eligible.update(entry['profile'] for entry in stages[0])
-        elif (c.get('routing') or {}).get(tier):
-            eligible.add(c['routing'][tier])
+            continue
+        mapped = (c.get('routing') or {}).get(tier)
+        if mapped:
+            eligible.add(mapped)
+            continue
+        # This tier has neither a policy stage nor an explicit mapping. Infer
+        # the same implicit default the ordinary resolver uses for it, so old
+        # three-tier installs keep their default Deep/Ultra admissions without
+        # letting a lower-tier fallback satisfy a higher-capability floor. The
+        # inference is per tier: an explicit Ultra mapping must not shadow a
+        # legitimate implicit Deep primary.
+        inferred = _default_tier_profile(tier, c)
+        if inferred:
+            eligible.add(inferred)
     return name in eligible
 
 
@@ -1111,6 +1963,7 @@ def _other_plan_provider_available(t, c, q, provider, spill_provider):
     check never consumes credits or changes state.
     """
     policy = routing.configured(c) or {}
+    prepaid = prepaid_providers(c)
     for entry in routing.tier_entries(policy, tier_of(t)):
         name = entry['profile']
         profile = (c.get('profiles') or {}).get(name) or {}
@@ -1124,7 +1977,8 @@ def _other_plan_provider_available(t, c, q, provider, spill_provider):
             continue
         if name in (t.get('excluded_profiles') or []) or other in (t.get('excluded_providers') or []):
             continue
-        if allowed(other, q, t.get('complexity', 'normal'), c.get('kimi_reserve_percent', 0))[0]:
+        if allowed(other, q, t.get('complexity', 'normal'), c.get('kimi_reserve_percent', 0),
+                   prepaid=other in prepaid)[0]:
             return True
     return False
 
@@ -1141,15 +1995,28 @@ def _allowed_profile(name, t, c, q):
         return provider, False, 'routing_guard_excluded_profile'
     if provider in (t.get('excluded_providers') or []):
         return provider, False, 'continuation_excluded_provider'
+    model = p.get('model')
+    if routing.is_retired_model(model):
+        # Historical records stay intact, but a retired model is never a
+        # new-task entry, an automatic fallback or a continuation target.
+        return provider, False, 'retired_model'
+    if provider == KIMI_PROVIDER:
+        kimi_ok, kimi_reason = kimi_request_allowed(model, c, q)
+        if not kimi_ok:
+            return provider, False, kimi_reason
     policy = routing.configured(c) or {}
     spill = routing.configured_spillover(c, policy)
+    prepaid = prepaid_providers(c)
     fast = (policy.get('fast') or [[]])[0]
     fast_names = {entry['profile'] for entry in fast}
     fast_providers = {str((c.get('profiles', {}).get(n) or {}).get('model', '')).split('/')[0]
                       for n in fast_names}
     # Admission protection must survive loss of the peer. Weight-only protection
     # is bypassed when capacity failover leaves a single expensive candidate.
-    if (t.get('requested_profile') or 'auto') == 'auto' and spill and spill.get('enabled') and \
+    # Prepaid capacity is neutral for this calendar reservation: another plan's
+    # scarcity must not reserve a prepaid provider for Fast.
+    if provider not in prepaid and (t.get('requested_profile') or 'auto') == 'auto' and \
+            spill and spill.get('enabled') and \
             len(fast_providers) == 1 and provider in fast_providers and \
             (name not in fast_names or tier_of(t) != 'fast'):
         import economics
@@ -1177,7 +2044,8 @@ def _allowed_profile(name, t, c, q):
                     pressured = runway / multiple <= endpoint
             if pressured:
                 return provider, False, 'provider_reserved_for_fast'
-    ok, why = allowed(provider, q, t.get('complexity', 'normal'), c.get('kimi_reserve_percent', 0))
+    ok, why = allowed(provider, q, t.get('complexity', 'normal'),
+                      c.get('kimi_reserve_percent', 0), prepaid=provider in prepaid)
     return provider, ok, why
 
 
@@ -1196,14 +2064,17 @@ def _first_available_policy_stage(tier, t, c, q, policy):
     return [], {}, None
 
 
-def _level2_conservation_active(tier, spill_config, guidance):
+def _level2_conservation_active(tier, spill_config, guidance, prepaid_available=False):
     """Second-level load shedding: Normal temporarily reuses the Fast source pool.
 
     Level one is the ordinary bounded spillover. Level two is deliberately narrower:
     it affects only automatic Normal work, requires complete reset-aware telemetry,
-    and never changes Deep routing or an explicit profile request.
+    and never changes Deep routing or an explicit profile request. A Normal stage
+    with usable prepaid capacity is not downgraded merely because a renewable
+    plan elsewhere is low.
     """
-    if tier != 'background' or not spill_config or not spill_config.get('enabled') or \
+    if prepaid_available or tier != 'background' or not spill_config or \
+            not spill_config.get('enabled') or \
             tier not in spill_config.get('tiers', ()) or \
             guidance.get('quota_posture') != 'fast_preferred' or \
             guidance.get('conservation_refill_safe'):
@@ -1354,8 +2225,15 @@ def _dynamic_runway_override(tier, provider_by_profile, q, guidance=None, now=No
     providers = set(provider_by_profile.values())
     guidance_runways = ((guidance or {}).get('provider_runway') or
                         (guidance or {}).get('runway')) if isinstance(guidance, dict) else None
+    prepaid = set((guidance or {}).get('prepaid_providers') or ()) \
+        if isinstance(guidance, dict) else set()
     values = {}
     for provider in providers:
+        if provider in prepaid:
+            # Positive callable prepaid capacity is neutral for dynamic weights;
+            # actual zero/expiry/credential gates already ran in admission.
+            values[provider] = 1.0
+            continue
         runway = guidance_runways.get(provider) if isinstance(guidance_runways, dict) else None
         if isinstance(runway, bool) or not isinstance(runway, (int, float)) or not math.isfinite(runway):
             fitted = economics._window_fit(provider, q.get(provider) or {}, now)
@@ -1390,16 +2268,17 @@ def _dynamic_runway_override(tier, provider_by_profile, q, guidance=None, now=No
     return values
 
 
-def _conserved_deep_stage(c, q, stage, guidance):
-    """Use each provider's configured Normal model as its conserved Deep slot.
+def _conserved_deep_stage(c, q, stage, guidance, task=None):
+    """Conserve only where the replacement satisfies the task capability floor.
 
-    Provider identity and weights survive; admission and task capability floors
-    are checked by the caller. Explicit profile pins never enter this policy.
+    Preserve an admissible original candidate rather than replacing it with a
+    lower-capability profile that admission will subsequently reject.
     """
     if int((guidance or {}).get('conservation_level') or 0) < 2:
         return stage
     policy = routing.configured(c) or {}
     normal = (policy.get('background') or [[]])[0]
+    prepaid = set((guidance or {}).get('prepaid_providers') or ())
     replacements = {}
     for entry in normal:
         profile = c.get('profiles', {}).get(entry['profile']) or {}
@@ -1410,7 +2289,13 @@ def _conserved_deep_stage(c, q, stage, guidance):
     for entry in stage:
         profile = c.get('profiles', {}).get(entry['profile']) or {}
         provider = str(profile.get('model', '')).split('/', 1)[0]
-        result.append({**entry, 'profile': replacements.get(provider, entry['profile'])})
+        # Global conservation must never substitute a usable prepaid Max stage
+        # with its cheaper Flash sibling merely because a renewable plan is low.
+        replacement = entry['profile'] if provider in prepaid else \
+            replacements.get(provider, entry['profile'])
+        if not meets_capability_floor(replacement, task or {'tier': 'deep'}, c):
+            replacement = entry['profile']
+        result.append({**entry, 'profile': replacement})
     return result
 
 
@@ -1436,7 +2321,7 @@ def _policy_route(t, c, q, stages, batch=None):
     for index, stage in enumerate(stages):
         if tier == 'deep' and index == 0:
             spill_guidance = spill_guidance or tier_guidance(c, q)
-            stage = _conserved_deep_stage(c, q, stage, spill_guidance)
+            stage = _conserved_deep_stage(c, q, stage, spill_guidance, t)
         candidates = []
         for entry in stage:
             _, ok, why = _allowed_profile(entry['profile'], t, c, q)
@@ -1453,7 +2338,11 @@ def _policy_route(t, c, q, stages, batch=None):
             level2 = False
             if spill_config and spill_config['enabled'] and index == 0:
                 spill_guidance = spill_guidance or tier_guidance(c, q)
-                if _level2_conservation_active(tier, spill_config, spill_guidance):
+                prepaid_available = any(
+                    provider in (spill_guidance.get('prepaid_providers') or ())
+                    for provider in provider_by_profile.values())
+                if _level2_conservation_active(tier, spill_config, spill_guidance,
+                                               prepaid_available=prepaid_available):
                     fast_candidates, fast_providers, fast_stage_index = _first_available_policy_stage(
                         'fast', t, c, q, policy)
                     if fast_candidates:
@@ -1543,9 +2432,22 @@ def route(t, c, q, batch=None):
             return None, 'profile_disabled_or_missing'
         if not meets_capability_floor(profile, t, c):
             return None, 'capability_floor_unavailable'
-        provider = c['profiles'][profile]['model'].split('/', 1)[0]
+        model = c['profiles'][profile]['model']
+        if routing.is_retired_model(model):
+            return None, 'retired_model'
+        provider = model.split('/', 1)[0]
+        if provider == KIMI_PROVIDER:
+            # Explicit profile selection is an operator override for routing
+            # choice, never for the weekly reserve (the reserved Ultra slice
+            # belongs to k3.1-pro alone) and never a monthly-circuit bypass: the
+            # circuit must be released explicitly before this profile can infer.
+            kimi_ok, kimi_reason = kimi_request_allowed(model, c, q)
+            if not kimi_ok:
+                return None, kimi_reason
         ok, why = allowed(provider, q, t.get('complexity', 'normal'),
-                          c.get('kimi_reserve_percent', 0), retry_monthly=True)
+                          c.get('kimi_reserve_percent', 0),
+                          retry_monthly=provider != KIMI_PROVIDER,
+                          prepaid=provider in prepaid_providers(c))
         if ok and why == 'explicit_profile_monthly_retry':
             return profile, why
         if ok:
@@ -1562,14 +2464,26 @@ def route(t, c, q, batch=None):
         return None, 'capability_floor_unavailable'
     if profile in (t.get('excluded_profiles') or []):
         return None, 'routing_guard_excluded_profile'
-    provider = c['profiles'][profile]['model'].split('/', 1)[0]
-    ok, why = allowed(provider, q, t.get('complexity', 'normal'), c.get('kimi_reserve_percent', 0))
+    model = c['profiles'][profile]['model']
+    if routing.is_retired_model(model):
+        return None, 'retired_model'
+    provider = model.split('/', 1)[0]
+    if provider == KIMI_PROVIDER:
+        # Legacy single-profile routing has no policy stage, but the weekly
+        # reserve still governs every automatic Kimi model (Ultra included via
+        # its base provider gate).
+        kimi_ok, kimi_reason = kimi_request_allowed(model, c, q)
+        if not kimi_ok:
+            return None, kimi_reason
+    ok, why = allowed(provider, q, t.get('complexity', 'normal'),
+                      c.get('kimi_reserve_percent', 0),
+                      prepaid=provider in prepaid_providers(c))
     if ok:
         return profile, tier_of(t) + ':' + why
     return None, why
 
 
-def _unrecovered_provider(provider, kind):
+def _unrecovered_provider(provider, kind, c=None):
     """Provider a billing failure still discredits in guidance until recovery is recorded.
 
     Historical evidence can predate this classification (or a circuit may have been
@@ -1577,11 +2491,23 @@ def _unrecovered_provider(provider, kind):
     offered as a candidate until a cleared circuit records a verified recovery path
     (fresh quota replenishment for a balance block, an explicit manual retry
     authorization, a configured scheduled monthly release, or a verified completed model
-    success). This never trips, clears or mutates the circuit.
+    success). A genuine inference-key identity change detaches the credential-bound block,
+    so an old failure no longer discredits the new key. Auth rejection is credential-specific
+    in every mode; prepaid mode additionally accepts current-key model success for a confirmed
+    balance block. This never trips, clears or mutates the circuit.
     """
-    if not provider or not kind or billing_block(provider):
+    if not provider or not kind:
         return None
+    if billing_block(provider):
+        return provider
     b = read_json(STATE / BILLING, {}).get(provider)
+    if b and not b.get('cleared_at'):
+        # billing_block returned None because the current credential differs from
+        # the recorded one (or the record lacks a binding). A rotation detaches the
+        # old block; guidance must not keep excluding the provider for that old key.
+        ident = credential_identity(provider)
+        if ident is not None and b.get('credential') is not None and b['credential'] != ident:
+            return None
     if b and b.get('cleared_at'):
         released = b.get('released')
         if released == 'manual_retry':
@@ -1589,6 +2515,10 @@ def _unrecovered_provider(provider, kind):
         if kind == MONTHLY_REASON and released in (SCHEDULED_RESET_RELEASE, MODEL_SUCCESS_RELEASE):
             return None
         if kind != MONTHLY_REASON and released == 'quota':
+            return None
+        if kind == AUTH_REASON and released == MODEL_SUCCESS_RELEASE:
+            return None
+        if provider_is_prepaid(provider, c) and released == MODEL_SUCCESS_RELEASE:
             return None
     return provider
 
@@ -1626,14 +2556,21 @@ def alternatives(t, c, q, exclude=None):
     """
     out = []
     threshold = c.get('kimi_reserve_percent', 0)
+    prepaid = prepaid_providers(c)
     for name in _profile_order(t, c, routing.configured(c)):
         p = c['profiles'][name]
         if p.get('enabled') is False or not p.get('model') or not meets_capability_floor(name, t, c):
             continue
-        provider = str(p['model']).split('/', 1)[0]
-        if provider == exclude:
+        model = p['model']
+        provider = str(model).split('/', 1)[0]
+        if provider == exclude or routing.is_retired_model(model):
             continue
-        ok, why = allowed(provider, q, t.get('complexity', 'normal'), threshold)
+        if provider == KIMI_PROVIDER:
+            kimi_ok, _kimi_reason = kimi_request_allowed(model, c, q)
+            if not kimi_ok:
+                continue
+        ok, why = allowed(provider, q, t.get('complexity', 'normal'), threshold,
+                          prepaid=provider in prepaid)
         if ok:
             out.append({'profile': name, 'model': p['model'], 'provider': provider,
                         'variant': p.get('variant'), 'route': why})
@@ -1644,13 +2581,17 @@ def _options(t, c, q, blocked_reason, partial_work=False, billing_reason=None, p
              exclude=None, window=False):
     """Machine-readable recovery that preserves the task tier and bridge routing."""
     if exclude is None:
-        exclude = _unrecovered_provider(provider, billing_reason)
+        exclude = _unrecovered_provider(provider, billing_reason, c)
     alts = alternatives(t, c, q, exclude=exclude)
     task_tier = 'normal' if tier_of(t) == 'background' else tier_of(t)
     retry_command = 'delegate-opencode quota --retry-provider ' + provider if provider else None
+    # Eligibility for the existing executable manual release, never a claim
+    # that a named profile can infer immediately (Kimi requires the release).
     retry_allowed = bool(provider and not window and billing_reason == MONTHLY_REASON and
                          allowed(provider, q, t.get('complexity', 'normal'),
-                                 c.get('kimi_reserve_percent', 0), retry_monthly=True)[0])
+                                 c.get('kimi_reserve_percent', 0), retry_monthly=True,
+                                 prepaid=provider in prepaid_providers(c))[0])
+    release_required = bool(provider == KIMI_PROVIDER and retry_allowed)
     if alts:
         action = ('inspect_partial_work_and_resubmit_same_tier_auto' if partial_work else
                   'resubmit_same_tier_auto')
@@ -1664,30 +2605,59 @@ def _options(t, c, q, blocked_reason, partial_work=False, billing_reason=None, p
                             'authorized work.'),
             'tier': task_tier, 'profile': 'auto',
             'requires_user_approval': False, 'wait_for_quota': False,
-            'retry_command': None, 'retry_is_proof': False}
+            'retry_command': retry_command if release_required else None,
+            'retry_is_proof': False,
+            'manual_release_required': release_required,
+            'profile_inference_available': not release_required}
     else:
         action = ('retry_or_reselect_after_usage_window' if window else
                   'top_up_provider_account_then_resubmit' if partial_work else
                   'top_up_provider_account_or_wait_for_quota')
         instruction = ('No viable route in this task tier is currently dispatchable. Report this specific '
                        'blockage; do not expect this task to resume automatically.')
+        if task_tier == 'ultra':
+            # Ultra is the reserved-capability tier. Exhaustion must surface as
+            # waiting, never as an unrecorded downgrade to a cheaper model.
+            action = 'wait_for_ultra_capacity'
+            instruction = ('Ultra is the reserved native Kimi K3.1 Pro tier and never silently '
+                           'downgrades. Wait for the weekly reserve/account pool to recover and '
+                           'resolve the reported account or billing blocker; if the work genuinely '
+                           'no longer needs Ultra, the coordinator may request an explicit '
+                           'same-task retier to Deep with a handoff checkpoint.')
         if billing_reason == MONTHLY_REASON and retry_allowed:
             # Waiting on window telemetry cannot prove a monthly cycle recovered.
             action = 'top_up_or_authorize_manual_retry'
             instruction = ('No viable alternative profile is currently dispatchable. The monthly plan is '
-                           'exhausted for this billing cycle; K2.8 and K3 share the same provider block, so '
-                           'neither is an alternative while it is open. Monthly exhaustion is advisory: a task '
+                           'exhausted for this billing cycle; every Kimi model shares the same provider '
+                           'block, so none is an alternative while it is open. Monthly exhaustion is advisory: a task '
                            'may still be submitted with this provider as an explicit requested_profile to try, '
                            'and a verified successful reply clears the flag. Do not infer a monthly reset from '
                            'usage-window telemetry or reported reset timestamps; the configured schedule or a '
                            'local retry authorization' + (' (' + retry_command + ')' if retry_command else '') +
                            ' can release the block for new attempts.')
+            if release_required:
+                # A named Kimi profile is no longer a circuit bypass.
+                action = 'release_manual_retry_then_resubmit'
+                instruction = ('No viable alternative profile is currently dispatchable. The monthly Kimi '
+                               'plan is exhausted for this billing cycle and every Kimi model shares the '
+                               'same provider block. A named profile no longer bypasses it: first run the '
+                               'explicit manual release' +
+                               (' (' + retry_command + ')' if retry_command else '') +
+                               ', then resubmit; a verified successful reply can also clear the block. '
+                               'This is authorization to try again, not proof of recovery. A genuinely '
+                               'empty short window, an unavailable account or a verified zero account '
+                               'pool is never released and still blocks.')
         autonomous = {'action': action, 'instruction': instruction,
                       'requires_user_approval': False,
                       'wait_for_quota': False if window else not retry_allowed,
-                      'retry_command': retry_command, 'retry_is_proof': False}
+                      'retry_command': retry_command, 'retry_is_proof': False,
+                      'manual_release_required': release_required,
+                      'profile_inference_available': not release_required}
     out = {'blocked_reason': blocked_reason, 'billing_reason': billing_reason,
+           # Eligibility to run the explicit manual release; not proof that a
+           # named profile can infer now (Kimi requires the release first).
            'explicit_retry_allowed': retry_allowed,
+           'manual_release_required': release_required,
            'blocked_provider': provider, 'suggested_action': action, 'alternatives': alts,
            'automatic_fallback': False, 'autonomous_reselection': bool(alts),
            'autonomous_next_action': autonomous,
@@ -1775,7 +2745,7 @@ def routing_status(c, q):
                 if not isinstance(profile, dict) or profile.get('enabled') is False:
                     continue
                 provider = str(profile.get('model', '')).split('/', 1)[0]
-                complexity = 'deep' if tier == 'deep' else 'normal'
+                complexity = 'deep' if tier in ('deep', 'ultra') else 'normal'
                 _, ok, admission_reason = _allowed_profile(
                     entry['profile'], {'tier': tier, 'complexity': complexity, 'requested_profile': 'auto'}, c, q)
                 if ok:
@@ -1784,8 +2754,13 @@ def routing_status(c, q):
                     denied[entry['profile']] = {'provider': provider, 'share': 0.0,
                         'effective_weight': 0, 'reason': admission_reason}
             level2 = False
+            prepaid_ids = set((spill_guidance or {}).get('prepaid_providers') or ())
+            prepaid_available = any(
+                str((((c.get('profiles') or {}).get(entry['profile'])) or {}).get('model', '')).split('/', 1)[0]
+                in prepaid_ids for entry in candidates)
             if spill_config and spill_config['enabled'] and index == 0 and \
-                    _level2_conservation_active(tier, spill_config, spill_guidance):
+                    _level2_conservation_active(tier, spill_config, spill_guidance,
+                                                prepaid_available=prepaid_available):
                 fast_candidates, _, fast_stage_index = _first_available_policy_stage(
                     'fast', {'complexity': 'normal'}, c, q, policy)
                 if fast_candidates:
@@ -1822,7 +2797,9 @@ def routing_status(c, q):
                 target_profile = c.get('profiles', {}).get(target) or {}
                 target_provider = str(target_profile.get('model', '')).split('/', 1)[0]
                 complexity = 'deep' if tier == 'deep' else 'normal'
-                target_ok, _ = allowed(target_provider, q, complexity, c.get('kimi_reserve_percent', 0))
+                target_ok, _ = allowed(target_provider, q, complexity,
+                                       c.get('kimi_reserve_percent', 0),
+                                       prepaid=target_provider in prepaid_providers(c))
                 if target_ok and target_provider not in set(provider_by_profile.values()):
                     provider_by_profile[target] = target_provider
                     level2_active = level2 or (
@@ -1856,8 +2833,9 @@ def _control_policy(c):
     import json
     fields = ('profiles', 'routing_policy', 'routing', 'routing_dynamics', 'budget_signals', 'quota_spillover', 'fast_bias_runway_percent')
     # Bump when the meaning of the persisted conservation level changes. Version 2
-    # separates renewable short-window pressure from durable plan capacity, so an
-    # old level derived from the former mixed signal must not remain latched.
+    # separates renewable short-window pressure from durable plan capacity. Prepaid
+    # mode is part of budget_signals, so enabling it already changes the signature
+    # and clears a level that was computed before the provider became prepaid.
     payload = {'controller_schema': 6, **{k: c.get(k) for k in fields}}
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
@@ -1892,13 +2870,14 @@ def _plan_window_observation(c, q):
     spill = routing.configured_spillover(c, policy)
     spill_model = ((c.get('profiles') or {}).get((spill or {}).get('profile')) or {}).get('model')
     spill_provider = spill_model.split('/', 1)[0] if isinstance(spill_model, str) and '/' in spill_model else None
+    prepaid = prepaid_providers(c)
     for tier in ('fast', 'background'):
         for stage in (policy or {}).get(tier) or []:
             for entry in stage:
                 model = ((c.get('profiles') or {}).get(entry.get('profile')) or {}).get('model')
                 if isinstance(model, str) and '/' in model:
                     provider = model.split('/', 1)[0]
-                    if provider != spill_provider:
+                    if provider != spill_provider and provider not in prepaid:
                         providers.add(provider)
     result = {}
     for provider in providers:
@@ -1971,12 +2950,23 @@ def tier_guidance(c, q, _raw=False):
                 if isinstance(model, str) and '/' in model:
                     configured_provider_ids.add(model.split('/', 1)[0])
     pool_fit = None
+    budget_settings = normalized_budget_signals(c.get('budget_signals'), c.get('profiles'))
+    prepaid_provider_ids = {provider for provider, item in budget_settings.items()
+                            if isinstance(item, dict) and item.get('mode') == 'prepaid'}
     spill_provider = str(((c.get('profiles') or {}).get((spill_config or {}).get('profile')) or {}).get('model', '')).split('/')[0]
-    plan_provider_ids = {p for p in configured_provider_ids if (q.get(p) or {}).get('windows') and p != spill_provider}
+    # Prepaid credit is not a use-it-or-lose-it renewable plan: it must never
+    # create calendar conservation, weight attenuation, proactive downgrades or
+    # spillover merely because another plan is low. Its positive capacity is
+    # neutral/healthy for control, while allowed() still enforces real zero,
+    # expiry and inference-credential gates.
+    plan_provider_ids = {p for p in configured_provider_ids
+                         if (q.get(p) or {}).get('windows') and p != spill_provider and
+                         p not in prepaid_provider_ids}
     durable_fits = {}
     if plan_provider_ids:
         import economics
-        candidate = economics.work_pool(c, q, now=now, include_payg_balance=False)
+        candidate = economics.work_pool(c, q, now=now, include_payg_balance=False,
+                                        exclude_providers=prepaid_provider_ids)
         if candidate.get('complete') and isinstance(candidate.get('remaining_percent'), (int, float)):
             pool_fit = candidate
         durable_fits = {provider: economics._window_fit(provider, q.get(provider) or {}, now)
@@ -2016,7 +3006,8 @@ def tier_guidance(c, q, _raw=False):
                     continue
                 if provider not in configured:
                     configured.append(provider)
-                ok, _ = allowed(provider, q, 'normal', c.get('kimi_reserve_percent', 0))
+                ok, _ = allowed(provider, q, 'normal', c.get('kimi_reserve_percent', 0),
+                                prepaid=provider in prepaid_provider_ids)
                 if ok and provider not in available:
                     available.append(provider)
             if available:
@@ -2037,13 +3028,23 @@ def tier_guidance(c, q, _raw=False):
                 values.append(float(value))
         return min(values) if values else None
 
-    budget_settings = normalized_budget_signals(c.get('budget_signals'), c.get('profiles'))
-
     def signal(provider):
         setting = budget_settings.get(provider) or {}
         mode = setting.get('mode', 'telemetry')
         if mode == 'ignore':
             return {'mode': mode, 'value': None, 'low': None}
+        if mode == 'prepaid':
+            # Neutral for control: actual availability is admission's hard gate.
+            # Keep the authentic reading available for display/diagnostics.
+            record = q.get(provider) or {}
+            windows = [item for item in record.get('windows') or []
+                       if isinstance(item, dict) and item.get('valid') is not False and
+                       isinstance(item.get('remaining_percent'), (int, float)) and
+                       not isinstance(item.get('remaining_percent'), bool)]
+            worst = min(windows, key=lambda item: item['remaining_percent']) if windows else None
+            return {'mode': mode, 'value': 1.0, 'low': False,
+                    'remaining_percent': worst.get('remaining_percent') if worst else None,
+                    'resets_at': worst.get('resets_at') if worst else None}
         if mode == 'manual_window':
             window = {'valid': True, 'remaining_percent': setting['remaining_percent'],
                       'duration_minutes': setting['duration_minutes'], 'resets_at': setting['resets_at']}
@@ -2098,7 +3099,8 @@ def tier_guidance(c, q, _raw=False):
     plan_signals = pressure_signals
     reliable = bool(plan_signals) and all(v is not None for v in plan_signals.values())
     provider_runways = {
-        provider: pressure_signals.get(provider, runways.get(provider))
+        provider: (1.0 if provider in prepaid_provider_ids
+                   else pressure_signals.get(provider, runways.get(provider)))
         for provider in configured_providers
     }
     provider_levels = {
@@ -2172,6 +3174,7 @@ def tier_guidance(c, q, _raw=False):
             'normal_stage': normal, 'remaining_percent': readings, 'runway': runways,
             'provider_runway': provider_runways,
             'provider_conservation_level': provider_levels,
+            'prepaid_providers': sorted(prepaid_provider_ids),
             'combined_remaining_percent': combined_remaining,
             'combined_remaining_complete': combined_complete,
             'budget_signals': signals,
@@ -2184,9 +3187,22 @@ def compact_guidance(g):
     """Coordinator contract: classify the work; keep capacity routing internal."""
     return {
         'instruction': (
-            'Choose Fast, Normal or Deep only from the unresolved uncertainty in the task. '
-            'Keep profile=auto. The bridge privately owns provider balancing, conservation, '
-            'fallback and same-session continuation.'
+            'Choose Fast, Normal, Deep or Ultra from unresolved uncertainty and the expected '
+            'benefit of faster model work. Normal is the default for ordinary executable work; '
+            'choose Fast only when direction, constraints and acceptance are clear and faster '
+            'model work is reasonably expected to materially advance a concrete near-term '
+            'milestone — an actually ready downstream consumer currently blocked by this work '
+            'or an explicitly urgent delivery/deadline; a routine serial dependency or resource '
+            'ownership alone is not enough. Choose Deep for high uncertainty such as an '
+            'ambiguous goal, an unknown root cause, architecture trade-offs or unusually '
+            'complex logic. Reserve Ultra for the most extreme-complexity work where the cost '
+            'of a wrong architecture or a missed constraint dominates, and treat it as a '
+            'finite reserved resource: if an ordinary task makes no substantive progress in '
+            'two consecutive rounds, check the checkpoint and escalate deliberately to Ultra '
+            'rather than silently retrying. Resolve environment, permission or authentication '
+            'blockers first; once the situation is clear, execute at Normal. Keep profile=auto. '
+            'The bridge privately owns provider balancing, conservation, fallback, the Kimi '
+            'weekly reserve and same-session continuation.'
         )
     }
 

@@ -44,8 +44,8 @@ T = {
         'web_models_note': 'To change models later, use the web console (Models & routing) '
                            'while workers are idle; setup never replaces them silently.',
         'model_title': 'Model selection for the three default profiles:',
-        'opt_preset': 'Use the deepseek-kimi preset (DeepSeek Flash + Kimi K2.8/K3, max reasoning)',
-        'opt_ark_preset': 'Use the ark-agent-plan preset (Ark Auto/Evolving/K3 + native Kimi + DeepSeek)',
+        'opt_preset': 'Use the deepseek-kimi preset (DeepSeek Flash + Kimi K2.8 and K3.1 Pro Ultra, max reasoning)',
+        'opt_ark_preset': 'Use the ark-agent-plan preset (Ark Auto/Evolving + native Kimi K2.8/K3.1 Pro + DeepSeek)',
         'opt_custom': 'Use a custom provider/model',
         'choose_prompt': 'Enter a number',
         'choose_invalid': 'Please enter one of the listed numbers.',
@@ -110,8 +110,8 @@ T = {
         'web_models_note': '如需更换模型，请稍后使用网页控制台（模型与调度）并在空闲时应用；'
                            '安装向导绝不会静默替换模型。',
         'model_title': '为三个默认配置选择模型：',
-        'opt_preset': '使用 deepseek-kimi 预设（DeepSeek Flash + Kimi K2.8/K3，max 推理）',
-        'opt_ark_preset': '使用 ark-agent-plan 预设（方舟 Auto/Evolving/K3 + 原厂 Kimi + DeepSeek）',
+        'opt_preset': '使用 deepseek-kimi 预设（DeepSeek Flash + Kimi K2.8 与 K3.1 Pro Ultra，max 推理）',
+        'opt_ark_preset': '使用 ark-agent-plan 预设（方舟 Auto/Evolving + 原厂 Kimi K2.8/K3.1 Pro + DeepSeek）',
         'opt_custom': '使用自定义 provider/model',
         'choose_prompt': '请输入数字',
         'choose_invalid': '请输入列出的数字之一。',

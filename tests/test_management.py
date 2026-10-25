@@ -378,6 +378,10 @@ class ManagementTests(unittest.TestCase):
                                               'deepseek_holiday_calendar',
                                               'kimi_low_weekly_threshold_percent',
                                               'kimi_low_weekly_k3_limit',
+                                              'kimi_weekly_reserve_percent',
+                                              'kimi_weekly_reserve_dynamic',
+                                              'kimi_low_weekly_ultra_limit',
+                                              'kimi_gate',
                                               'fast_bias_runway_percent',
                                               'budget_signals',
                                               'auto_reroute_on_quota_exhaustion',
@@ -391,6 +395,10 @@ class ManagementTests(unittest.TestCase):
         self.assertEqual(result['max_parallel_per_owner'], 4)
         self.assertEqual(result['kimi_low_weekly_threshold_percent'], 5)
         self.assertEqual(result['kimi_low_weekly_k3_limit'], 1)
+        self.assertEqual(result['kimi_weekly_reserve_percent'], 30)
+        self.assertTrue(result['kimi_weekly_reserve_dynamic'])
+        self.assertEqual(result['kimi_low_weekly_ultra_limit'], 1)
+        self.assertEqual(result['kimi_gate'], {'enabled': False, 'port': 51531})
         self.assertEqual(result['fast_bias_runway_percent'], 38)
         self.assertEqual(result['budget_signals'], {})
         self.assertTrue(result['auto_reroute_on_quota_exhaustion'])

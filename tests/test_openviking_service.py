@@ -66,11 +66,13 @@ class RuntimeConfigTests(unittest.TestCase):
         self.assertTrue(Path(first['config']).exists())
         existing = json.loads(Path(first['config']).read_text())
         existing['custom_section'] = {'keep': True}
+        existing['embedding']['allow_metadata_override'] = True
         existing['vlm']['custom_option'] = 'keep'
         existing['storage']['agfs']['custom_option'] = 'keep'
         Path(first['config']).write_text(json.dumps(existing))
         openviking_service.write_runtime_config()
         merged = json.loads(Path(first['config']).read_text())
+        self.assertFalse(merged['embedding']['allow_metadata_override'])
         self.assertEqual(merged['custom_section'], {'keep': True})
         self.assertEqual(merged['vlm']['custom_option'], 'keep')
         self.assertEqual(merged['storage']['agfs']['custom_option'], 'keep')
@@ -93,6 +95,29 @@ class RuntimeConfigTests(unittest.TestCase):
             env = openviking_service.service_env()
         self.assertEqual(env['OPENVIKING_ROOT_API_KEY'], key)
         self.assertEqual(env['OPENVIKING_API_KEY'], 'user-key-value')
+
+    def test_embedding_reference_is_resolved_in_environment_only(self):
+        import credentials
+        memory_config(self.root, openviking={
+            'embedding_credential_ref': 'volcengine-payg-api-key',
+            'embedding_provider': 'volcengine', 'embedding_input': 'multimodal'})
+        with patch.object(credentials, '_resolve_reference', return_value='payg-secret') as resolve, \
+             patch.object(openviking_service, 'api_key', return_value='user-key'):
+            env = openviking_service.service_env()
+            self.assertEqual(env['OPENVIKING_ARK_API_KEY'], 'payg-secret')
+            resolve.assert_called_once_with('volcengine-payg-api-key')
+            runtime_cfg = openviking_service.runtime_config()
+            self.assertEqual(runtime_cfg['embedding']['dense']['provider'], 'volcengine')
+            self.assertEqual(runtime_cfg['embedding']['dense']['input'], 'multimodal')
+            self.assertNotIn('payg-secret', json.dumps(runtime_cfg))
+            self.assertNotIn('payg-secret', openviking_service._redact('error payg-secret'))
+
+    def test_missing_embedding_reference_does_not_fall_back_to_plan(self):
+        import credentials
+        memory_config(self.root, openviking={'embedding_credential_ref': 'missing'})
+        with patch.object(credentials, '_resolve_reference', side_effect=credentials.CredentialError('missing')):
+            with self.assertRaises(ValueError):
+                openviking_service.embedding_api_key()
 
     def test_bootstrap_stores_user_key_owner_only(self):
         calls = []

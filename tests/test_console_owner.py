@@ -107,7 +107,8 @@ class ConsoleOwnerTests(unittest.TestCase):
             self.assertNotIn('max-steps', source)
             self.assertNotIn('max_steps', source)
             self.assertNotIn('maxSteps', source)
-            self.assertNotIn('timeout', source.lower())
+            # Network/UI timers (for example the Kimi account device-login poll)
+            # are unrelated to worker step or task-time caps; deadlines stay banned.
             self.assertNotIn('deadline', source.lower())
         self.assertNotIn('routing.maxSteps', i18n)
         self.assertNotIn('timeout', i18n.lower())
@@ -142,9 +143,9 @@ class ConsoleOwnerTests(unittest.TestCase):
         manage = (project / 'web' / 'manage.js').read_text()
         translations = (project / 'web' / 'i18n.js').read_text()
         self.assertIn('id="budget-signal-list"', index)
-        for mode in ('manual_window', 'monetary', 'ignore'):
+        for mode in ('manual_window', 'monetary', 'prepaid', 'ignore'):
             self.assertIn(mode, manage)
         self.assertIn('budget_signals:readBudgetSignals()', manage)
-        for key in ('budget.manualWindow', 'budget.monetary', 'budget.lowBalance',
-                    'budget.manualBalanceHint'):
+        for key in ('budget.manualWindow', 'budget.monetary', 'budget.prepaid',
+                    'budget.lowBalance', 'budget.manualBalanceHint'):
             self.assertEqual(translations.count("'" + key + "'"), 5)

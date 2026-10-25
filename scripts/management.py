@@ -148,6 +148,11 @@ def settings():
            'kimi_reserve_percent': c.get('kimi_reserve_percent'),
            'kimi_low_weekly_threshold_percent': c.get('kimi_low_weekly_threshold_percent', 5),
            'kimi_low_weekly_k3_limit': c.get('kimi_low_weekly_k3_limit', 1),
+           'kimi_weekly_reserve_percent': c.get('kimi_weekly_reserve_percent', 30),
+           'kimi_weekly_reserve_dynamic': c.get('kimi_weekly_reserve_dynamic', True),
+           'kimi_low_weekly_ultra_limit': c.get('kimi_low_weekly_ultra_limit',
+                                                c.get('kimi_low_weekly_k3_limit', 1)),
+           'kimi_gate': _kimi_gate_view(c),
            'fast_bias_runway_percent': c.get('fast_bias_runway_percent', 38),
            'auto_reroute_on_quota_exhaustion': c.get('auto_reroute_on_quota_exhaustion', True),
            'proactive_long_task_reroute': c.get('proactive_long_task_reroute', True),
@@ -189,6 +194,79 @@ def settings():
     import memory_manager
     out['memory'] = memory_manager.settings(c.get('memory'))
     return out
+
+
+def _kimi_gate_view(c):
+    """Safe stored gate settings for the console; never a credential or port probe."""
+    block = c.get('kimi_gate') if isinstance(c, dict) else None
+    if not isinstance(block, dict):
+        return {'enabled': False, 'port': 51531}
+    port = block.get('port', 51531)
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        port = 51531
+    return {'enabled': block.get('enabled') is True, 'port': port}
+
+
+def kimi_account_status():
+    """Normalized account status plus one usage reading for the console contract.
+
+    ``weekly_reserve`` is the same authoritative reserve contract dispatch and
+    the native gate enforce. It is derived from the already-read account usage or
+    a fresh credential-checked quota cache, never from an extra network or
+    Keychain query.
+    """
+    import kimi_account
+    usage = kimi_account.fetch()
+    result = {'status': kimi_account.status(), 'usage': usage}
+    import quota
+    try:
+        result['weekly_reserve'] = quota.kimi_weekly_reserve_display(usage)
+    except Exception:
+        result['weekly_reserve'] = None
+    return result
+
+
+def kimi_account_start():
+    import kimi_account
+    return kimi_account.start()
+
+
+def kimi_account_login(region='mainland-cn'):
+    """Start the isolated official CLI when needed, then request one device login."""
+    import kimi_account
+    started = kimi_account.start()
+    login = kimi_account.login_start(region)
+    return {'start': started, 'login': login}
+
+
+def kimi_account_login_status():
+    import kimi_account
+    return kimi_account.login_status()
+
+
+def kimi_account_bind(confirmed):
+    """Persist the account/inference binding only after explicit human confirmation."""
+    if confirmed is not True:
+        raise ValueError('Explicit same-account confirmation is required before binding')
+    import kimi_account
+    return kimi_account.bind_current_account(True)
+
+
+def kimi_account_command(action, region=None, confirmed=False):
+    """CLI surface mirroring the console account endpoints (sanitized output only)."""
+    if action == 'status':
+        return kimi_account_status()
+    if action == 'start':
+        return kimi_account_start()
+    if action == 'login':
+        return kimi_account_login(region or 'mainland-cn')
+    if action == 'login-status':
+        return kimi_account_login_status()
+    if action == 'usage':
+        return kimi_account_status().get('usage') or {}
+    if action == 'bind':
+        return kimi_account_bind(confirmed)
+    raise ValueError('Unknown Kimi account action')
 
 
 def _int_setting(body, key, low, high):
@@ -245,6 +323,26 @@ def _validate_settings(body):
             body, 'kimi_low_weekly_threshold_percent', 0, 100)
     if 'kimi_low_weekly_k3_limit' in body:
         result['kimi_low_weekly_k3_limit'] = _int_setting(body, 'kimi_low_weekly_k3_limit', 0, 16)
+    if 'kimi_weekly_reserve_percent' in body:
+        result['kimi_weekly_reserve_percent'] = _int_setting(
+            body, 'kimi_weekly_reserve_percent', 0, 100)
+    if 'kimi_weekly_reserve_dynamic' in body:
+        if not isinstance(body['kimi_weekly_reserve_dynamic'], bool):
+            raise ValueError('kimi_weekly_reserve_dynamic must be boolean')
+        result['kimi_weekly_reserve_dynamic'] = body['kimi_weekly_reserve_dynamic']
+    if 'kimi_low_weekly_ultra_limit' in body:
+        result['kimi_low_weekly_ultra_limit'] = _int_setting(
+            body, 'kimi_low_weekly_ultra_limit', 0, 16)
+    if 'kimi_gate' in body:
+        gate = body['kimi_gate']
+        if not isinstance(gate, dict) or set(gate) - {'enabled', 'port'} or 'enabled' not in gate:
+            raise ValueError('kimi_gate must contain enabled and an optional port')
+        if not isinstance(gate.get('enabled'), bool):
+            raise ValueError('kimi_gate.enabled must be boolean')
+        port = gate.get('port', 51531)
+        if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+            raise ValueError('kimi_gate.port must be an integer from 1 to 65535')
+        result['kimi_gate'] = {'enabled': gate['enabled'], 'port': port}
     if 'fast_bias_runway_percent' in body:
         result['fast_bias_runway_percent'] = _int_setting(
             body, 'fast_bias_runway_percent', 0, 400)
@@ -289,13 +387,20 @@ def _validate_settings(body):
             body['deepseek_holiday_calendar'])
     routing = body.get('routing')
     if routing is not None:
-        if not isinstance(routing, dict) or set(routing.keys()) != set(_ROUTING_KEYS):
-            raise ValueError('routing must define fast, background and deep')
-        for key in _ROUTING_KEYS:
+        # The legacy single-profile routing record keeps its three required tiers;
+        # 'ultra' is an optional fourth key for clients that can pin it. New
+        # installs normally use routing_policy instead.
+        allowed = set(_ROUTING_KEYS) | {'ultra'}
+        if not isinstance(routing, dict) or not set(_ROUTING_KEYS).issubset(routing) or \
+                set(routing) - allowed:
+            raise ValueError('routing must define fast, background and deep (ultra optional)')
+        for key in routing:
             name = routing[key]
             if not isinstance(name, str) or name not in profiles or not profiles[name]['enabled']:
                 raise ValueError('routing.' + key + ' must reference an enabled profile')
-        result['routing'] = {key: routing[key] for key in _ROUTING_KEYS}
+        result['routing'] = {key: routing[key] for key in _ROUTING_KEYS if key in routing}
+        if 'ultra' in routing:
+            result['routing']['ultra'] = routing['ultra']
     # Optional opt-in ordered-fallback/weighted policy. An omitted key preserves the
     # stored policy for old clients; null or an empty object (how the console clears an
     # optional object field) disables it.
@@ -624,6 +729,11 @@ def delete_tasks(body):
         try:
             common.task_path(task_id).unlink()
             result['deleted'] += 1
+            # The retained ledger entry now carries the timestamped events.
+            try:
+                usage_ledger.drop_events(task_id)
+            except Exception:
+                pass
         except OSError as error:
             result['errors'].append({'task_id': task_id, 'stage': 'task',
                                      'error': common.redact(str(error))[:240]})

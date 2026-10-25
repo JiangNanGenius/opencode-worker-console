@@ -53,6 +53,7 @@ Worker Desk 是运行在本机的 Agent 桥接层。它把主 Agent 的判断能
 | 让模型安装 | [模型安装指引](references/agent-install.zh-CN.md) / [Agent runbook](references/agent-install.md) |
 | 首次配置模型 | 控台里的 **设置向导** |
 | 下发任务、检查证据 | [Skill](SKILL.md) 和 [操作手册](references/operations.md) |
+| 使用语音提醒播报 | [语音提醒设置](references/qwen-voice-settings.md) |
 | 内网或外网反代 | [账号与远程访问](references/remote-access.md) |
 
 ### 向导安装
@@ -96,15 +97,46 @@ python3 scripts/install.py --preset deepseek-kimi
 python3 scripts/install.py --preset ark-agent-plan
 ```
 
-该预设让快速任务先用 Ark Auto；普通任务按 Kimi K2.8 : 方舟 Seed Evolving = 1:1；
-深度任务按原厂 Kimi K3 : 方舟 K3 = 2:1；之后依次回退到 Ark Auto 与 DeepSeek 直连。
-Ark Auto 的能力高于 DeepSeek；DeepSeek 直连是能力最低的最终兜底，即使极端降载时暂时承担
-更多流量，也不会改变这个排序。
-每个成对任务池都有独立的连续负载曲线：实时额度续航在配置的比例控制点之间插值，既不改写
-保存的基准策略，也不会越过经济性边界。Fast、一级降载和二级降载也分别使用自己的曲线。
-当 Kimi 健康而方舟严重紧张时，同能力的 Normal 和 Deep 曲线可真正到达 Kimi 100% / 方舟 0%；
-零端点会从实际调度中移除方舟，而不是保留没有意义的 1%。Fast 没有同档套餐伙伴，因此方舟严重
-紧张时可以连续转到 DeepSeek 100%；方舟按重置时间计算的续航改善后再逐步回归。
+或安装可选的三套餐组合（Kimi + 方舟 Agent Plan + 阿里云 Token Plan + 直连 DeepSeek）。
+该预设只声明固定的 `qwen3.8-max` 与 `qwen3.8-flash`，不透明的阿里云 Auto 别名不会再进入
+自动路由：
+
+```sh
+python3 scripts/install.py --preset three-plan
+```
+
+四档默认模型为 Fast = DeepSeek Flash、Normal = K2.8 Preview / Qwen3.8 Flash、
+Deep = Qwen3.8 Max、Ultra = 原厂 Kimi K3.1 Pro（标准版、max）。旧原厂和 Ark K3 不再参与新任务路由，
+历史模型记录保留。Kimi 为 K3.1 Pro 默认设置 30% 的基础／最高周保护。动态释放默认开启：按真实周刷新时间，后半周闲时逐步降至基础值与 5% 中的较小值，释放给 Normal；Ultra 有需求或信号未知时保持基础值。五小时和账户总额度分别限制，缺失总池显示未知，
+不按四倍周额度估算。Ultra 不可用时等待，不静默降档。详见[路由说明](references/routing.zh-CN.md)。
+
+单 Key 接入时，把 API Key 放在仅本人可读的文件中：在私有
+pool 配置里设置 `provider_api_key_files` 为 `{"bailian-token-plan": "/私有/路径/key"}`，运行时
+只引用路径，不复制密钥。Credits 池会经官方只读账户接口（百炼 OpenAPI `GetSubscriptionStats`，
+ACS3 签名）自动刷新：把与推理密钥相互独立的阿里云账号 AK/SK 分别放入仅本人可读的文件，并按固定
+引用名 `aliyun-control-ak`、`aliyun-control-sk` 注册（绝不写入配置），随后 `delegate-opencode
+quota --refresh` 或控制台的刷新按钮即可获取真实剩余 Credits，并明确标注 `openapi_live` 来源。
+实时查询失败时绝不伪造刷新：额度行保留最近一次真实读数（若尚无实时读数，则保留导入的控制台
+快照），并附上脱敏的 `live_error`。快照导入仍可作为该基线使用：
+
+```sh
+delegate-opencode quota --import-snapshot /私有/路径/snapshot.json
+```
+
+同一到期日的多个独立阿里坐席会合并为一个 Credits 总池，明细按需展开。可选的本地认证
+转发入口按顺序使用 Key，确认单把 Key 被额度或认证拒绝后切换下一把；原有单 Key 用法保持兼容。
+参见[合并额度规则](references/bailian-seat-ledger.md)与[多 Key 配置及空闲启用](references/bailian-pool.md)。
+
+快照会明确显示新鲜度，绝不冒充实时读数；已过期周期或导入时已失效的正数读数不能解除已记录的
+耗尽状态或计费熔断。查看按响应时间戳统计的 Token 与估算 Credits（1 小时 / 24 小时 / 48 小时）：
+
+```sh
+delegate-opencode usage-report --windows 1,24,48
+```
+
+原生 OpenCode 自动升级默认开启、每 24 小时检查一次。桥接会在任务运行期间先下载并暂存官方稳定版，
+仅在没有任何任务执行时进行短暂的串行重启；只有排队任务时会先保留准入屏障，绝不取消任务；健康或
+版本校验失败会恢复旧二进制与配置。
 
 这些选项只初始化**全新安装**，不会覆盖已有 profiles。`--no-start` 表示安装后不启动。登录、托管 OpenCode 路径、密码、验证、升级和排障见[完整安装指引](references/installation.zh-CN.md)。
 
@@ -113,15 +145,16 @@ Ark Auto 的能力高于 DeepSeek；DeepSeek 直连是能力最低的最终兜�
 | 内部 Profile | 可选预设模型 | 桥接层用途 |
 | --- | --- | --- |
 | `senior-code` | Kimi K2.8 Preview | Normal 层套餐池 |
-| `deep-research` | Kimi K3 | Deep 层套餐池 |
+| `aliyun-max` | Qwen3.8 Max | Deep 推理 |
+| `ultra-reasoning` | Kimi K3.1 Pro | Ultra 推理，不可用时等待 |
 | `fallback` | DeepSeek V4.1 Flash | 前置阶段均不可用后的最终兜底 |
 
-上游 Harness 只选择 Fast、Normal 或 Deep，并以 `profile=auto` 提交；具体 profile、供应商、套餐比例和兜底均由桥接层决定。上表是管理员配置视图，不是 Agent 的角色清单。预设使用 `max`；新增模型要选择供应商实际支持的思考档位。只有用户明确要求指定模型或进行受控对比时才固定 profile。详见[路由与套餐利用率](references/routing.zh-CN.md)。
+上游 Harness 只选择 Fast、Normal、Deep 或 Ultra，并以 `profile=auto` 提交；具体 profile、供应商、套餐比例和兜底均由桥接层决定。上表是管理员配置视图，不是 Agent 的角色清单。预设使用 `max`；新增模型要选择供应商实际支持的思考档位。只有用户明确要求指定模型或进行受控对比时才固定 profile。详见[路由与套餐利用率](references/routing.zh-CN.md)。
 
 Fast 也能完整处理边界和验收明确的功能、已知修复、测试、文档和常规部署，并不是机械工作档。
-Normal 用于目标明确，但执行过程仍需要开放调查或综合判断的任务。Deep 用于抽象或尚不明确的目标、
-未定位的系统级根因、架构取舍和特别复杂的逻辑。文件数量、运行时间、上下文大小和任务重要性
-不会自动把任务变成 Deep；真正符合条件的 Deep 任务不设额外总量限制。
+Normal 是日常具体目标的默认档，Deep 处理需要较强推理的复杂工作，Ultra 处理极复杂架构、疑难根因与长程推理。
+连续两轮无实质进展时，协调者复核检查点后升级；认证、权限和环境故障先解决阻碍。问题明确后的常规实施交给 Normal。
+文件数量、运行时间与重要性不会单独决定档位。
 
 ## 产品能力
 
@@ -133,15 +166,16 @@ Worker 可以承担调查、编码、测试修复、文档、SSH 操作和常规
 并行任务存在无法避免的写入冲突，或破坏性实验时才创建独立 worktree，避免重复依赖和编译产物。
 安全整合后会释放受管 worktree；未整合修改继续保留并提示复核。
 
-### 三档能力路由
+### 四档能力路由
 
-协调 Agent 只判断任务不确定性：**Fast** 处理方向和验收明确的完整工作，**Normal** 处理仍需开放调查的具体目标，**Deep** 处理抽象目标、系统级根因和复杂取舍。桥接层再按已配置的单模型、主备链、固定比例池或额度自适应池选择供应商。一个供应商也能使用，多套餐只是增强项。
+协调 Agent 按不确定性与模型延迟对交付的具体作用选择 Fast、Normal、Deep 或 Ultra，默认 Normal。
+桥接层选模型，Ultra 固定使用原厂 K3.1 Pro，缺额度时等待。检查点交接与动态周保护规则见[路由说明](references/routing.zh-CN.md)。
 
 额度保护同时计算总体曲线和各供应商自己的曲线。一个套餐紧张时可以从同能力池完全退出，由健康伙伴承担 100%，而总体池仍可保持健康。一级随着套餐续航下降，逐步让后段按量模型承担 Fast/Normal；Fast 按自己的来源套餐续航计算，不会被刚恢复的 Normal/Deep 套餐掩盖。二级下降更快，在 DeepSeek 余额高于保护线时可把只有单一套餐来源的 Fast 路由完整转给 DeepSeek。Deep 和显式指定模型不会掉到更低能力阶段。闲时更快到达高压上限，峰时只有套餐续航严重不足才逐步升高。周末始终按闲时处理，工作日法定节假日通过可配置订阅识别并在本机缓存。详见[路由与套餐利用率](references/routing.zh-CN.md)。
 
 ### 长任务连续执行
 
-任务没有人为的模型轮数、工具次数或总运行时长限制。`wait` 持续阻塞并在结果出现时立即返回；当前回合结束后可在同一 OpenCode 会话里引导或换模，保留上下文和部分工作。确认的额度耗尽、用量窗口限制与模型端 429 会沿下一路由继续，不重放原始任务。
+任务没有人为的模型轮数、工具次数或总运行时长限制。`wait` 持续阻塞并在结果出现时立即返回；可在安全回合边界引导；进入 Ultra 时保留桥接任务、授权和检查点，新建原生模型会话，不重放已完成操作。确认的额度耗尽、用量窗口限制与模型端 429 会沿下一路由继续，不重放原始任务。
 
 ### 实时控制台
 
@@ -151,8 +185,17 @@ Worker 可以承担调查、编码、测试修复、文档、SSH 操作和常规
 - 大型编译、部署和 GitHub Actions 可上报真实阶段、百分比和预计完成时间；没有可靠总量的任务显示为不确定进度，不编造百分比。
 - 统计页每 3 秒复用同一份用量快照，更新近 1 小时、24 小时和 30 天图表；纵轴带真实 Token 刻度，并按模型、档位、状态和 Profile 汇总。
 - 任务页显示 CPU、内存、磁盘、负载和 Worker 数。已清理任务的 Token、成本和路由摘要保留在可展开的**历史账本**。
+- **模型与路由**页新增独立的**语音提醒**卡片，对接已安装的 `qwen-voice-notify` 技能：默认通过现有火山方舟 Agent Plan 的 `seed-tts-2.0` 模型优先使用云端语音，云端在播放开始前失败时自动回退到本机离线 Qwen3-TTS，播放开始后不再回退；云端音色与本机备用音色分别选择，共用语速默认 1.10×（0.50–2.00×），设置原子保存并同时供控台和 `notify.py` 使用，缺少的新字段保持默认值，旧版保存不会重置它们。**试听**为显式固定的短句，停止只结束本控台发起的试听，GET 不合成也不访问网络。不会自动播放，不修改系统音量或默认输出设备，不下载模型，也不常驻推理服务。详见[语音提醒设置](references/qwen-voice-settings.md)。
 
 ### 主机概览与结构化控制
+
+公网部署支持 **仅 Passkey 登录**，独立内网地址保留用户名、密码登录。
+控台与原生 OpenCode 共用认证网关，覆盖实时事件与 WebSocket。
+在 **Passkey / 安全登录** 中管理多设备凭据与撤销，全部遗失时可在 Mac 本机恢复；
+部署步骤见[公网访问指引](references/remote-access.md#public-access-with-passkeys)。
+
+首页与调度页的 Codex 任务可展开查看子代理和精确关联的 OpenCode Worker，
+展示当前模型、思考强度及数据更新时间。此视图只读本机任务，不编造进度百分比。
 
 登录后默认进入**主机概览**：CPU、GPU、内存、内核内存压力、芯片温度、风扇转速、网络速率、磁盘 I/O 与内置/外置磁盘容量图表（15 分钟 / 1 小时 / 24 小时），进行中的 Codex 与 OpenCode 任务（含真实模型与已运行时长）、各供应商额度和受管服务状态。同一采集器同时服务网页与实体信息牌；信息牌负载以仅属主可读的 `STATE/host-board.json` 按既有 v2 结构发布。缺失的传感器显示为不可用，而不是 0。
 

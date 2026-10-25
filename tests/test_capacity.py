@@ -24,6 +24,23 @@ def provider(windows, **kw):
 
 
 class CapacityTests(unittest.TestCase):
+    def setUp(self):
+        # Billing circuits are durable production state; routing_status must not
+        # read an operator's real blocks or quota caches in these unit tests.
+        import common
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.state = Path(self.tmp.name)
+        self.patchers = [patch.object(common, 'STATE', self.state),
+                         patch.object(quota, 'STATE', self.state)]
+        for item in self.patchers:
+            item.start()
+
+    def tearDown(self):
+        for item in reversed(self.patchers):
+            item.stop()
+        self.tmp.cleanup()
+
     def test_observed_pace_is_shared_by_routing_and_forecast(self):
         w = win()
         f = capacity.window(w, NOW)
@@ -306,7 +323,8 @@ class CapacityTests(unittest.TestCase):
             'volcengine-agent-plan': plan(100, 80, 160),
         }
         q['volcengine-agent-plan']['windows'][1]['name'] = 'AFPWeekly'
-        with patch.object(quota.time, 'time', return_value=NOW):
+        with patch.object(quota.time, 'time', return_value=NOW), \
+             patch.object(routing, 'RETIRED_MODELS', frozenset()):
             members = quota.routing_status(c, q)['deep'][0]['members']
         self.assertEqual(members['deep-research']['share'], .9)
         self.assertEqual(members['ark-k3']['share'], .1)
@@ -314,7 +332,8 @@ class CapacityTests(unittest.TestCase):
         # A durable weekly imbalance still moves Deep traffic toward Ark.
         q['kimi-for-coding']['windows'][1]['consumption_estimate'].update(
             hours=16, rate_percent_per_hour=5)
-        with patch.object(quota.time, 'time', return_value=NOW):
+        with patch.object(quota.time, 'time', return_value=NOW), \
+             patch.object(routing, 'RETIRED_MODELS', frozenset()):
             pressured = quota.routing_status(c, q)['deep'][0]['members']
         self.assertLess(pressured['deep-research']['share'], .9)
         self.assertGreater(pressured['ark-k3']['share'], .1)
