@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import bailian_personal as personal
+import bailian_personal_ak as personal_ak
 
 
 NOW = 1793050000
@@ -220,6 +221,147 @@ class PersonalQuotaTests(unittest.TestCase):
         self.assertUnknown(result)
         self.assertEqual(result['live_error']['kind'], 'quota_auth')
         self.assertNoSecrets(result)
+
+    def ak_config(self):
+        return dict(CONFIG, bailian_personal_quota={'enabled': True, 'auth': 'access_key',
+            'subscription_instance_hash': hashlib.sha256(
+                PAYLOAD['instance_code'].encode()).hexdigest(),
+            'inference_key_sha256': PAYLOAD['inference_key_sha256']})
+
+    def test_account_access_key_path_uses_only_local_inference_binding(self):
+        config = self.ak_config()
+        with patch.object(personal_ak, 'fetch_payloads',
+                          return_value=(SUBSCRIPTION, USAGE, ADDON)) as query:
+            result = personal.fetch(config)
+        self.assertEqual(result['state'], 'ok')
+        self.assertEqual(result['auth_method'], 'access_key_cli_token')
+        self.assertEqual(result['source'], 'personal_console')
+        self.assertTrue(result['available'])
+        query.assert_called_once_with(config)
+        self.keychain.assert_not_called()
+        self.assertNoSecrets(result)
+        self.assertNotIn(config['bailian_personal_quota']['subscription_instance_hash'],
+                         json.dumps(result))
+
+    def test_access_key_is_default_for_new_block_but_browser_can_be_explicit(self):
+        config = self.ak_config()
+        del config['bailian_personal_quota']['auth']
+        with patch.object(personal_ak, 'fetch_payloads',
+                          return_value=(SUBSCRIPTION, USAGE, ADDON)):
+            self.assertTrue(personal.fetch(config)['available'])
+        config = copy.deepcopy(CONFIG)
+        config['bailian_personal_quota']['auth'] = 'browser'
+        with patch.object(personal, '_request', side_effect=[SUBSCRIPTION, USAGE, ADDON]):
+            self.assertTrue(personal.fetch(config)['available'])
+
+    def test_access_key_binding_rejects_wrong_key_and_foreign_subscription(self):
+        config = self.ak_config()
+        self.load_key.return_value = (b'foreign-inference-key', 'g1_mock')
+        with patch.object(personal_ak, 'fetch_payloads') as query:
+            self.assertUnknown(personal.fetch(config))
+            query.assert_not_called()
+        self.load_key.return_value = (KEY.encode(), 'g1_mock')
+        with patch.object(personal_ak, 'fetch_payloads', return_value=(
+                dict(SUBSCRIPTION, instanceCode='foreign-subscription'), USAGE, ADDON)):
+            self.assertUnknown(personal.fetch(config))
+        config['bailian_personal_quota']['subscription_instance_hash'] = 'bad-binding'
+        with patch.object(personal_ak, 'fetch_payloads') as query:
+            self.assertUnknown(personal.fetch(config))
+            query.assert_not_called()
+        self.keychain.assert_not_called()
+
+    def test_access_key_session_expiry_stays_unknown_without_inference_auth_block(self):
+        with patch.object(personal_ak, 'fetch_payloads', side_effect=personal_ak.QuotaError(True)):
+            result = personal.fetch(self.ak_config())
+        self.assertUnknown(result)
+        self.assertEqual(result['live_error']['kind'], 'quota_auth')
+        self.assertNoSecrets(result)
+
+    def sequential_config(self):
+        config = copy.deepcopy(self.ak_config())
+        config['bailian_plan_edition'] = 'sequential'
+        config['bailian_pool']['slots'] = [
+            {'id': 'primary', 'keychain': {'service': 'mock-team-key', 'account': 'default'}},
+            {'id': 'secondary', 'keychain': {'service': 'mock-personal-key', 'account': 'default'}}]
+        config['bailian_personal_quota']['slot_id'] = 'secondary'
+        return config
+
+    def test_sequential_selects_personal_slot_without_reading_team_key(self):
+        config = self.sequential_config()
+        self.load_key.side_effect = lambda slot: (KEY.encode(), 'g1_mock') if \
+            slot['id'] == 'secondary' else (b'team-inference-key', 'g1_team')
+        with patch.object(personal_ak, 'fetch_payloads',
+                          return_value=(SUBSCRIPTION, USAGE, ADDON)):
+            result = personal.fetch(config)
+        self.assertEqual(result['state'], 'ok')
+        self.assertEqual(result['plan_edition'], 'personal')
+        self.assertTrue(result['available'])
+        self.assertEqual(self.load_key.call_count, 1)
+        self.assertEqual(self.load_key.call_args.args[0]['id'], 'secondary')
+        self.keychain.assert_not_called()
+
+    def test_multiple_slots_require_explicit_existing_slot_id(self):
+        for slot_id in (None, '', 'missing', 1, True):
+            config = self.sequential_config()
+            if slot_id is None:
+                del config['bailian_personal_quota']['slot_id']
+            else:
+                config['bailian_personal_quota']['slot_id'] = slot_id
+            with patch.object(personal_ak, 'fetch_payloads') as query:
+                self.assertUnknown(personal.fetch(config))
+                self.assertIsNone(personal.credential_identity(config))
+                query.assert_not_called()
+        self.load_key.assert_not_called()
+        self.keychain.assert_not_called()
+
+    def test_selecting_team_slot_cannot_reuse_personal_key_binding(self):
+        config = self.sequential_config()
+        config['bailian_personal_quota']['slot_id'] = 'primary'
+        self.load_key.return_value = (b'team-inference-key', 'g1_team')
+        with patch.object(personal_ak, 'fetch_payloads') as query:
+            self.assertUnknown(personal.fetch(config))
+            query.assert_not_called()
+        self.assertEqual(self.load_key.call_args.args[0]['id'], 'primary')
+
+    def test_personal_identity_ignores_team_slot_changes_without_reading_secrets(self):
+        config = self.sequential_config()
+        before = copy.deepcopy(config)
+        identity = personal.credential_identity(config)
+        self.assertIsNotNone(identity)
+        self.assertEqual(config, before)
+        config['bailian_pool']['slots'][0]['generation'] = 'rotated-team-generation'
+        config['bailian_pool']['slots'][0]['keychain']['service'] = 'changed-team-service'
+        self.assertEqual(personal.credential_identity(config), identity)
+        config['bailian_plan_edition'] = 'personal'
+        self.assertEqual(personal.credential_identity(config), identity)
+        self.load_key.assert_not_called()
+        self.keychain.assert_not_called()
+        self.identity.assert_not_called()
+        self.config.assert_not_called()
+        self.opener.assert_not_called()
+
+    def test_personal_identity_changes_for_selected_slot_or_account_binding(self):
+        original = self.sequential_config()
+        identity = personal.credential_identity(original)
+        for field in ('subscription_instance_hash', 'inference_key_sha256'):
+            config = copy.deepcopy(original)
+            config['bailian_personal_quota'][field] = 'a' * 64
+            self.assertNotEqual(personal.credential_identity(config), identity)
+            config['bailian_personal_quota'][field] = 'invalid-hash'
+            self.assertIsNone(personal.credential_identity(config))
+        config = copy.deepcopy(original)
+        config['bailian_pool']['slots'][1]['generation'] = 'new-personal-key'
+        self.assertNotEqual(personal.credential_identity(config), identity)
+        self.load_key.assert_not_called()
+        self.keychain.assert_not_called()
+
+    def test_browser_auth_still_supports_explicit_personal_slot(self):
+        config = self.sequential_config()
+        config['bailian_personal_quota'] = dict(CONFIG['bailian_personal_quota'],
+                                               auth='browser', slot_id='secondary')
+        with patch.object(personal, '_request', side_effect=[SUBSCRIPTION, USAGE, ADDON]):
+            self.assertTrue(personal.fetch(config)['available'])
+        self.assertEqual(self.load_key.call_args.args[0]['id'], 'secondary')
 
     def response(self, body, status=200):
         response = Mock()

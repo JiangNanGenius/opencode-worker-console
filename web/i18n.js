@@ -2756,6 +2756,12 @@
   Object.assign(MESSAGES.ja, {'quota.aliyunPersonal': 'Personal 版の月間使用枠', 'quota.addonPool': '追加使用枠'});
   Object.assign(MESSAGES.ko, {'quota.aliyunPersonal': '개인용 월간 사용 한도', 'quota.addonPool': '추가 사용량'});
 
+  Object.assign(MESSAGES.en, {'quota.aliyunSequential': 'Team first; Personal after confirmed Team exhaustion', 'quota.teamFirst': 'Team Edition · first', 'quota.personalStandby': 'Personal Edition · standby', 'quota.planActive': 'In use'});
+  Object.assign(MESSAGES['zh-CN'], {'quota.aliyunSequential': '优先团队版；确认耗尽后接力个人版', 'quota.teamFirst': '团队版 · 优先', 'quota.personalStandby': '个人版 · 备用', 'quota.planActive': '正在使用'});
+  Object.assign(MESSAGES['zh-TW'], {'quota.aliyunSequential': '優先團隊版；確認耗盡後接力個人版', 'quota.teamFirst': '團隊版 · 優先', 'quota.personalStandby': '個人版 · 備用', 'quota.planActive': '使用中'});
+  Object.assign(MESSAGES.ja, {'quota.aliyunSequential': 'Team を優先し、使用枠消尽の確認後に Personal へ継続', 'quota.teamFirst': 'Team · 優先', 'quota.personalStandby': 'Personal · 待機', 'quota.planActive': '使用中'});
+  Object.assign(MESSAGES.ko, {'quota.aliyunSequential': '팀 요금제 우선, 소진 확인 후 개인 요금제로 연결', 'quota.teamFirst': '팀 요금제 · 우선', 'quota.personalStandby': '개인 요금제 · 대기', 'quota.planActive': '사용 중'});
+
   global.I18n = {
     fallback: FALLBACK,
     supported: LOCALES,

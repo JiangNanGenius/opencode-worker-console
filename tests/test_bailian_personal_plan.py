@@ -196,5 +196,182 @@ class PersonalPlanAccounting(unittest.TestCase):
                 management._validate_settings(dict(self.c, bailian_plan_edition=edition))
 
 
+class SequentialPlanAccounting(unittest.TestCase):
+    setUp = PersonalPlanAccounting.setUp
+    tearDown = PersonalPlanAccounting.tearDown
+    record = PersonalPlanAccounting.record
+    snapshot = PersonalPlanAccounting.snapshot
+    view = PersonalPlanAccounting.view
+
+    def sequence(self):
+        import bailian_pool
+        self.c.update(bailian_plan_edition='sequential',
+                      bailian_pool={'enabled': True, 'slots': [
+                          {'id': 'primary', 'keychain': {'service': 'test-only', 'account': 'team'}},
+                          {'id': 'secondary', 'keychain': {'service': 'test-only', 'account': 'personal'}}]},
+                      bailian_personal_quota={'enabled': False, 'slot_id': 'secondary'})
+        common.write_json(self.configuration, self.c)
+        control = patch('aliyun_openapi.credential_identity', return_value='test-control-identity')
+        control.start()
+        self.patchers.append(control)
+
+    def fetch_pair(self, team, personal):
+        with patch.object(bailian_quota, '_fetch_team', return_value=team), \
+                patch('bailian_personal.fetch', return_value=personal):
+            return quota.refresh(force=True)
+
+    def test_team_first_and_personal_have_separate_units(self):
+        self.sequence()
+        q = self.fetch_pair(self.record(10), self.record(95, personal=True))[PROVIDER]
+        self.assertEqual(q['source'], 'plan_sequence')
+        self.assertEqual(q['windows'], [])
+        self.assertTrue(q['available'])
+        self.assertEqual(q['active_plan'], 'team')
+        self.assertEqual(q['plan_quotas']['team']['windows'][0]['remaining'], 10)
+        self.assertNotIn('remaining', q['plan_quotas']['personal']['windows'][0])
+
+    def test_team_zero_cannot_gate_usable_personal_allowance(self):
+        self.sequence()
+        common.write_json(self.state / 'bailian-pool.json', {'active': 'secondary'})
+        q = self.fetch_pair(self.record(0), self.record(80, personal=True))
+        self.assertTrue(quota.allowed(PROVIDER, q, 'normal')[0])
+        self.assertEqual(q[PROVIDER]['active_plan'], 'personal')
+        self.assertEqual(q[PROVIDER]['windows'], [])
+
+    def test_both_confirmed_zeros_stop_admission(self):
+        self.sequence()
+        q = self.fetch_pair(self.record(0), self.record(0, personal=True))
+        self.assertIs(q[PROVIDER]['available'], False)
+        self.assertFalse(quota.allowed(PROVIDER, q, 'normal')[0])
+
+    def test_team_zero_and_unknown_personal_stay_unknown(self):
+        self.sequence()
+        unknown = {'state': 'unknown', 'available': None, 'windows': []}
+        q = self.fetch_pair(self.record(0), unknown)
+        self.assertIsNone(q[PROVIDER]['available'])
+        self.assertTrue(quota.allowed(PROVIDER, q, 'normal')[0])
+
+    def test_query_elapsed_time_is_measured_after_both_samples(self):
+        self.sequence()
+        clock = {'now': self.now}
+        def sampled(personal=False):
+            clock['now'] += .75
+            value = self.record(80, personal=personal)
+            value['sampled_at'] = clock['now']
+            return value
+        with patch.object(bailian_quota.time, 'time', side_effect=lambda: clock['now']), \
+                patch.object(bailian_quota, '_fetch_team', side_effect=lambda: sampled()), \
+                patch('bailian_personal.fetch', side_effect=lambda c: sampled(True)):
+            value = bailian_quota._fetch_sequence(self.c)
+        self.assertIs(value['available'], True)
+        self.assertEqual(value['state'], 'ok')
+        self.assertEqual(value['sampled_at'], self.now + 1.5)
+        self.assertEqual(value['attempted_at'], self.now)
+
+    def test_completion_time_does_not_accept_genuinely_future_samples(self):
+        self.sequence()
+        team, personal = self.record(80), self.record(80, personal=True)
+        team['sampled_at'] = personal['sampled_at'] = self.now + 60
+        with patch.object(bailian_quota.time, 'time', return_value=self.now), \
+                patch.object(bailian_quota, '_fetch_team', return_value=team), \
+                patch('bailian_personal.fetch', return_value=personal):
+            value = bailian_quota._fetch_sequence(self.c)
+        self.assertIsNone(value['available'])
+        self.assertEqual(value['state'], 'unknown')
+        self.assertNotIn('sampled_at', value)
+
+    def test_stale_positive_is_not_verified_positive(self):
+        self.sequence()
+        team = self.record(90)
+        team['sampled_at'] = self.now - 901
+        q = self.fetch_pair(team, {'state': 'unknown', 'windows': [], 'available': None})
+        self.assertIsNone(q[PROVIDER]['available'])
+
+    def test_namespaced_sequence_survives_old_gate_team_overwrites(self):
+        self.sequence()
+        self.fetch_pair(self.record(0), self.record(80, personal=True))
+        for remaining in (0, 97):
+            with self.subTest(old_team_remaining=remaining):
+                common.write_json(self.state / 'quota.json', {PROVIDER: self.record(remaining)})
+                q = quota.view(common.read_json(self.state / 'quota.json'))
+                self.assertEqual(q[PROVIDER]['plan_edition'], 'sequential')
+                self.assertEqual(q[PROVIDER]['windows'], [])
+                self.assertEqual(q[PROVIDER]['plan_quotas']['team']['windows'][0]['remaining'], 0)
+                self.assertTrue(quota.allowed(PROVIDER, q, 'normal')[0])
+
+    def test_namespaced_personal_zero_survives_old_gate_positive(self):
+        zero = self.record(0, personal=True)
+        common.write_json(self.state / bailian_quota.PLAN_CACHE_FILE, zero)
+        q = self.view(self.record(90))
+        self.assertEqual(q[PROVIDER]['plan_edition'], 'personal')
+        self.assertFalse(quota.allowed(PROVIDER, q, 'normal')[0])
+
+    def test_foreign_namespaced_binding_is_ignored(self):
+        zero = self.record(0, personal=True)
+        zero['_plan_identity'] = 'another-key'
+        common.write_json(self.state / bailian_quota.PLAN_CACHE_FILE, zero)
+        q = self.view(self.record(0))
+        self.assertEqual(q[PROVIDER]['windows'], [])
+        self.assertTrue(quota.allowed(PROVIDER, q, 'normal')[0])
+
+    def test_failures_preserve_each_authoritative_zero_and_timestamp(self):
+        self.sequence()
+        self.fetch_pair(self.record(0), self.record(0, personal=True))
+        common.write_json(self.state / 'quota.json', {PROVIDER: self.record(99)})
+        failure = {'state': 'unknown', 'attempted_at': self.now + 5, 'windows': [], 'available': None}
+        q = self.fetch_pair(failure, failure)
+        self.assertFalse(quota.allowed(PROVIDER, q, 'normal')[0])
+        self.assertEqual(q[PROVIDER]['sampled_at'], self.now)
+        for record in q[PROVIDER]['plan_quotas'].values():
+            self.assertTrue(record['stale'])
+            self.assertEqual(record['sampled_at'], self.now)
+
+    def test_fresh_team_recovery_replaces_only_its_old_zero(self):
+        self.sequence()
+        self.fetch_pair(self.record(0), self.record(0, personal=True))
+        q = self.fetch_pair(self.record(20), {'state': 'unknown', 'windows': [], 'available': None})
+        self.assertTrue(q[PROVIDER]['available'])
+        self.assertEqual(q[PROVIDER]['plan_quotas']['team']['windows'][0]['remaining'], 20)
+        self.assertIs(q[PROVIDER]['plan_quotas']['personal']['available'], False)
+
+    def test_team_mode_never_reads_namespaced_personal_quota(self):
+        common.write_json(self.state / bailian_quota.PLAN_CACHE_FILE, self.record(0, personal=True))
+        self.c['bailian_plan_edition'] = 'team'
+        common.write_json(self.configuration, self.c)
+        q = self.view(self.record(70))
+        self.assertEqual(q[PROVIDER]['windows'][0]['remaining'], 70)
+
+    def test_nested_public_records_never_return_binding_or_instance_ids(self):
+        self.sequence()
+        team = self.record(10)
+        team.update(_credential='NEVER_PUBLIC', instanceCode='NEVER_PUBLIC',
+                    subscription={'start_at': 'public-date', 'instanceCode': 'NEVER_PUBLIC'})
+        team['windows'][0]['api_key'] = 'NEVER_PUBLIC'
+        q = self.fetch_pair(team, self.record(90, personal=True))
+        import json
+        self.assertNotIn('NEVER_PUBLIC', json.dumps(q))
+        self.assertNotIn('_plan_identity', json.dumps(q))
+
+    def test_sequence_identity_does_not_change_physical_slot_settings(self):
+        import bailian_pool
+        self.sequence()
+        sequence = bailian_pool.pool_identity(self.c)
+        team = dict(self.c, bailian_plan_edition='team')
+        self.assertNotEqual(sequence, bailian_pool.pool_identity(team))
+        self.assertEqual(bailian_pool.pool_settings(self.c), bailian_pool.pool_settings(team))
+
+    def test_sequence_setting_roundtrips_the_enum(self):
+        self.sequence()
+        self.assertEqual(management.settings()['bailian_plan_edition'], 'sequential')
+        self.assertEqual(management._validate_settings(self.c)['bailian_plan_edition'], 'sequential')
+
+    def test_sequence_rejects_combined_manual_credit_snapshot(self):
+        self.sequence()
+        payload = self.snapshot(80)
+        payload.pop('depleted_at')
+        with self.assertRaisesRegex(ValueError, 'separate Team and Personal'):
+            quota.import_snapshot(PROVIDER, payload, now=self.now)
+
+
 if __name__ == '__main__':
     unittest.main()

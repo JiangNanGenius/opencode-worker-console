@@ -120,8 +120,10 @@ window remains the authoritative account-level aggregate.
 
 Set the private `bailian_plan_edition` setting to `personal` when the inference
 pool contains the Personal Edition subscription key. The default remains `team`
-for existing installations. Do not mix Team and Personal keys in the same active
-pool: their allowances are not one ledger.
+for existing installations. To consume Team first and Personal only after a
+confirmed Team-key exhaustion, select `sequential`, keep the Team key first in the
+pool and set `bailian_personal_quota.slot_id` to the Personal slot. These are two
+separate products, never one combined Credits ledger.
 
 Personal Edition never queries Team `GetSubscriptionStats`. Its cache, manual
 anchors, burn history and accounting-controller epoch are bound to the selected
@@ -129,18 +131,57 @@ edition and current inference-pool identity. Old Team readings remain stored but
 cannot appear as Personal balance or stop new Personal requests. Switching back
 to Team requires a new Team reading rather than using a Personal sample.
 
-The optional, separately authorized `bailian_personal` adapter reads the fixed
-Personal subscription, monthly usage and usage-bundle console APIs. Its optional
-`bailian_personal_quota` setting contains only `enabled` and a Keychain
-`service`/`account` reference. The separately approved login session is bound to
-the subscription instance and the current single inference key; its values never
-enter configuration or logs. Until it is connected, Personal
-quota is unknown and real inference admission follows the current key/pool and
-billing circuits. A quota-login failure does not invalidate the inference key;
-a confirmed current-key quota zero or authentication rejection remains enforced.
+The `bailian_personal` adapter reads fixed Personal subscription, monthly usage
+and usage-bundle APIs. The default account-authenticated path uses the existing
+Alibaba account AK/SK to mint an official transient CLI access token, kept only
+in process memory. Account AK/SK and the inference API key are separate credentials.
+Neither the CLI token nor any credential value enters configuration or logs.
+
+The private `bailian_personal_quota` metadata selects `auth: "access_key"`,
+`enabled: true`, the Personal inference `slot_id` (for example `secondary`),
+`subscription_instance_hash` (SHA-256 of the verified subscription instance code)
+and `inference_key_sha256` (SHA-256 of that selected Personal API key). These
+bindings prevent another account or a replaced key from supplying quota for this
+subscription. A multi-slot pool requires an explicit Personal slot; it is never
+guessed from slot order or Team seat statistics. The legacy `auth: "browser"`
+option instead references a separately approved session through Keychain
+`service`/`account` metadata and does not replace the AK/SK default path.
+
+Until a bound source is connected, Personal quota is unknown and real inference
+admission follows the current key/pool and billing circuits. A quota-login failure
+does not invalidate the inference key; a confirmed current-key quota zero or
+authentication rejection remains enforced.
 
 Personal month usage is a percentage, not a raw Credits amount. The console
 shows the monthly percentage and any independently reported usage bundle without
 inventing a total Credits balance or synthesizing weekly/five-hour windows.
 Manual imports made while Personal is selected get the current plan binding;
 they remain explicitly marked snapshots and never inherit Team depletion latches.
+
+
+### Sequential accounting and legacy readers
+
+Sequential inference keeps the existing ordered pool behavior: a positive quota
+reading never skips the first key, and only the pool's confirmed pre-response
+exhaustion handling admits the next key. Transport errors, temporary throttling
+and already-started responses are not replayed.
+
+The quota record has `source: plan_sequence`, `plan_edition: sequential` and
+separate `plan_quotas.team` and `plan_quotas.personal` records. Its top-level
+`windows` is empty: Team Credits and Personal monthly percentage are never added
+or treated as simultaneous bottlenecks. Availability is true when a current valid
+plan reading is positive, false only after both allowances are confirmed empty,
+and otherwise unknown. The pool and current-key billing circuits remain the
+actual inference admission controls. A failed lookup preserves each prior
+confirmed zero with its original sample time until that plan reports recovery.
+
+Personal and sequential records also live in the identity-bound private
+`bailian-plan-quota.json` cache. New readers prefer that matching cache when an
+older, still-running Kimi gate refreshes the legacy shared `quota.json` with Team
+data. Team mode never consumes a Personal or sequential cache. This allows an
+in-flight Kimi stream to finish while accounting upgrades safely; it is not a
+claim that an old process has hot-reloaded its Python modules.
+
+Only sequential mode adds edition and Personal-slot metadata to the provider
+pool identity. Physical key generations and slot fields remain unchanged, so an
+existing loopback proxy can keep serving the original slot references.

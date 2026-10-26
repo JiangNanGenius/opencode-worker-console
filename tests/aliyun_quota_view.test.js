@@ -54,3 +54,33 @@ test('personal percentage and addon do not masquerade as total Credits', () => {
   assert.doesNotMatch(context.alibabaQuotaStamp({plan_edition:'personal',source:'personal_console',
     state:'unknown',live_error:{kind:'quota_auth'}}),/quota.liveApi/);
 });
+
+
+test('sequential plans render Team first and Personal standby without combining units', () => {
+  const seen=[];
+  const scope=vm.createContext({tr:key=>key,esc:value=>String(value),
+    alibabaQuotaStamp:q=>q.source||'unknown',quotaWindows:rows=>{seen.push(rows);return 'window';}});
+  vm.runInContext(source.match(/^function alibabaPlanWindows\(q\).*$/m)[0],scope);
+  const team=[{name:'Credits(max)',remaining:2000,remaining_percent:1,valid:true}];
+  const personal=[{name:'Monthly',unit:'percent',remaining_percent:99,valid:true}];
+  const value={plan_edition:'sequential',active_plan:'team',
+    windows:[{remaining:999999,remaining_percent:100,valid:true}],
+    plan_quotas:{team:{source:'openapi_live',windows:team},personal:{source:'personal_console',windows:personal}}};
+  const html=scope.alibabaPlanWindows(value);
+  assert.ok(html.indexOf('quota.teamFirst')<html.indexOf('quota.personalStandby'));
+  assert.match(html,/quota.planActive/);
+  assert.deepEqual(seen,[team,personal]);
+  assert.equal(context.alibabaQuotaBalance(value),null);
+});
+
+
+test('Team exhaustion is not total exhaustion while Personal remains available', () => {
+  const scope=vm.createContext({tr:key=>key,quotaPace:()=>['on-track','ready']});
+  vm.runInContext(source.slice(source.indexOf('function planQuotaState('),source.indexOf('function balanceQuotaState(')),scope);
+  const value={state:'ok',plan_edition:'sequential',available:true,windows:[],
+    plan_quotas:{team:{available:false,windows:[{remaining_percent:0,valid:true}]},
+      personal:{available:true,windows:[{remaining_percent:99,valid:true}]}}};
+  assert.equal(scope.planQuotaState(value).tone,'healthy');
+  assert.equal(scope.planQuotaState({...value,available:false}).tone,'critical');
+  assert.equal(scope.planQuotaState({...value,available:null,stale:true}).tone,'unknown');
+});

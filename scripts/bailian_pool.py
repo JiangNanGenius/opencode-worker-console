@@ -172,6 +172,12 @@ def pool_identity(config):
     if settings is None:
         return None
     parts = ['bailian-pool-v1']
+    if config.get('bailian_plan_edition') == 'sequential':
+        # Separate a two-product sequence from a legacy two-Team-seat identity.
+        # This is provider metadata only: physical/effective key generations are
+        # deliberately unchanged so existing proxy requests remain valid.
+        personal = config.get('bailian_personal_quota') or {}
+        parts.extend(('plan-edition', 'sequential', str(personal.get('slot_id') or '')))
     for slot in settings['slots']:
         parts.extend(('slot', slot['id'], slot['source'], slot.get('generation') or ''))
         if slot['source'] == 'keychain':

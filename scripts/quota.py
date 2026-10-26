@@ -583,11 +583,27 @@ def snapshot_store():
     return store if isinstance(store, dict) else {}
 
 
+def _bailian_plan_record(stored):
+    """An old long-lived writer may only touch quota.json, never this namespace."""
+    edition = bailian_quota.plan_edition()
+    if edition == 'team':
+        return stored if bailian_quota.record_matches_plan(stored) else bailian_quota.unknown_record()
+    saved = read_json(STATE / bailian_quota.PLAN_CACHE_FILE, {})
+    candidates = [value for value in (stored, saved) if bailian_quota.record_matches_plan(value)]
+    if not candidates:
+        return bailian_quota.unknown_record()
+    # Prefer genuine sample time, then most recent attempted read. Neither a
+    # foreign shared-file timestamp nor a failed query invents quota freshness.
+    return max(candidates, key=lambda value: (number(value.get('sampled_at')) or 0,
+                                              number(value.get('checked_at')) or 0))
+
+
 def _active_snapshots():
     """Keep legacy Team anchors stored, but never apply them to Personal work."""
     return {provider: record for provider, record in snapshot_store().items()
             if isinstance(record, dict) and
-            (provider != BAILIAN_PROVIDER or bailian_quota.record_matches_plan(record))}
+            (provider != BAILIAN_PROVIDER or
+             (bailian_quota.plan_edition() != 'sequential' and bailian_quota.record_matches_plan(record)))}
 
 
 def validate_snapshot(value):
@@ -713,6 +729,8 @@ def import_snapshot(provider, payload, now=None):
     # account API configured: a snapshot is the explicit pre-live baseline and
     # the displayed fallback when a live query fails, and a fresh live reading
     # always takes precedence over it in refresh/view.
+    if provider == BAILIAN_PROVIDER and bailian_quota.plan_edition() == 'sequential':
+        raise ValueError('Sequential plans require separate Team and Personal readings, not a combined snapshot')
     value = validate_snapshot(payload)
     now = time.time() if now is None else now
     captured = routing._iso_seconds(value.get('captured_at')) or now
@@ -787,6 +805,9 @@ def import_snapshot(provider, payload, now=None):
         if not keep_live:
             cached[provider] = _snapshot_record(provider, record, now)
         write_json(STATE / 'quota.json', cached)
+        if provider == BAILIAN_PROVIDER and bailian_quota.plan_edition() == 'personal' and \
+                bailian_quota.record_matches_plan(cached.get(provider)):
+            write_json(STATE / bailian_quota.PLAN_CACHE_FILE, cached[provider])
     # In prepaid mode a manually imported snapshot is a display anchor only; it
     # cannot prove that an already-confirmed exhausted/rejected inference key was
     # replaced. A genuine key-file identity change or verified current-key success
@@ -1271,6 +1292,8 @@ def _providers_in_use():
 def refresh(force=False):
     with locked('quota'):
         old = read_json(STATE / 'quota.json', {})
+        if bailian_quota.plan_edition() in ('personal', 'sequential'):
+            old[BAILIAN_PROVIDER] = _bailian_plan_record(old.get(BAILIAN_PROVIDER))
         now = time.time()
         providers = _providers_in_use()
         identities = {p: _telemetry_identity(p) for p in providers}
@@ -1306,8 +1329,8 @@ def refresh(force=False):
                     # live reading the manual snapshot anchor with its own explicit
                     # freshness, each carrying the sanitized live_error.
                     value = _bailian_display(value, last, snapshots.get(p), now)
-                    if bailian_quota.plan_edition() == 'personal':
-                        value.update(plan_edition='personal', _plan_identity=identities[p])
+                    if bailian_quota.plan_edition() in ('personal', 'sequential'):
+                        value.update(plan_edition=bailian_quota.plan_edition(), _plan_identity=identities[p])
                 elif value['state'] not in ('ok', 'auth_error', 'no_credential') and last.get('sampled_at'):
                     value = dict(last, **value)
                 value.update(checked_at=now, _credential=identities[p])
@@ -1345,6 +1368,9 @@ def refresh(force=False):
             if provider not in result:
                 result[provider] = _snapshot_record(provider, record, now)
         write_json(STATE / 'quota.json', result)
+        if bailian_quota.plan_edition() in ('personal', 'sequential') and \
+                bailian_quota.record_matches_plan(result.get(BAILIAN_PROVIDER)):
+            write_json(STATE / bailian_quota.PLAN_CACHE_FILE, result[BAILIAN_PROVIDER])
         _record_history(result, now)
         snapshot = view(result)
         observe_load(config(), snapshot, now)
@@ -1373,10 +1399,14 @@ def view(values):
             priced = None
     snapshots = _active_snapshots()
     merged = {}
-    for p in set(values) | set(snapshot_store()):
+    provider_ids = set(values) | set(snapshot_store())
+    if bailian_quota.plan_edition() in ('personal', 'sequential') and \
+            (STATE / bailian_quota.PLAN_CACHE_FILE).exists():
+        provider_ids.add(BAILIAN_PROVIDER)
+    for p in provider_ids:
         stored = values.get(p)
-        if p == BAILIAN_PROVIDER and not bailian_quota.record_matches_plan(stored):
-            stored = bailian_quota.unknown_record(now=now)
+        if p == BAILIAN_PROVIDER:
+            stored = _bailian_plan_record(stored)
         if p in snapshots and (not isinstance(stored, dict) or isinstance(stored.get('snapshot'), dict)):
             record = _snapshot_record(p, snapshots[p], now)
             if p == BAILIAN_PROVIDER and isinstance(stored, dict) and \
@@ -1390,9 +1420,14 @@ def view(values):
             merged[p] = stored
     for p, v in merged.items():
         v = {k: x for k, x in v.items() if not k.startswith('_')}
+        if p == BAILIAN_PROVIDER and v.get('plan_edition') == 'sequential':
+            plans = v.get('plan_quotas') if isinstance(v.get('plan_quotas'), dict) else {}
+            v['plan_quotas'] = {edition: bailian_quota.public_plan_record(plans.get(edition))
+                                for edition in ('team', 'personal')}
+            v['windows'] = []  # Team Credits and Personal percentage are never one pool.
         v['windows'] = [dict(item) for item in v.get('windows', [])]
         samples = history.get(p, {}).get('samples', []) if isinstance(history.get(p), dict) else []
-        if p == BAILIAN_PROVIDER and bailian_quota.plan_edition() == 'personal' and \
+        if p == BAILIAN_PROVIDER and bailian_quota.plan_edition() in ('personal', 'sequential') and \
                 history.get(p, {}).get('_credential') != bailian_quota.credential_identity():
             samples = []  # A previous Team/key burn rate is not Personal consumption.
         for item in v['windows']:

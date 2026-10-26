@@ -61,7 +61,8 @@ _WINDOW_CAP = 8
 _MAX_DETAIL = 160
 _SEAT_NAME = re.compile(r'^[A-Za-z0-9_.-]{1,32}$')
 POOL_WINDOW = 'Credits(pool)'
-PLAN_EDITIONS = frozenset(('team', 'personal'))
+PLAN_EDITIONS = frozenset(('team', 'personal', 'sequential'))
+PLAN_CACHE_FILE = 'bailian-plan-quota.json'
 
 
 def plan_edition(config=None):
@@ -73,7 +74,7 @@ def plan_edition(config=None):
             config = {}
     edition = (config or {}).get('bailian_plan_edition', 'team')
     if not isinstance(edition, str) or edition not in PLAN_EDITIONS:
-        raise ValueError('bailian_plan_edition must be team or personal')
+        raise ValueError('bailian_plan_edition must be team, personal or sequential')
     return edition
 
 
@@ -95,6 +96,18 @@ def _personal_identity(config=None):
     return hashlib.sha256(('personal\0' + identity).encode()).hexdigest() if identity else None
 
 
+def _sequence_identity(config=None):
+    if config is None:
+        config = common.config()
+    import aliyun_openapi
+    identity = common.credential_identity(providers.BAILIAN_PROVIDER)
+    personal = _personal_identity(config)
+    if not identity or not personal:
+        return None
+    control = aliyun_openapi.credential_identity() or 'no-control-credential'
+    return hashlib.sha256(('sequential\0' + identity + '\0' + personal + '\0' + control).encode()).hexdigest()
+
+
 def record_matches_plan(record, config=None):
     """Private cache/snapshot provenance guard; no identity leaves quota.view."""
     if not isinstance(record, dict):
@@ -102,9 +115,9 @@ def record_matches_plan(record, config=None):
     edition = plan_edition(config)
     if edition == 'team':
         return record.get('plan_edition', 'team') == 'team'
-    if record.get('plan_edition') != 'personal':
+    if record.get('plan_edition') != edition:
         return False
-    identity = _personal_identity(config)
+    identity = _sequence_identity(config) if edition == 'sequential' else _personal_identity(config)
     bindings = [record[key] for key in ('_plan_identity', '_credential') if record.get(key)]
     return bool(identity and bindings) and all(value == identity for value in bindings)
 
@@ -118,6 +131,12 @@ def unknown_record(config=None, now=None):
         value.update(source='personal_unavailable', _plan_identity=_personal_identity(config),
                      note='Personal Token Plan quota is not connected. Team Credits are not applicable; '
                           'inference eligibility is checked separately.')
+    elif edition == 'sequential':
+        value.update(source='plan_sequence', _plan_identity=_sequence_identity(config),
+                     plan_quotas={'team': {'state': 'unknown', 'windows': [], 'available': None},
+                                  'personal': {'state': 'unknown', 'windows': [], 'available': None}},
+                     active_plan='team',
+                     note='Team is used first; Personal is standby after confirmed Team exhaustion.')
     return value
 
 
@@ -129,8 +148,11 @@ def resolve_credentials():
 
 def credential_identity():
     """Private identity bound to both credential parts, or None when absent."""
-    if plan_edition() == 'personal':
+    edition = plan_edition()
+    if edition == 'personal':
         return _personal_identity()
+    if edition == 'sequential':
+        return _sequence_identity()
     import aliyun_openapi
     return aliyun_openapi.credential_identity()
 
@@ -452,20 +474,109 @@ def _fetch_team():
     return value
 
 
+def _fetch_personal(c):
+    try:
+        import bailian_personal
+        value = bailian_personal.fetch(c)
+    except Exception:
+        return {'state': 'unknown', 'available': None, 'windows': [], 'balances': []}
+    return value if isinstance(value, dict) else {'state': 'unknown', 'windows': [], 'available': None}
+
+
+_SAMPLE_FIELDS = frozenset(('state', 'source', 'plan_edition', 'available', 'sampled_at',
+                            'attempted_at', 'stale', 'auth_method', 'http_status'))
+_WINDOW_FIELDS = frozenset(('name', 'kind', 'unit', 'limit', 'remaining', 'remaining_percent',
+                            'duration_minutes', 'resets_at', 'subscribed_at', 'valid', 'expired',
+                            'seat_type', 'seat_count', 'credits_service_degraded',
+                            'superseded_by_addon', 'addon_quota_unknown'))
+
+
+def public_plan_record(value):
+    """Whitelisted nested telemetry; no subscription ID, key hash or credentials."""
+    value = value if isinstance(value, dict) else {}
+    out = {key: value[key] for key in _SAMPLE_FIELDS if key in value}
+    out['windows'] = [{key: item[key] for key in _WINDOW_FIELDS if key in item}
+                      for item in value.get('windows', []) if isinstance(item, dict)]
+    out['balances'] = []
+    if isinstance(value.get('live_error'), dict):
+        out['live_error'] = {key: value['live_error'][key] for key in ('state', 'kind', 'http_status')
+                             if key in value['live_error']}
+    if isinstance(value.get('subscription'), dict):
+        out['subscription'] = {key: value['subscription'][key] for key in ('start_at', 'end_at')
+                               if key in value['subscription']}
+    if isinstance(value.get('addon'), dict):
+        out['addon'] = {key: value['addon'][key] for key in ('remaining', 'limit', 'active_count', 'known', 'remainingCredits', 'totalCredits', 'activeCount')
+                        if key in value['addon']}
+    return out
+
+
+def _retain_plan_failure(value, previous):
+    value = public_plan_record(value)
+    if value.get('state') == 'ok' or not isinstance(previous, dict) or not previous.get('windows'):
+        return value
+    kept = public_plan_record(previous)
+    kept.update(state=value.get('state', 'unknown'), attempted_at=value.get('attempted_at', time.time()),
+                stale=True, live_error=value.get('live_error') or {'state': 'unknown'})
+    return kept
+
+
+def _zero_plan(value):
+    # Genuine empty allowance survives a query failure until a newer positive
+    # sample replaces it. The containing record's plan/key binding is verified.
+    windows = [w for w in value.get('windows', []) if w.get('valid') is True]
+    def empty(w):
+        return any(isinstance(w.get(k), (int, float)) and not isinstance(w.get(k), bool)
+                   and math.isfinite(w[k]) and w[k] == 0 for k in ('remaining', 'remaining_percent'))
+    return value.get('available') is False and bool(windows) and all(empty(w) for w in windows)
+
+
+def _positive_plan(value, now):
+    sampled = _number(value.get('sampled_at'))
+    if value.get('state') != 'ok' or value.get('available') is not True or value.get('live_error') or \
+            sampled is None or not 0 <= now - sampled <= 900:
+        return False
+    return any(w.get('valid') is True and any(
+        isinstance(w.get(k), (int, float)) and not isinstance(w.get(k), bool) and
+        math.isfinite(w[k]) and w[k] > 0 for k in ('remaining', 'remaining_percent'))
+        for w in value.get('windows', []))
+
+
+def _fetch_sequence(c):
+    started = time.time()
+    old = common.read_json(common.STATE / PLAN_CACHE_FILE, {})
+    previous = old.get('plan_quotas') or {} if record_matches_plan(old, c) else {}
+    team = _retain_plan_failure(dict(_fetch_team(), plan_edition='team'), previous.get('team'))
+    personal = _retain_plan_failure(dict(_fetch_personal(c), plan_edition='personal'), previous.get('personal'))
+    # Samplers stamp their query after this aggregate started. Evaluate freshness
+    # at completion, without treating genuinely future-dated samples as current.
+    now = time.time()
+    plans = {'team': team, 'personal': personal}
+    positive = any(_positive_plan(value, now) for value in plans.values())
+    exhausted = all(_zero_plan(value) for value in plans.values())
+    available = True if positive else False if exhausted else None
+    personal_slot = (c.get('bailian_personal_quota') or {}).get('slot_id')
+    active = common.read_json(common.STATE / 'bailian-pool.json', {}).get('active')
+    sampled = [stamp for value in plans.values()
+               for stamp in [_number(value.get('sampled_at'))] if stamp is not None and stamp <= now]
+    fresh = any(value.get('state') == 'ok' and _number(value.get('sampled_at')) is not None and
+                0 <= now - value['sampled_at'] <= 900 for value in plans.values())
+    result = {'state': 'ok' if fresh else 'unknown', 'source': 'plan_sequence',
+              'plan_edition': 'sequential', '_plan_identity': _sequence_identity(c),
+              'attempted_at': started, 'available': available, 'windows': [], 'balances': [],
+              'plan_quotas': plans, 'active_plan': 'personal' if personal_slot and active == personal_slot else 'team'}
+    if sampled:
+        result['sampled_at'] = max(sampled)
+    if any(value.get('state') != 'ok' or value.get('live_error') for value in plans.values()):
+        result['live_error'] = {'state': 'unknown', 'kind': 'partial_plan_quota'}
+    return result
+
+
 def fetch():
-    """Query the selected product only; Personal never reuses Team entitlement."""
-    if plan_edition() == 'personal':
+    """Query selected allowances independently; never add unlike plan units."""
+    edition = plan_edition()
+    if edition == 'sequential':
+        return _fetch_sequence(common.config())
+    if edition == 'personal':
         c = common.config()
-        try:
-            import bailian_personal
-        except ImportError:
-            return unknown_record(c)
-        try:
-            value = bailian_personal.fetch(c)
-        except Exception:
-            # Never leak web credentials or response bodies through errors.
-            return unknown_record(c)
-        if not isinstance(value, dict):
-            return unknown_record(c)
-        return dict(value, plan_edition='personal', _plan_identity=_personal_identity(c))
+        return dict(_fetch_personal(c), plan_edition='personal', _plan_identity=_personal_identity(c))
     return dict(_fetch_team(), plan_edition='team')

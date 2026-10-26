@@ -1,8 +1,9 @@
 """Opt-in, read-only Personal Token Plan console telemetry.
 
-The separately approved console session lives only in macOS Keychain. A sample
-is usable only for the bound subscription and the current single inference key;
-console authentication failure never declares that inference key invalid.
+Account AK/SK mint a transient official CLI token. An explicitly selected legacy
+browser session may instead live in macOS Keychain. Both sources require the
+bound subscription and current single inference key; console authentication
+failure never declares that inference key invalid.
 """
 import hashlib
 import hmac
@@ -28,6 +29,7 @@ _APIS = frozenset((SUBSCRIPTION, USAGE, ADDON))
 _URL = 'https://bailian-cs.console.aliyun.com/data/api.json'
 _BODY_LIMIT = 1024 * 1024
 _ERROR = 'Personal Token Plan quota is unavailable.'
+_EDITIONS = frozenset(('personal', 'sequential'))
 
 
 class _QuotaError(Exception):
@@ -41,12 +43,13 @@ def _config(config):
 
 
 def _reference(config):
-    if not isinstance(config, dict) or config.get('bailian_plan_edition') != 'personal':
+    if not isinstance(config, dict) or config.get('bailian_plan_edition') not in _EDITIONS:
         return None
     block = config.get('bailian_personal_quota')
     if not isinstance(block, dict) or block.get('enabled') is not True:
         return None
-    if set(block) != {'enabled', 'keychain'}:
+    if set(block) - {'enabled', 'keychain', 'auth', 'slot_id'} or \
+            block.get('auth', 'browser') != 'browser' or 'keychain' not in block:
         return None
     ref = block['keychain']
     if not isinstance(ref, dict) or set(ref) != {'service', 'account'}:
@@ -58,19 +61,60 @@ def _reference(config):
     return ref
 
 
+def _selected_slot(config):
+    """Select one named Personal slot; multiple keys are never guessed."""
+    settings = bailian_pool.pool_settings(config)
+    if not settings or not settings['slots']:
+        raise _QuotaError()
+    block = config.get('bailian_personal_quota')
+    slot_id = block.get('slot_id') if isinstance(block, dict) else None
+    if slot_id is None and len(settings['slots']) == 1:
+        return settings['slots'][0]
+    if not isinstance(slot_id, str) or not slot_id:
+        raise _QuotaError()
+    selected = [slot for slot in settings['slots'] if slot['id'] == slot_id]
+    if len(selected) != 1:
+        raise _QuotaError()
+    return selected[0]
+
+
+def _digest(value):
+    return isinstance(value, str) and re.fullmatch('[a-fA-F0-9]{64}', value) is not None
+
+
 def credential_identity(config=None):
     """Private opaque metadata identity; never opens a key or console session."""
     try:
         config = _config(config)
-        if not isinstance(config, dict) or config.get('bailian_plan_edition') != 'personal':
+        if not isinstance(config, dict) or config.get('bailian_plan_edition') not in _EDITIONS:
             return None
-        settings = bailian_pool.pool_settings(config)
-        if not settings or len(settings['slots']) != 1:
+        selected = _selected_slot(config)
+        raw = next(slot for slot in config['bailian_pool']['slots'] if slot['id'] == selected['id'])
+        isolated = dict(config, bailian_plan_edition='personal',
+                        bailian_pool=dict(config['bailian_pool'], slots=[raw]))
+        identity = bailian_pool.pool_identity(isolated)
+        if not identity:
             return None
-        identity = bailian_pool.pool_identity(config)
-        return hashlib.sha256(('personal\0' + identity).encode()).hexdigest() if identity else None
+        material = 'personal\0' + identity
+        block = config.get('bailian_personal_quota')
+        if isinstance(block, dict) and block.get('enabled') is True and \
+                block.get('auth', 'browser' if 'keychain' in block else 'access_key') == 'access_key':
+            bindings = [block.get(key) for key in ('subscription_instance_hash', 'inference_key_sha256')]
+            if not all(_digest(value) for value in bindings):
+                return None
+            material += '\0' + '\0'.join(value.lower() for value in bindings)
+        return hashlib.sha256(material.encode()).hexdigest()
     except Exception:
         return None
+
+
+def _check_key_binding(config, digest):
+    if not _digest(digest):
+        raise _QuotaError()
+    key, _generation = bailian_pool._load_key(_selected_slot(config))
+    if not isinstance(key, bytes) or not key or not hmac.compare_digest(
+            hashlib.sha256(key).hexdigest(), digest.lower()):
+        raise _QuotaError()
 
 
 def _payload(config, ref):
@@ -87,16 +131,7 @@ def _payload(config, ref):
             raise _QuotaError()
     if not isinstance(payload.get('cornerstone'), dict) or not payload['cornerstone']:
         raise _QuotaError()
-    digest = payload.get('inference_key_sha256')
-    if not isinstance(digest, str) or not re.fullmatch('[a-fA-F0-9]{64}', digest):
-        raise _QuotaError()
-    settings = bailian_pool.pool_settings(config)
-    if not settings or len(settings['slots']) != 1:
-        raise _QuotaError()
-    key, _generation = bailian_pool._load_key(settings['slots'][0])
-    if not isinstance(key, bytes) or not key or not hmac.compare_digest(
-            hashlib.sha256(key).hexdigest(), digest.lower()):
-        raise _QuotaError()
+    _check_key_binding(config, payload.get('inference_key_sha256'))
     if 'inference_identity' in payload:
         identity = common.credential_identity(providers.BAILIAN_PROVIDER)
         if not isinstance(identity, str) or not isinstance(payload['inference_identity'], str) or \
@@ -221,6 +256,31 @@ def fetch(config=None):
     now = time.time()
     try:
         config = _config(config)
+        if not isinstance(config, dict) or config.get('bailian_plan_edition') not in _EDITIONS:
+            return _unknown(now)
+        block = config.get('bailian_personal_quota')
+        if not isinstance(block, dict) or block.get('enabled') is not True:
+            return _unknown(now)
+        auth = block.get('auth', 'browser' if 'keychain' in block else 'access_key')
+        if auth == 'access_key':
+            if set(block) - {'enabled', 'auth', 'subscription_instance_hash', 'inference_key_sha256',
+                            'slot_id'}:
+                return _unknown(now)
+            instance_hash = block.get('subscription_instance_hash')
+            if not _digest(instance_hash):
+                return _unknown(now)
+            _check_key_binding(config, block.get('inference_key_sha256'))
+            import bailian_personal_ak
+            subscription, usage, addon = bailian_personal_ak.fetch_payloads(config)
+            instance = subscription.get('instanceCode') if isinstance(subscription, dict) else None
+            if not isinstance(instance, str) or not instance or not hmac.compare_digest(
+                    hashlib.sha256(instance.encode()).hexdigest(), instance_hash.lower()):
+                raise _QuotaError()
+            value = _normalize(subscription, usage, addon, {'instance_code': instance}, now)
+            value['auth_method'] = 'access_key_cli_token'
+            return value
+        if auth != 'browser':
+            return _unknown(now)
         ref = _reference(config)
         if ref is None:
             return _unknown(now)
@@ -233,4 +293,4 @@ def fetch(config=None):
             addon = None
         return _normalize(subscription, usage, addon, payload, now)
     except Exception as error:
-        return _unknown(now, isinstance(error, _QuotaError) and error.auth)
+        return _unknown(now, getattr(error, 'auth', False) is True)
