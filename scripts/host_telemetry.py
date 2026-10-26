@@ -65,6 +65,21 @@ PROVIDER_LABELS = {'kimi-for-coding': 'Kimi', 'volcengine-agent-plan': '火山�
                    'deepseek': 'DeepSeek', 'codex': 'Codex', 'bailian-token-plan': '阿里百炼'}
 WINDOW_LABELS = {300: '5小时', 1440: '每日', 10080: '每周', 43200: '每月'}
 
+# --- sequential Alibaba plan rows ------------------------------------------
+# bailian_plan_edition=sequential keeps Team Credits and the Personal monthly
+# allowance in one identity-bound namespace record (plan_quotas.team /
+# plan_quotas.personal, top-level windows empty). The shared host-board payload
+# carries one independent card per plan; both consumers accept these ids
+# verbatim (firmware: arbitrary quota id up to 32 chars, at most 8 rows).
+BAILIAN_PROVIDER = 'bailian-token-plan'
+SEQUENTIAL_PLAN_ROWS = {'team': ('aliyun-team', '阿里团队'),
+                        'personal': ('aliyun-personal', '阿里个人')}
+PLAN_CACHE_FILE = 'bailian-plan-quota.json'   # identity-bound namespace record
+PLAN_EDITION_CACHE_SECONDS = 60.0             # bounded config read, never secrets
+# Rows the Alibaba provider may occupy: sequential replaces the legacy single
+# row, and switching back to Team removes the split rows.
+BAILIAN_ROW_IDS = (BAILIAN_PROVIDER, 'aliyun', 'aliyun-team', 'aliyun-personal')
+
 
 def _finite(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
@@ -788,12 +803,21 @@ def collect_worker_links(now=None):
 # --- quota view (delegate-daemon cache + CodexBar adapter, background only) --
 
 def _window_label(minutes):
-    return WINDOW_LABELS.get(minutes, '额度')
+    if minutes in WINDOW_LABELS:
+        return WINDOW_LABELS[minutes]
+    if _finite(minutes) and minutes >= 43200:
+        # Monthly windows drift with their subscription anniversary; a 30-day
+        # Personal plan window must still read 每月 rather than 额度.
+        return '每月'
+    return '额度'
 
 
 # Additive window metadata for the host overview: the Alibaba Token Plan row
 # shows an actual Credits amount, Ark shows AFP, other providers stay percent.
-WINDOW_UNITS = {'bailian-token-plan': 'credits', 'volcengine-agent-plan': 'afp'}
+# Sequential plan rows: Team is a Credits pool; Personal reports its own
+# percentage window unit and gets no Credits fallback.
+WINDOW_UNITS = {'bailian-token-plan': 'credits', 'aliyun-team': 'credits',
+                'volcengine-agent-plan': 'afp'}
 # Live cached provider readings are considered fresh for the same 15 minutes the
 # quota view uses. Manual snapshots instead publish their own configured horizon
 # (bounded by the plan reset) so a 24 h snapshot is not falsely aged out by a
@@ -834,34 +858,50 @@ def _kimi_window_key(window):
     return 'name:' + str(name) if name else 'duration:' + str(window.get('duration_minutes'))
 
 
+def _kimi_order_windows(windows):
+    """Known account kinds first so the downstream four-window cap keeps them."""
+    keyed = {_kimi_window_key(row): row for row in windows}
+    ordered = [keyed.pop(kind) for kind in ('short', 'weekly', 'month_total', 'month_code')
+               if kind in keyed]
+    ordered.extend(keyed.values())
+    return ordered
+
+
 def _kimi_host_windows(value):
-    """Merge only fresh, verified account windows; never acquire credentials."""
+    """Merge only fresh, verified account windows; never acquire credentials.
+
+    Known account kinds (5 h, weekly, monthly total, monthly code) are ordered
+    ahead of legacy endpoint windows so a three- or five-window source plus
+    four fresh account windows can never lose a real month card to insertion
+    order and the four-window render cap. Expired or invalid account rows never
+    replace the endpoint source, so an aging or unknown reading keeps its own
+    provenance instead of being silently upgraded.
+    """
     windows = [dict(row) for row in value.get('windows') or [] if isinstance(row, dict)]
     account = value.get('account')
     now = time.time()
-    if not isinstance(account, dict):
-        return windows, False
-    binding = account.get('account_binding')
-    sampled = epoch(account.get('sampled_at'))
-    if (account.get('state') != 'ok' or account.get('stale') is True
-            or not isinstance(binding, dict) or binding.get('state') != 'verified'
-            or not sampled or not 0 <= now - sampled <= LIVE_QUOTA_VALID_SECONDS):
-        return windows, False
-    merged = {_kimi_window_key(row): row for row in windows}
     accepted = False
-    for row in account.get('windows') or []:
-        if not isinstance(row, dict):
-            continue
-        remaining = row.get('remaining_percent')
-        reset = epoch(row.get('resets_at'))
-        expires = epoch(row.get('expires_at'))
-        if (row.get('valid') is not True or row.get('expired') is True
-                or not _finite(remaining) or not 0 <= remaining <= 100
-                or (reset and reset <= now) or (expires and expires <= now)):
-            continue
-        merged[_kimi_window_key(row)] = dict(row)
-        accepted = True
-    return list(merged.values()), accepted
+    if isinstance(account, dict):
+        binding = account.get('account_binding')
+        sampled = epoch(account.get('sampled_at'))
+        if (account.get('state') == 'ok' and account.get('stale') is not True
+                and isinstance(binding, dict) and binding.get('state') == 'verified'
+                and sampled and 0 <= now - sampled <= LIVE_QUOTA_VALID_SECONDS):
+            merged = {_kimi_window_key(row): row for row in windows}
+            for row in account.get('windows') or []:
+                if not isinstance(row, dict):
+                    continue
+                remaining = row.get('remaining_percent')
+                reset = epoch(row.get('resets_at'))
+                expires = epoch(row.get('expires_at'))
+                if (row.get('valid') is not True or row.get('expired') is True
+                        or not _finite(remaining) or not 0 <= remaining <= 100
+                        or (reset and reset <= now) or (expires and expires <= now)):
+                    continue
+                merged[_kimi_window_key(row)] = dict(row)
+                accepted = True
+            windows = list(merged.values())
+    return _kimi_order_windows(windows), accepted
 
 
 def normalize_worker(provider, value):
@@ -877,7 +917,8 @@ def normalize_worker(provider, value):
         remaining = window.get('remaining_percent')
         if window.get('valid') and _finite(remaining) and 0 <= remaining <= 100:
             row = {'label': _window_label(window.get('duration_minutes')),
-                   'remaining_percent': round(remaining, 3 if provider == 'kimi-for-coding' else 1),
+                   'remaining_percent': round(remaining, 3 if provider in (
+                       'kimi-for-coding', 'aliyun-personal') else 1),
                    'resets_at': epoch(window.get('resets_at'))}
             if provider == 'kimi-for-coding':
                 kind = _kimi_window_key(window)
@@ -895,9 +936,13 @@ def normalize_worker(provider, value):
                 row['remaining'] = round(amount, 3)
             if _finite(limit):
                 row['limit'] = round(limit, 3)
-            unit = WINDOW_UNITS.get(provider)
+            # A plan window's own unit wins: a Personal percentage is never
+            # relabelled as Team Credits. The provider fallback only applies to
+            # readings whose window has no explicit unit.
+            own_unit = window.get('unit')
+            unit = own_unit if isinstance(own_unit, str) and own_unit else WINDOW_UNITS.get(provider)
             if unit:
-                row['unit'] = unit
+                row['unit'] = _bounded(unit, 16)
             if window.get('expired') is True:
                 row['expired'] = True
             result['windows'].append(row)
@@ -954,8 +999,8 @@ def normalize_worker(provider, value):
         result['valid_until'] = epoch(value['sampled_at']) + LIVE_QUOTA_VALID_SECONDS
     if value.get('stale') is True:
         result['stale'] = True
-    if value.get('source') == 'openapi_live':
-        result['source'] = 'openapi_live'
+    if value.get('source') in ('openapi_live', 'personal_console'):
+        result['source'] = value['source']
     error = value.get('live_error')
     if isinstance(error, dict):
         result['stale'] = True
@@ -986,25 +1031,134 @@ def normalize_codex(data, now=None):
     return result
 
 
+def _cached_plan_edition():
+    """Bounded display-only plan edition read; config JSON only, never secrets."""
+    now = time.time()
+    try:
+        import common
+        info = common.CONFIG.stat()
+        config_stat = (str(common.CONFIG), info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    except OSError:
+        config_stat = None
+    if (now - _PLAN_EDITION_CACHE['checked_at'] >= PLAN_EDITION_CACHE_SECONDS or
+            _PLAN_EDITION_CACHE.get('config_stat') != config_stat):
+        edition = 'team'
+        try:
+            import bailian_quota
+            edition = bailian_quota.plan_edition()
+        except Exception:
+            edition = 'team'  # fail closed to the legacy single row
+        _PLAN_EDITION_CACHE['edition'] = edition if edition in (
+            'team', 'personal', 'sequential') else 'team'
+        _PLAN_EDITION_CACHE['checked_at'] = now
+        _PLAN_EDITION_CACHE['config_stat'] = config_stat
+    return _PLAN_EDITION_CACHE['edition']
+
+
+_PLAN_EDITION_CACHE = {'edition': 'team', 'checked_at': 0.0}
+
+
+def _is_sequential_record(record):
+    """Require current sampler-stamped display provenance, not self-binding."""
+    if not isinstance(record, dict) or record.get('plan_edition') != 'sequential':
+        return False
+    bindings = [record[key] for key in ('_plan_identity', '_credential')
+                if isinstance(record.get(key), str) and record.get(key)]
+    if not bindings or any(value != bindings[0] for value in bindings):
+        return False
+    import bailian_quota
+    identity = bailian_quota.display_identity()
+    if not identity or record.get('_display_identity') != identity:
+        return False
+    plans = record.get('plan_quotas')
+    return isinstance(plans, dict) and all(isinstance(plans.get(edition), dict)
+                                           for edition in ('team', 'personal'))
+
+
+def _sequential_display_record(stored):
+    """Resolve the current sequential reading without quota.view or keychain.
+
+    A long-lived
+    Team-edition writer can stamp the shared quota.json seconds *after* the
+    bound namespace refresh, so candidates are filtered by sequential shape
+    and the sampler's current metadata display binding before sample time is
+    compared. An old Team record therefore never wins by being newer.
+    """
+    namespace = read_json(STATE / PLAN_CACHE_FILE, None)
+    candidates = [record for record in (stored, namespace) if _is_sequential_record(record)]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda record: (epoch(record.get('sampled_at')) or 0,
+                                               epoch(record.get('checked_at')) or 0))
+
+
+def _sequential_plan_rows(display):
+    """One independent row per plan; each keeps its own state and freshness."""
+    plans = display.get('plan_quotas') or {}
+    active = display.get('active_plan') if isinstance(display.get('active_plan'), str) else None
+    rows = []
+    for edition in ('team', 'personal'):
+        row_id, name = SEQUENTIAL_PLAN_ROWS[edition]
+        row = normalize_worker(row_id, plans.get(edition) or {})
+        row['name'] = name
+        row['plan_edition'] = 'sequential'
+        if active in ('team', 'personal'):
+            row['plan_slot'] = 'active' if active == edition else 'standby'
+        rows.append(row)
+    return rows
+
+
+def _sequential_unknown_rows():
+    """No bound reading yet: two honest unknown cards, never the legacy row."""
+    rows = []
+    for edition in ('team', 'personal'):
+        row_id, name = SEQUENTIAL_PLAN_ROWS[edition]
+        row = normalize_worker(row_id, {'state': 'unknown', 'available': None})
+        row['name'] = name
+        row['plan_edition'] = 'sequential'
+        rows.append(row)
+    return rows
+
+
+def worker_rows(provider, record):
+    """Rows one provider contributes to the snapshot and board quota list.
+
+    normalize_worker keeps its one-row contract for every other caller. Under
+    bailian_plan_edition=sequential the Alibaba provider instead expands into
+    its Team Credits and Personal allowance rows, taken only from the
+    identity-bound namespace record; the legacy provider row is replaced so a
+    stale Team-edition writer cannot keep showing 0 Credits as the only plan.
+    """
+    if provider == BAILIAN_PROVIDER and _cached_plan_edition() == 'sequential':
+        display = _sequential_display_record(record if isinstance(record, dict) else None)
+        return _sequential_plan_rows(display) if display is not None else _sequential_unknown_rows()
+    return [normalize_worker(provider, record)]
+
+
 def cached_worker_quotas(previous):
     """Read the shared cache cheaply; preserve the separately sampled Codex row.
 
     This never calls a provider or the Codex CLI. Web snapshots and board
     publication see a worker balance update immediately, even while the slower
-    Codex sampler keeps its independent five-minute cadence.
+    Codex sampler keeps its independent five-minute cadence. Sequential Alibaba
+    plans replace whatever row the provider occupied before, so a mode switch
+    leaves no stale split or legacy card behind.
     """
-    cached = read_json(STATE / 'quota.json', None)
-    if not isinstance(cached, dict) or not cached:
-        return previous
+    cached = read_json(STATE / 'quota.json', {})
+    cached = cached if isinstance(cached, dict) else {}
     rows = {row.get('id'): row for row in previous}
     for provider in WORKER_PROVIDERS:
-        if provider not in cached:
+        if provider not in cached and not (provider == BAILIAN_PROVIDER and
+                                           _cached_plan_edition() == 'sequential'):
             continue
-        value = cached[provider] if isinstance(cached[provider], dict) else {}
-        row = normalize_worker(provider, dict(value, **billing_overlay(provider)))
-        if row.get('valid_until') and row['valid_until'] <= time.time():
-            row['stale'] = True
-        rows[provider] = row
+        value = cached.get(provider) if isinstance(cached.get(provider), dict) else {}
+        new_rows = worker_rows(provider, dict(value, **billing_overlay(provider)))
+        for retired in (BAILIAN_ROW_IDS if provider == BAILIAN_PROVIDER else (provider,)):
+            rows.pop(retired, None)
+        for row in new_rows:
+            if row.get('valid_until') and row['valid_until'] <= time.time():
+                row['stale'] = True
+            rows[row['id']] = row
     return list(rows.values())
 
 
@@ -1019,7 +1173,7 @@ def collect_quotas(now=None):
         if isinstance(record, dict):
             record = dict(record)
             record.update(billing_overlay(provider))
-        out.append(normalize_worker(provider, record))
+        out.extend(worker_rows(provider, record))
     codex = {'id': 'codex', 'name': 'Codex', 'state': 'unavailable', 'sampled_at': 0, 'windows': [], 'balances': []}
     try:
         result = subprocess.run([CODEXBAR_CLI, 'usage', '--provider', 'codex', '--source', 'oauth',

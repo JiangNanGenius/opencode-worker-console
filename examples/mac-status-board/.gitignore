@@ -1,0 +1,9 @@
+.pio/
+.build-preview/
+.venv/
+private/
+recovery/
+evidence/
+firmware/
+__pycache__/
+*.pyc

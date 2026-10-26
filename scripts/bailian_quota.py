@@ -108,6 +108,39 @@ def _sequence_identity(config=None):
     return hashlib.sha256(('sequential\0' + identity + '\0' + personal + '\0' + control).encode()).hexdigest()
 
 
+def display_identity(config=None):
+    """Display provenance from reference metadata only, never credential values.
+
+    The sampler stamps this before/after a new read; it is not admission proof.
+    File stat changes detach old display data even when reference names stay the
+    same. Environment-only control credentials have no such metadata proof and
+    therefore remain unavailable to this credential-free display path.
+    """
+    try:
+        config = common.config() if config is None else config
+        edition = plan_edition(config)
+        if edition not in ('personal', 'sequential'):
+            return None
+        import bailian_pool
+        import credentials
+        pool = bailian_pool.pool_identity(config)
+        personal = _personal_identity(config)
+        if not pool or not personal:
+            return None
+        parts = ['board-plan-v1', edition, pool, personal]
+        registry = credentials._load_registry()
+        for name in ('aliyun-control-ak', 'aliyun-control-sk'):
+            entry = registry.get(name)
+            if not isinstance(entry, dict) or entry.get('source') != 'file':
+                return None
+            path, info = credentials._file_metadata(entry.get('path'))
+            parts.extend((name, str(path), str(info.st_dev), str(info.st_ino),
+                          str(info.st_size), str(info.st_mtime_ns), str(info.st_ctime_ns)))
+        return hashlib.sha256('\0'.join(parts).encode()).hexdigest()
+    except Exception:
+        return None
+
+
 def record_matches_plan(record, config=None):
     """Private cache/snapshot provenance guard; no identity leaves quota.view."""
     if not isinstance(record, dict):
@@ -575,7 +608,17 @@ def fetch():
     """Query selected allowances independently; never add unlike plan units."""
     edition = plan_edition()
     if edition == 'sequential':
-        return _fetch_sequence(common.config())
+        c = common.config()
+        before = display_identity(c)
+        previous_display = common.read_json(common.STATE / PLAN_CACHE_FILE, {}).get('_display_identity')
+        result = _fetch_sequence(c)
+        # Never attach today's display binding to yesterday's cached reading.
+        # A metadata change while the requests run leaves this sample unstamped.
+        retained = any(value.get('stale') is True for value in result.get('plan_quotas', {}).values()
+                       if isinstance(value, dict))
+        if before and before == display_identity() and (not retained or previous_display == before):
+            result['_display_identity'] = before
+        return result
     if edition == 'personal':
         c = common.config()
         return dict(_fetch_personal(c), plan_edition='personal', _plan_identity=_personal_identity(c))

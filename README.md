@@ -54,6 +54,7 @@ The included **Codex skill** supplies delegation guidance. Claude Code and other
 | Configure models after installation | Open **Setup wizard** in the console |
 | Delegate and inspect work | [Skill](SKILL.md) and [operations](references/operations.md) |
 | Use the voice reminder for alerts | [Voice reminder settings](references/qwen-voice-settings.md) |
+| Show host, task and plan status on an ESP32 display | [Mac status board sources](examples/mac-status-board/README.md) |
 | Use LAN access or a reverse proxy | [Accounts and remote access](references/remote-access.md) |
 
 ### Guided installation

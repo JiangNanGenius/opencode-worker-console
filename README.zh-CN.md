@@ -54,6 +54,7 @@ Worker Desk 是运行在本机的 Agent 桥接层。它把主 Agent 的判断能
 | 首次配置模型 | 控台里的 **设置向导** |
 | 下发任务、检查证据 | [Skill](SKILL.md) 和 [操作手册](references/operations.md) |
 | 使用语音提醒播报 | [语音提醒设置](references/qwen-voice-settings.md) |
+| 在 ESP32 小屏幕查看主机、任务和独立套餐额度 | [Mac 信息牌源码与协议](examples/mac-status-board/README.md) |
 | 内网或外网反代 | [账号与远程访问](references/remote-access.md) |
 
 ### 向导安装

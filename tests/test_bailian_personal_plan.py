@@ -373,5 +373,104 @@ class SequentialPlanAccounting(unittest.TestCase):
             quota.import_snapshot(PROVIDER, payload, now=self.now)
 
 
+
+class DisplayMetadataBindingTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.c = {'bailian_plan_edition': 'sequential',
+                  'bailian_pool': {'enabled': True, 'slots': [
+                      {'id': 'primary', 'keychain': {'service': 'test', 'account': 'team'}},
+                      {'id': 'secondary', 'keychain': {'service': 'test', 'account': 'personal'}}]},
+                  'bailian_personal_quota': {'enabled': True, 'auth': 'access_key',
+                      'slot_id': 'secondary', 'subscription_instance_hash': 'a' * 64,
+                      'inference_key_sha256': 'b' * 64}}
+        self.entries = {}
+        for suffix in ('ak', 'sk'):
+            path = self.root / suffix
+            path.write_text('test-value')
+            path.chmod(0o600)
+            self.entries['aliyun-control-' + suffix] = {'source': 'file', 'path': str(path)}
+        self.patchers = [patch.object(common, 'STATE', self.root),
+                         patch.object(common, 'config', return_value=self.c),
+                         patch('credentials._load_registry', return_value=self.entries),
+                         patch('credentials._read_file_value', side_effect=AssertionError('secret read')),
+                         patch('aliyun_openapi.resolve_credentials', side_effect=AssertionError('secret read')),
+                         patch('keychain_secrets.get_bounded', side_effect=AssertionError('keychain read'))]
+        for item in self.patchers:
+            item.start()
+
+    def tearDown(self):
+        for item in reversed(self.patchers):
+            item.stop()
+        self.tmp.cleanup()
+
+    def test_current_metadata_is_stable_without_reading_credentials(self):
+        identity = bailian_quota.display_identity()
+        self.assertEqual(len(identity), 64)
+        self.assertEqual(identity, bailian_quota.display_identity())
+
+    def test_pool_key_binding_and_control_file_rotation_detach_identity(self):
+        identity = bailian_quota.display_identity()
+        self.c['bailian_pool']['slots'][0]['generation'] = 'rotated'
+        self.assertNotEqual(identity, bailian_quota.display_identity())
+        identity = bailian_quota.display_identity()
+        self.c['bailian_personal_quota']['inference_key_sha256'] = 'c' * 64
+        self.assertNotEqual(identity, bailian_quota.display_identity())
+        identity = bailian_quota.display_identity()
+        replacement = self.root / 'replacement'
+        replacement.write_text('rotated-test-value')
+        replacement.chmod(0o600)
+        replacement.replace(self.root / 'ak')
+        self.assertNotEqual(identity, bailian_quota.display_identity())
+
+    def test_host_reader_uses_metadata_stamp_and_never_opens_secrets(self):
+        import host_telemetry as ht
+        identity = bailian_quota.display_identity()
+        record = {'plan_edition': 'sequential', '_plan_identity': 'query-id',
+                  '_credential': 'query-id', '_display_identity': identity,
+                  'sampled_at': time.time(), 'plan_quotas': {
+                      'team': {'state': 'ok', 'available': False, 'sampled_at': time.time(),
+                               'windows': [], 'balances': []},
+                      'personal': {'state': 'ok', 'available': True, 'sampled_at': time.time(),
+                                   'windows': [], 'balances': []}}}
+        common.write_json(self.root / bailian_quota.PLAN_CACHE_FILE, record)
+        with patch.object(ht, 'STATE', self.root), \
+                patch.object(ht, '_PLAN_EDITION_CACHE', {'edition': 'sequential', 'checked_at': time.time()}):
+            team, personal = ht.worker_rows(ht.BAILIAN_PROVIDER, None)
+            self.assertFalse(team['available'])
+            self.assertTrue(personal['available'])
+            self.c['bailian_personal_quota']['inference_key_sha256'] = 'd' * 64
+            team, personal = ht.worker_rows(ht.BAILIAN_PROVIDER, record)
+            self.assertEqual([team['state'], personal['state']], ['unknown', 'unknown'])
+
+    def test_environment_or_missing_control_references_are_unknown(self):
+        self.entries['aliyun-control-ak'] = {'source': 'env', 'env': 'TEST_ONLY_AK'}
+        self.assertIsNone(bailian_quota.display_identity())
+        self.entries.pop('aliyun-control-ak')
+        self.assertIsNone(bailian_quota.display_identity())
+
+    def test_only_new_stable_query_receives_display_stamp(self):
+        identity = bailian_quota.display_identity()
+        with patch.object(bailian_quota, '_fetch_sequence', return_value={
+                'plan_quotas': {'team': {'state': 'ok'}, 'personal': {'state': 'ok'}}}):
+            result = bailian_quota.fetch()
+        self.assertEqual(result['_display_identity'], identity)
+        with patch.object(bailian_quota, 'display_identity', side_effect=['before', 'after']), \
+                patch.object(bailian_quota, '_fetch_sequence', return_value={'plan_quotas': {}}):
+            self.assertNotIn('_display_identity', bailian_quota.fetch())
+
+    def test_failed_retention_cannot_rebind_old_display_to_new_metadata(self):
+        common.write_json(self.root / bailian_quota.PLAN_CACHE_FILE, {'_display_identity': 'old'})
+        def failed():
+            return {'plan_quotas': {'team': {'state': 'unknown', 'stale': True},
+                                   'personal': {'state': 'ok'}}}
+        with patch.object(bailian_quota, '_fetch_sequence', side_effect=lambda c: failed()):
+            self.assertNotIn('_display_identity', bailian_quota.fetch())
+        current = bailian_quota.display_identity()
+        common.write_json(self.root / bailian_quota.PLAN_CACHE_FILE, {'_display_identity': current})
+        with patch.object(bailian_quota, '_fetch_sequence', side_effect=lambda c: failed()):
+            self.assertEqual(bailian_quota.fetch()['_display_identity'], current)
+
 if __name__ == '__main__':
     unittest.main()

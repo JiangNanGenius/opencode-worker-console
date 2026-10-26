@@ -27,8 +27,9 @@ terminal and no file browser** in this surface.
   working. Board consumers read the file; their presence or absence never
   affects the collector. Quota IDs on this board-only payload retain the
   firmware identifiers `codex`, `kimi`, `ark`, `deepseek`, and the additive
-  Alibaba alias `aliyun`; the web snapshot retains full provider IDs such as
-  `volcengine-agent-plan` and `bailian-token-plan`.
+  Alibaba alias `aliyun` for a single plan. Sequential Team/Personal mode instead
+  emits `aliyun-team` and `aliyun-personal` as independent rows; the web snapshot
+  retains full IDs for other providers such as `volcengine-agent-plan`.
   Each quota row also carries safe status metadata for both consumers:
   `available` (true/false/null — null is unknown, never a fabricated balance),
   `billing` (`reason`, `monthly_exhausted`) from the durable exhaustion circuit,
@@ -37,9 +38,13 @@ terminal and no file browser** in this surface.
   `expired`) plus window rows with `remaining`, `limit` and `unit`
   (`credits` for Alibaba, `afp` for Ark) where the provider reports them. A
   confirmed monthly exhaustion therefore never renders as a healthy percentage.
-  The board firmware's own renderer is versioned separately: 0.3.1 hardcodes two
-  quota pages (Codex/Kimi and Ark/DS), so a fourth provider needs the board-side
-  owner to extend the firmware; the JSON contract above is already additive.
+  Team Credits and Personal monthly percentage are never added, and Team
+  exhaustion does not become Personal exhaustion. Kimi's verified account
+  windows retain their short/weekly/total/code-monthly labels when supplied.
+  Firmware 0.3.2 and newer paginate the configured quota rows, two per page.
+  The optional [0.4.0 board sources](../examples/mac-status-board/README.md)
+  add authenticated device-initiated TCP telemetry, discovery and incremental
+  rendering while preserving this schema and older HTTP/USB consumers.
 - `scripts/host_controls.py` — fixed action dispatch with validated
   parameters, metadata-only audit (`STATE/host/audit.log`, size-bounded), and
   capability probes.
@@ -59,10 +64,19 @@ Sensor sources (all bounded, read-only; failures isolate to `null` fields):
 | Disk capacity | internal SSD + mounted external volumes (diskutil/`df` discovery; ejected volumes disappear and stale cache entries are pruned) |
 
 Quotas: worker providers are read from the delegate daemon's cache
-(`STATE/quota.json`), so the collector never issues provider network requests
+(`STATE/quota.json`, with `bailian-plan-quota.json` for independently bound plans),
+so the collector never issues provider network requests
 or influences routing economics. The Codex adapter (CodexBar CLI, 35 s bound)
 runs only on the background quota thread; a failed sample keeps the previous
 windows (stale, not empty).
+
+The plan sampler stamps display provenance from current pool/subscription
+configuration and control-credential file metadata. The host collector checks
+that metadata without opening credential values; an old unbound or rotated
+reading becomes unknown rather than reusing a newer legacy Team cache. This
+display binding does not replace the sampler's full admission identity. Control
+credentials provided only through environment values have no file-metadata
+display proof and remain unknown on this credential-free display path.
 
 ## Console endpoints (session + Origin gated, like every console API)
 
