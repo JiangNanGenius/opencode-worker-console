@@ -43,3 +43,14 @@ test('prepaid pace displays availability rather than renewal sufficiency', () =>
   w.remaining_percent=0;
   assert.equal(scope.quotaPace(w)[1],'quota.paceExhausted');
 });
+
+
+test('personal percentage and addon do not masquerade as total Credits', () => {
+  const value={plan_edition:'personal',source:'personal_console',sampled_at:123,
+    windows:[{name:'Monthly',unit:'percent',remaining_percent:100,valid:true},
+      {name:'Addon',remaining:5000,limit:20000,remaining_percent:25,valid:true}]};
+  assert.equal(context.alibabaQuotaBalance(value),null);
+  assert.match(context.alibabaQuotaStamp(value),/quota.liveApi.*123/);
+  assert.doesNotMatch(context.alibabaQuotaStamp({plan_edition:'personal',source:'personal_console',
+    state:'unknown',live_error:{kind:'quota_auth'}}),/quota.liveApi/);
+});

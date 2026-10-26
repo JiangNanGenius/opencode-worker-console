@@ -114,3 +114,33 @@ window remains the authoritative account-level aggregate.
 * If the account API is unavailable, the last genuine live reading (with its
   original sample time) or the manual snapshot anchor stays visible with its
   explicit freshness and `live_error`; nothing is fabricated.
+
+
+## Personal Edition is a separate allowance
+
+Set the private `bailian_plan_edition` setting to `personal` when the inference
+pool contains the Personal Edition subscription key. The default remains `team`
+for existing installations. Do not mix Team and Personal keys in the same active
+pool: their allowances are not one ledger.
+
+Personal Edition never queries Team `GetSubscriptionStats`. Its cache, manual
+anchors, burn history and accounting-controller epoch are bound to the selected
+edition and current inference-pool identity. Old Team readings remain stored but
+cannot appear as Personal balance or stop new Personal requests. Switching back
+to Team requires a new Team reading rather than using a Personal sample.
+
+The optional, separately authorized `bailian_personal` adapter reads the fixed
+Personal subscription, monthly usage and usage-bundle console APIs. Its optional
+`bailian_personal_quota` setting contains only `enabled` and a Keychain
+`service`/`account` reference. The separately approved login session is bound to
+the subscription instance and the current single inference key; its values never
+enter configuration or logs. Until it is connected, Personal
+quota is unknown and real inference admission follows the current key/pool and
+billing circuits. A quota-login failure does not invalidate the inference key;
+a confirmed current-key quota zero or authentication rejection remains enforced.
+
+Personal month usage is a percentage, not a raw Credits amount. The console
+shows the monthly percentage and any independently reported usage bundle without
+inventing a total Credits balance or synthesizing weekly/five-hour windows.
+Manual imports made while Personal is selected get the current plan binding;
+they remain explicitly marked snapshots and never inherit Team depletion latches.

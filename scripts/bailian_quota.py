@@ -40,6 +40,7 @@ A failure never fabricates data and never advances a sample time: the caller
 (quota.refresh) preserves the last genuine reading or falls back to the manual
 snapshot anchor, each with an explicit freshness/source label.
 """
+import hashlib
 import math
 import re
 from datetime import datetime, timezone
@@ -60,6 +61,64 @@ _WINDOW_CAP = 8
 _MAX_DETAIL = 160
 _SEAT_NAME = re.compile(r'^[A-Za-z0-9_.-]{1,32}$')
 POOL_WINDOW = 'Credits(pool)'
+PLAN_EDITIONS = frozenset(('team', 'personal'))
+
+
+def plan_edition(config=None):
+    """Select the quota product explicitly; old installs remain Team Edition."""
+    if config is None:
+        try:
+            config = common.config()
+        except RuntimeError:
+            config = {}
+    edition = (config or {}).get('bailian_plan_edition', 'team')
+    if not isinstance(edition, str) or edition not in PLAN_EDITIONS:
+        raise ValueError('bailian_plan_edition must be team or personal')
+    return edition
+
+
+def _personal_identity(config=None):
+    # The Personal entitlement follows its inference subscription, not the
+    # independent account AccessKey pair used by Team GetSubscriptionStats.
+    try:
+        import bailian_personal
+    except ImportError:
+        bailian_personal = None
+    if bailian_personal is not None:
+        if config is None:
+            try:
+                config = common.config()
+            except RuntimeError:
+                config = {}
+        return bailian_personal.credential_identity(config)
+    identity = common.credential_identity(providers.BAILIAN_PROVIDER)
+    return hashlib.sha256(('personal\0' + identity).encode()).hexdigest() if identity else None
+
+
+def record_matches_plan(record, config=None):
+    """Private cache/snapshot provenance guard; no identity leaves quota.view."""
+    if not isinstance(record, dict):
+        return False
+    edition = plan_edition(config)
+    if edition == 'team':
+        return record.get('plan_edition', 'team') == 'team'
+    if record.get('plan_edition') != 'personal':
+        return False
+    identity = _personal_identity(config)
+    bindings = [record[key] for key in ('_plan_identity', '_credential') if record.get(key)]
+    return bool(identity and bindings) and all(value == identity for value in bindings)
+
+
+def unknown_record(config=None, now=None):
+    """No allowance is fabricated while Personal web telemetry is unavailable."""
+    edition = plan_edition(config)
+    value = {'state': 'unknown', 'attempted_at': time.time() if now is None else now,
+             'plan_edition': edition, 'available': None, 'windows': [], 'balances': []}
+    if edition == 'personal':
+        value.update(source='personal_unavailable', _plan_identity=_personal_identity(config),
+                     note='Personal Token Plan quota is not connected. Team Credits are not applicable; '
+                          'inference eligibility is checked separately.')
+    return value
 
 
 def resolve_credentials():
@@ -70,6 +129,8 @@ def resolve_credentials():
 
 def credential_identity():
     """Private identity bound to both credential parts, or None when absent."""
+    if plan_edition() == 'personal':
+        return _personal_identity()
     import aliyun_openapi
     return aliyun_openapi.credential_identity()
 
@@ -344,7 +405,7 @@ def _state_for(status):
     return 'rate_limited' if status == 429 else 'unavailable'
 
 
-def fetch():
+def _fetch_team():
     """Live control-plane sample shaped like the other quota fetch adapters.
 
     Returns a dict in the shape quota.refresh stores, plus source and credential
@@ -389,3 +450,22 @@ def fetch():
     value.update(state='ok', sampled_at=now, source=SOURCE_LIVE,
                  credential_source=source, action=ACTION, host=HOST)
     return value
+
+
+def fetch():
+    """Query the selected product only; Personal never reuses Team entitlement."""
+    if plan_edition() == 'personal':
+        c = common.config()
+        try:
+            import bailian_personal
+        except ImportError:
+            return unknown_record(c)
+        try:
+            value = bailian_personal.fetch(c)
+        except Exception:
+            # Never leak web credentials or response bodies through errors.
+            return unknown_record(c)
+        if not isinstance(value, dict):
+            return unknown_record(c)
+        return dict(value, plan_edition='personal', _plan_identity=_personal_identity(c))
+    return dict(_fetch_team(), plan_edition='team')

@@ -386,6 +386,7 @@ class ManagementTests(unittest.TestCase):
                                               'budget_signals',
                                               'auto_reroute_on_quota_exhaustion',
                                               'ultra_fallback_to_deep',
+                                              'bailian_plan_edition',
                                               'proactive_long_task_reroute',
                                               'proactive_reroute_after_seconds',
                                               'notifications', 'opencode_updates', 'memory'})

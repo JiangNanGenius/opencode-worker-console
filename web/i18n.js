@@ -2750,6 +2750,12 @@
     });
   });
 
+  Object.assign(MESSAGES.en, {'quota.aliyunPersonal': 'Personal Edition monthly allowance', 'quota.addonPool': 'Usage bundle'});
+  Object.assign(MESSAGES['zh-CN'], {'quota.aliyunPersonal': '个人版月度额度', 'quota.addonPool': '用量包'});
+  Object.assign(MESSAGES['zh-TW'], {'quota.aliyunPersonal': '個人版每月額度', 'quota.addonPool': '用量包'});
+  Object.assign(MESSAGES.ja, {'quota.aliyunPersonal': 'Personal 版の月間使用枠', 'quota.addonPool': '追加使用枠'});
+  Object.assign(MESSAGES.ko, {'quota.aliyunPersonal': '개인용 월간 사용 한도', 'quota.addonPool': '추가 사용량'});
+
   global.I18n = {
     fallback: FALLBACK,
     supported: LOCALES,

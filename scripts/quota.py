@@ -583,6 +583,13 @@ def snapshot_store():
     return store if isinstance(store, dict) else {}
 
 
+def _active_snapshots():
+    """Keep legacy Team anchors stored, but never apply them to Personal work."""
+    return {provider: record for provider, record in snapshot_store().items()
+            if isinstance(record, dict) and
+            (provider != BAILIAN_PROVIDER or bailian_quota.record_matches_plan(record))}
+
+
 def validate_snapshot(value):
     """Strict validation for a manually imported Credits/allowance snapshot.
 
@@ -670,7 +677,9 @@ def _snapshot_record(provider, snapshot, now=None):
               'remaining_percent': percent, 'duration_minutes': duration,
               'resets_at': snapshot.get('resets_at'), 'valid': valid,
               'snapshot': True, 'expired': expired}
-    return {'state': 'ok', 'sampled_at': captured, 'checked_at': captured,
+    return {**({key: snapshot[key] for key in ('plan_edition', '_plan_identity')
+                 if key in snapshot} if provider == BAILIAN_PROVIDER else {}),
+            'state': 'ok', 'sampled_at': captured, 'checked_at': captured,
             'windows': [window], 'balances': [], 'available': available,
             'snapshot': {'captured_at': snapshot.get('captured_at'),
                          'imported_at': snapshot.get('imported_at'),
@@ -717,6 +726,10 @@ def import_snapshot(provider, payload, now=None):
               'resets_at': value['resets_at'],
               'fresh_for_minutes': value.get('fresh_for_minutes', SNAPSHOT_FRESH_DEFAULT_MINUTES),
               'source': value.get('source')}
+    if provider == BAILIAN_PROVIDER:
+        record['plan_edition'] = bailian_quota.plan_edition()
+        if record['plan_edition'] == 'personal':
+            record['_plan_identity'] = bailian_quota.credential_identity()
     reset_epoch = routing._iso_seconds(value['resets_at'])
     record['duration_minutes'] = (max(1.0, (reset_epoch - captured) / 60)
                                   if reset_epoch and reset_epoch > captured else 43200.0)
@@ -724,6 +737,8 @@ def import_snapshot(provider, payload, now=None):
     with locked('quota'):
         store = snapshot_store()
         previous = store.get(provider) if isinstance(store.get(provider), dict) else None
+        if provider == BAILIAN_PROVIDER and not bailian_quota.record_matches_plan(previous):
+            previous = None
         if previous is not None and previous.get('resets_at') == value['resets_at']:
             # Same reset period: keep the window identity stable across imports.
             record['duration_minutes'] = number(previous.get('duration_minutes')) or record['duration_minutes']
@@ -766,7 +781,8 @@ def import_snapshot(provider, payload, now=None):
         live = cached.get(provider, {})
         live_sample = _epoch(live.get('sampled_at')) if isinstance(live, dict) else None
         keep_live = (provider == BAILIAN_PROVIDER and isinstance(live, dict) and
-                     live.get('source') == bailian_quota.SOURCE_LIVE and
+                     live.get('source') in (bailian_quota.SOURCE_LIVE, 'personal_console') and
+                     bailian_quota.record_matches_plan(live) and
                      live_sample is not None and live_sample >= captured)
         if not keep_live:
             cached[provider] = _snapshot_record(provider, record, now)
@@ -1220,10 +1236,14 @@ def _bailian_display(value, last, anchor, now):
     attempt never advances sampled_at, never fabricates numbers and never
     reports recovery.
     """
+    if not bailian_quota.record_matches_plan(last):
+        last = {}
+    if not bailian_quota.record_matches_plan(anchor):
+        anchor = None
     error = dict(value.get('live_error')) if isinstance(value.get('live_error'), dict) else {}
     error.setdefault('state', value.get('state', 'unknown'))
     error.setdefault('attempted_at', value.get('attempted_at') or now)
-    if isinstance(last, dict) and last.get('source') == bailian_quota.SOURCE_LIVE and last.get('sampled_at') and \
+    if isinstance(last, dict) and last.get('source') in (bailian_quota.SOURCE_LIVE, 'personal_console') and last.get('sampled_at') and \
             last.get('windows') and not isinstance(last.get('snapshot'), dict):
         kept = dict(last)
         kept.update(state=value.get('state', 'unknown'),
@@ -1260,7 +1280,7 @@ def refresh(force=False):
         scheduled_release('kimi-for-coding', now)
         same = all(old.get(p, {}).get('_credential') == identities[p] for p in providers)
         recent = old and all(now - old.get(p, {}).get('checked_at', 0) < 60 for p in providers)
-        snapshots = {p: s for p, s in snapshot_store().items() if isinstance(s, dict)}
+        snapshots = _active_snapshots()
         if not force and same and recent and all(p in old for p in snapshots):
             snapshot = view(old)
             observe_load(config(), snapshot, now)
@@ -1286,6 +1306,8 @@ def refresh(force=False):
                     # live reading the manual snapshot anchor with its own explicit
                     # freshness, each carrying the sanitized live_error.
                     value = _bailian_display(value, last, snapshots.get(p), now)
+                    if bailian_quota.plan_edition() == 'personal':
+                        value.update(plan_edition='personal', _plan_identity=identities[p])
                 elif value['state'] not in ('ok', 'auth_error', 'no_credential') and last.get('sampled_at'):
                     value = dict(last, **value)
                 value.update(checked_at=now, _credential=identities[p])
@@ -1349,10 +1371,12 @@ def view(values):
             priced = economics.recent_deepseek_spend(config(), now)
         except Exception:
             priced = None
-    snapshots = {p: s for p, s in snapshot_store().items() if isinstance(s, dict)}
+    snapshots = _active_snapshots()
     merged = {}
-    for p in set(values) | set(snapshots):
+    for p in set(values) | set(snapshot_store()):
         stored = values.get(p)
+        if p == BAILIAN_PROVIDER and not bailian_quota.record_matches_plan(stored):
+            stored = bailian_quota.unknown_record(now=now)
         if p in snapshots and (not isinstance(stored, dict) or isinstance(stored.get('snapshot'), dict)):
             record = _snapshot_record(p, snapshots[p], now)
             if p == BAILIAN_PROVIDER and isinstance(stored, dict) and \
@@ -1368,6 +1392,9 @@ def view(values):
         v = {k: x for k, x in v.items() if not k.startswith('_')}
         v['windows'] = [dict(item) for item in v.get('windows', [])]
         samples = history.get(p, {}).get('samples', []) if isinstance(history.get(p), dict) else []
+        if p == BAILIAN_PROVIDER and bailian_quota.plan_edition() == 'personal' and \
+                history.get(p, {}).get('_credential') != bailian_quota.credential_identity():
+            samples = []  # A previous Team/key burn rate is not Personal consumption.
         for item in v['windows']:
             estimate = consumption_estimate(item, samples, now)
             if estimate is not None:
@@ -3272,7 +3299,7 @@ def routing_status(c, q):
 def _control_policy(c):
     import hashlib
     import json
-    fields = ('profiles', 'routing_policy', 'routing', 'routing_dynamics', 'budget_signals', 'quota_spillover', 'fast_bias_runway_percent')
+    fields = ('profiles', 'routing_policy', 'routing', 'routing_dynamics', 'budget_signals', 'quota_spillover', 'fast_bias_runway_percent', 'bailian_plan_edition', 'bailian_pool')
     # Bump when the meaning of the persisted conservation level changes. Version 2
     # separates renewable short-window pressure from durable plan capacity. Prepaid
     # mode is part of budget_signals, so enabling it already changes the signature
