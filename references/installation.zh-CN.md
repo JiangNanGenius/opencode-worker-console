@@ -75,7 +75,7 @@ python3 scripts/install.py --preset ark-agent-plan
 ```
 
 自定义安装使用用户指定的模型；四档预设加入 DeepSeek Flash、K2.8 Preview、Qwen3.8 Max 与 Kimi K3.1 Pro，
-使用最高受支持思考档。旧原厂和 Ark K3 不再作为新任务选项。具体路由、Ultra 不降档和周额度预留见
+使用最高受支持思考档。旧原厂和 Ark K3 不再作为新任务选项。具体路由、Ultra 耗尽后续接 Max、显式能力底线和周额度预留见
 [路由说明](routing.zh-CN.md)。预设不会创建账号或赋予模型权限；已有安装保留原配置，升级迁移需单独核验。
 
 

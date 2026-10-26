@@ -2030,22 +2030,222 @@ def _default_tier_profile(tier, c):
     return _profile_name({'requested_profile': 'auto', 'tier': tier}, c)
 
 
-def meets_capability_floor(name, t, c):
+def effective_capability_floor(t):
+    """The capability floor that admits a task, including the tier's implicit minimum.
+
+    Deep and Ultra describe an admission capability, including retained tasks created
+    before explicit floors existed. A weaker explicit floor cannot turn an automatic
+    fallback into an implicit downgrade below the tier's settled floor: the implicit
+    minimum for a Deep task is Deep, and the implicit minimum for an Ultra task is
+    Deep. That Deep minimum is exactly the authorized one-level Ultra capacity
+    fallback: a default Ultra task may continue on the Deep primary when Ultra
+    capacity is CONFIRMED exhausted (see ``ultra_capacity_fallback_enabled``), and it
+    may never be routed below Deep. An explicit ``capability_floor=ultra`` stays a
+    hard requirement: it is never raised, never relaxed, and never falls back.
+    """
     floor = t.get('capability_floor')
-    # Deep/Ultra describe an admission capability, including retained tasks
-    # created before explicit floors existed. A weaker explicit floor cannot
-    # turn an automatic fallback into an implicit task downgrade.
+    ranks = routing.CAPABILITY_RANKS
     task_tier = tier_of(t)
-    ranks = {'fast': 0, 'normal': 1, 'deep': 2, 'ultra': 3}
-    if task_tier in ('deep', 'ultra') and ranks.get(floor, -1) < ranks[task_tier]:
-        floor = task_tier
+    minimum = 'deep' if task_tier in ('deep', 'ultra') else None
+    if minimum is not None and ranks.get(floor, -1) < ranks[minimum]:
+        return minimum
+    return floor
+
+
+# The bridge accepts only these stop triggers as confirmed capacity evidence;
+# they mirror the worker's park gate. Auth, permission and unknown delivery
+# errors never appear here and therefore never authorize a capacity fallback.
+CAPACITY_STOP_TRIGGERS = frozenset(('provider_usage_or_rate_limit',
+                                    'provider_billing_monthly_usage_limit',
+                                    'provider_billing_insufficient_balance'))
+# The proof horizon mirrors allowed()'s fresh_enough window and the recovery path:
+# only a recent same-credential reading can prove exhaustion is happening NOW.
+CAPACITY_PROOF_MAX_AGE = 900
+
+
+def _capacity_circuit_is_auth(provider):
+    block = billing_block(provider) if provider else None
+    return bool(block) and block.get('reason') == AUTH_REASON
+
+
+def _capacity_record_is_fresh(provider, q, now=None):
+    """True only for a recent, non-stale, non-auth provider reading."""
+    record = (q or {}).get(provider) if isinstance(q, dict) else None
+    if not isinstance(record, dict) or record.get('stale', True):
+        return False
+    telemetry = record.get('billing') if isinstance(record.get('billing'), dict) else {}
+    if telemetry.get('telemetry_state') == 'auth_error' or record.get('state') == 'auth_error':
+        return False
+    now = time.time() if now is None else now
+    sampled = record.get('sampled_at')
+    return (isinstance(sampled, (int, float)) and not isinstance(sampled, bool) and
+            math.isfinite(sampled) and sampled <= now and
+            now - sampled <= CAPACITY_PROOF_MAX_AGE)
+
+
+def _fresh_zero_capacity_window(provider, q, now=None):
+    """Prove a real same-credential zero capacity right now.
+
+    A valid window whose remaining reads zero, or a verified Kimi account-total
+    zero through the existing authoritative helpers, proves exhaustion. A generic
+    ``available is False`` with no zero window proves nothing; stale retained
+    zeros, future or unbound samples prove nothing either.
+
+    ``view()`` strips private underscore fields, so the credential binding cannot
+    travel inside ``q``. It is re-validated from the raw captured state instead:
+    the raw record must describe the SAME sample time the view shows, must carry
+    the sampler identity binding, and that binding must still match the current
+    telemetry credential. No identity material is copied into any returned value.
+    """
+    record = (q or {}).get(provider) if isinstance(q, dict) else None
+    if not isinstance(record, dict) or not _capacity_record_is_fresh(provider, q, now):
+        return False
+
+    def zero(value):
+        return (isinstance(value, (int, float)) and not isinstance(value, bool) and
+                math.isfinite(value) and float(value) <= 0)
+
+    def bound_zero_window():
+        raw = read_json(STATE / 'quota.json', {}).get(provider)
+        if not isinstance(raw, dict) or raw.get('sampled_at') != record.get('sampled_at'):
+            return False
+        bound = raw.get('_credential')
+        if not bound:
+            # No inference/sampler binding: the reading could belong to another account.
+            return False
+        try:
+            return _telemetry_identity(provider) == bound
+        except Exception:
+            return False
+    if any(isinstance(w, dict) and w.get('valid') is not False and
+           (zero(w.get('remaining')) or zero(w.get('remaining_percent')))
+           for w in record.get('windows') or []):
+        return bound_zero_window()
+    if provider != KIMI_PROVIDER:
+        return False
+    # Reuse the existing authoritative account helpers: a verified binding to the
+    # current inference account plus a fresh real month-pool zero is proof even
+    # when the inference-window sampler itself has no zero row.
+    if kimi_account_record(q) is None:
+        return False
+    total = kimi_account_total_state(q)
+    return total.get('authority') == 'verified' and total.get('blocks') is True
+
+
+def _capacity_exclusion_proof(t, provider):
+    """True only for an exclusion the bridge itself recorded from a capacity stop.
+
+    The exclusion must carry a capacity stop trigger, its original credential
+    identity, and that identity must still match the current one. Operator or
+    coordinator exclusions without this provenance never authorize a fallback.
+    """
+    record = (t.get('_capacity_exclusions') or {}).get(provider)
+    if not isinstance(record, dict):
+        return False
+    if record.get('reason') not in CAPACITY_STOP_TRIGGERS:
+        return False
+    identity = record.get('identity')
+    if not identity:
+        return False
+    try:
+        current = credential_identity(provider)
+    except Exception:
+        return False
+    return current == identity
+
+
+def is_capacity_exhaustion_reason(why, provider=None, t=None, q=None, now=None):
+    """Re-prove ongoing capacity exhaustion for the authorized Ultra -> Deep fallback.
+
+    The caller never trusts the bare denial string: ``allowed()`` returns
+    ``quota_exhausted_or_account_unavailable`` for merely ``available is False``
+    or a stale retained zero, so this helper re-validates the evidence NOW:
+
+    * a fresh same-credential zero window or a verified Kimi account-total zero;
+    * an open monthly/balance billing circuit -- an AUTH circuit is never
+      exhaustion, even alongside stale or zero telemetry;
+    * a bailian slot-generation waiting answer (admission already required a
+      pool sample at most 90 seconds old before returning it);
+    * a task-scoped continuation exclusion whose bridge-recorded capacity stop
+      trigger and credential identity still match, while the provider's current
+      telemetry is not an auth rejection.
+
+    Disabled or retired profiles, manual routing-guard exclusions, reserved-for-
+    Fast reservations, credential rejections, control-plane rate limits, generic
+    unavailable answers, stale or unbound readings, identity mismatches and
+    unknown telemetry all fail closed: the Ultra task waits or reports the real
+    blocker instead of moving to Max.
+    """
+    if _capacity_circuit_is_auth(provider):
+        return False
+    if why == 'quota_exhausted_or_account_unavailable':
+        return _fresh_zero_capacity_window(provider, q, now)
+    if why == 'kimi_account_total_exhausted':
+        # Reuse the authoritative helpers end to end: the month-pool zero counts
+        # only while the ACCOUNT reading itself is fresh and authenticated, as
+        # well as the provider record being fresh and non-auth right now.
+        return (kimi_account_record(q or {}) is not None and
+                kimi_account_total_state(q or {}).get('blocks') is True and
+                _capacity_record_is_fresh(provider, q, now))
+    if why == 'bailian_slots_waiting_or_unavailable':
+        # admission returns this for a missing/stale pool sample too; only a
+        # pool reading inside the same 90-second freshness horizon counts.
+        record = (q or {}).get(provider) if isinstance(q, dict) else None
+        pool = record.get('inference_pool') if isinstance(record, dict) else None
+        at = pool.get('sampled_at') if isinstance(pool, dict) else None
+        now = time.time() if now is None else now
+        return (isinstance(at, (int, float)) and not isinstance(at, bool) and
+                0 <= now - at <= 90)
+    if why == 'provider_billing_blocked':
+        block = billing_block(provider) if provider else None
+        return bool(block) and block.get('reason') in (MONTHLY_REASON, BALANCE_REASON)
+    if why == 'continuation_excluded_provider':
+        if not (provider and _capacity_exclusion_proof(t or {}, provider)):
+            return False
+        record = (q or {}).get(provider) if isinstance(q, dict) else None
+        if isinstance(record, dict):
+            telemetry = record.get('billing') if isinstance(record.get('billing'), dict) else {}
+            if telemetry.get('telemetry_state') == 'auth_error' or \
+                    record.get('state') == 'auth_error':
+                return False
+        return True
+    return False
+
+
+def ultra_capacity_fallback_enabled(t, c):
+    """The authorized default Ultra -> Deep one-level capacity fallback.
+
+    Applies only to automatic Ultra work with no explicit Ultra floor. Explicit
+    model pins never reach this path (``route`` keeps a pin or fails; it does not
+    re-chain), an explicit ``capability_floor=ultra`` stays a hard requirement,
+    and an operator may disable the chain with ``ultra_fallback_to_deep=false``
+    to restore pure waiting. Landing remains Deep-primary-only: this never routes
+    Ultra below Deep.
+    """
+    c = c if isinstance(c, dict) else {}
+    return (tier_of(t) == 'ultra' and (t.get('requested_profile') or 'auto') == 'auto'
+            and effective_capability_floor(t) != 'ultra'
+            and c.get('ultra_fallback_to_deep', True) is not False)
+
+
+def meets_capability_floor(name, t, c):
+    floor = effective_capability_floor(t)
     if floor not in ('normal', 'deep', 'ultra'):
         return True
+    if floor in ('deep', 'ultra'):
+        # Physical model capability outranks stage membership: a known lower model
+        # can never satisfy a Deep or Ultra floor just because a legacy or edited
+        # policy places it in a primary stage, and an explicit Ultra floor keeps
+        # rejecting Max/Flash even if Kimi is disabled or removed. Unknown models
+        # make no claim and stay admitted by membership, preserving generic setups.
+        if not routing.meets_capability_rank((c.get('profiles') or {}).get(name), floor):
+            return False
     policy = routing.configured(c) or {}
     eligible = set()
     # A capability floor means the profile must sit in the PRIMARY stage of a tier
-    # at or above the requested capability. Ultra is the highest tier, so an ultra
-    # floor only accepts the configured Ultra stage itself.
+    # at or above the requested capability. An Ultra floor accepts only the
+    # configured Ultra stage itself; the Deep floor accepts the Ultra stage and the
+    # Deep stage, which is exactly the authorized one-level fallback landing zone.
     tiers = {'normal': ('background', 'deep', 'ultra'),
              'deep': ('deep', 'ultra'),
              'ultra': ('ultra',)}[floor]
@@ -2415,6 +2615,53 @@ def _conserved_deep_stage(c, q, stage, guidance, task=None):
     return result
 
 
+def _ultra_capacity_fallback(t, c, q, policy, batch):
+    """Land an automatic, CONFIRMED-exhausted Ultra task on the Deep tier's own route.
+
+    Only reached through the capacity-proof gate, never from an explicit pin or an
+    explicit Ultra floor, and never below Deep: every landing candidate re-runs the
+    full profile admission (capability floor with physical model semantics, the
+    retired gate, provider quota/circuit, task exclusions), so only a Deep-or-above
+    primary can pass. Conservation substitution and spillover blending are
+    deliberately not applied here -- they are same-tier load logic and could shed
+    to a cheaper sibling; this chain is a one-level capacity fallback. The Ultra
+    tier's own admission credits carry the choice so Deep pool accounting is never
+    polluted by Ultra fallback traffic.
+    """
+    stages = (policy or {}).get('deep')
+    if not stages:
+        name = _default_tier_profile('deep', c)
+        if not name:
+            return None, None
+        stages = [[{'profile': name, 'weight': 1}]]
+    for index, stage in enumerate(stages):
+        candidates = []
+        for entry in stage:
+            record = (c.get('profiles') or {}).get(entry['profile']) or {}
+            # Physical landing allowlist: this user-authorized step-down lands
+            # exactly on the known Deep primary model (Qwen3.8 Max class), never
+            # on an unknown or custom profile that merely sits in a Deep stage.
+            # Unknown-rank compatibility remains for the generic capability
+            # floors elsewhere; here an unknown Deep primary is a negative: the
+            # chain refuses and the Ultra task waits instead.
+            if routing.model_capability(record.get('model')) != 'deep':
+                continue
+            _, ok, why = _allowed_profile(entry['profile'], t, c, q)
+            if ok:
+                candidates.append((entry, why))
+        if not candidates:
+            continue
+        entries = [entry for entry, _ in candidates]
+        if batch is not None:
+            chosen, credits = routing.advance(entries, batch.credits_for('ultra'))
+            batch.propose('ultra', credits)
+        else:
+            chosen, _ = routing.advance(entries, routing.Admissions.load().credits.get('ultra', {}))
+        why = next(reason for entry, reason in candidates if entry['profile'] == chosen)
+        return chosen, 'routing_policy:ultra_fallback_deep:stage' + str(index) + ':' + why
+    return None, None
+
+
 def _policy_route(t, c, q, stages, batch=None):
     """First stage with an admissible candidate, then a weighted choice within it.
 
@@ -2434,17 +2681,20 @@ def _policy_route(t, c, q, stages, batch=None):
     policy = routing.configured(c)
     spill_config = routing.configured_spillover(c, policy)
     spill_guidance = None
+    ultra_rejections = []
     for index, stage in enumerate(stages):
         if tier == 'deep' and index == 0:
             spill_guidance = spill_guidance or tier_guidance(c, q)
             stage = _conserved_deep_stage(c, q, stage, spill_guidance, t)
         candidates = []
         for entry in stage:
-            _, ok, why = _allowed_profile(entry['profile'], t, c, q)
+            provider, ok, why = _allowed_profile(entry['profile'], t, c, q)
             if ok:
                 candidates.append((entry, why))
             elif first_reason is None:
                 first_reason = why
+            if tier == 'ultra' and not ok:
+                ultra_rejections.append((provider, why))
         if candidates:
             base_entries = [entry for entry, _ in candidates]
             provider_by_profile = {}
@@ -2529,7 +2779,33 @@ def _policy_route(t, c, q, stages, batch=None):
                 chosen, _ = routing.advance(entries, preview.get(tier, {}))
             why = next(reason for entry, reason in candidates if entry['profile'] == chosen)
             return chosen, 'routing_policy:' + tier + ':stage' + str(index) + ':' + why + ':' + dynamic_reason
+    # The authorized one-level Ultra capacity fallback. It fires only when the
+    # Ultra tier's own candidates were all refused with FRESH, re-validated
+    # capacity-exhaustion proof -- never for a disabled or retired profile, an
+    # auth or control-plane failure, an operator exclusion without bridge
+    # provenance, or unknown telemetry. An explicit Ultra floor or pin, and an
+    # operator who disabled the chain, keep the old hard wait.
+    if tier == 'ultra' and ultra_rejections and ultra_capacity_fallback_enabled(t, c) and \
+            all(is_capacity_exhaustion_reason(why, provider, t, q)
+                for provider, why in ultra_rejections):
+        profile, reason = _ultra_capacity_fallback(t, c, q, policy, batch)
+        if profile:
+            return profile, reason
     return None, 'routing_policy:' + (first_reason or 'no_enabled_candidate')
+
+
+def _ultra_fallback_for_legacy(t, c, q, batch, why, provider):
+    """Gate the one-level Ultra step-down for the legacy single-profile path.
+
+    Same capacity proof and the same strict physical Deep landing as the policy
+    path, so a saved legacy config without any routing_policy stays compatible.
+    Returns ``(None, why)`` unchanged whenever the proof, the enablement or the
+    landing capacity fails, preserving the historical wait/no-route behavior.
+    """
+    if not ultra_capacity_fallback_enabled(t, c) or \
+            not is_capacity_exhaustion_reason(why, provider, t, q):
+        return None, why
+    return _ultra_capacity_fallback(t, c, q, routing.configured(c), batch)
 
 
 def route(t, c, q, batch=None):
@@ -2584,19 +2860,37 @@ def route(t, c, q, batch=None):
     if routing.is_retired_model(model):
         return None, 'retired_model'
     provider = model.split('/', 1)[0]
+    excluded_here = provider in (t.get('excluded_providers') or [])
+    if excluded_here:
+        # A task-level continuation/provider exclusion is checked BEFORE any
+        # fallback reasoning, mirroring the policy path's admission order inside
+        # _allowed_profile. Only an exclusion the bridge itself recorded from a
+        # capacity stop, with a still-matching credential identity, may carry
+        # this task's one-level Ultra step-down. A manual or coordinator
+        # exclusion never authorizes landing on Max, however empty the
+        # excluded provider's telemetry currently reads; the historical
+        # admission result below is preserved untouched for it.
+        if ultra_capacity_fallback_enabled(t, c) and \
+                is_capacity_exhaustion_reason('continuation_excluded_provider', provider, t, q):
+            fb, fb_reason = _ultra_capacity_fallback(t, c, q, routing.configured(c), batch)
+            if fb:
+                return fb, fb_reason
     if provider == KIMI_PROVIDER:
         # Legacy single-profile routing has no policy stage, but the weekly
         # reserve still governs every automatic Kimi model (Ultra included via
         # its base provider gate).
         kimi_ok, kimi_reason = kimi_request_allowed(model, c, q)
         if not kimi_ok:
-            return None, kimi_reason
+            if excluded_here:
+                return None, kimi_reason
+            return _ultra_fallback_for_legacy(t, c, q, batch, kimi_reason, provider)
     ok, why = allowed(provider, q, t.get('complexity', 'normal'),
                       c.get('kimi_reserve_percent', 0),
                       prepaid=provider in prepaid_providers(c))
     if ok:
         return profile, tier_of(t) + ':' + why
-    return None, why
+    return (None, why) if excluded_here else \
+        _ultra_fallback_for_legacy(t, c, q, batch, why, provider)
 
 
 def _unrecovered_provider(provider, kind, c=None):
@@ -2659,6 +2953,12 @@ def _profile_order(t, c, policy):
     tier = tier_of(t)
     for entry in routing.tier_entries(policy, tier):
         add(entry['profile'])
+    if tier == 'ultra' and ultra_capacity_fallback_enabled(t, c):
+        # Guidance must offer the same authorized one-level landing the
+        # dispatcher can actually use: the Deep tier participates too, but only
+        # profiles that pass the capability floor below are ever returned.
+        for entry in routing.tier_entries(policy, 'deep'):
+            add(entry['profile'])
     return ordered
 
 
@@ -2668,16 +2968,26 @@ def alternatives(t, c, q, exclude=None):
     Provider-level billing blocks apply to every profile on that provider, so sibling
     Kimi profiles (K2.8 and K3) can never be alternatives to each other while blocked.
     Ordering follows routing_policy preference when configured; the configured variant
-    is carried so a continuation preserves maximum reasoning.
+    is carried so a continuation preserves maximum reasoning. For an automatic Ultra
+    task the one-level Deep landing participates, restricted to the same strict
+    physical Deep model the dispatcher may land on; nothing below Deep is ever offered.
     """
     out = []
     threshold = c.get('kimi_reserve_percent', 0)
     prepaid = prepaid_providers(c)
+    policy = routing.configured(c) or {}
+    ultra_names = {entry['profile'] for entry in routing.tier_entries(policy, 'ultra')}
+    strict_landing = tier_of(t) == 'ultra' and ultra_capacity_fallback_enabled(t, c)
     for name in _profile_order(t, c, routing.configured(c)):
         p = c['profiles'][name]
         if p.get('enabled') is False or not p.get('model') or not meets_capability_floor(name, t, c):
             continue
         model = p['model']
+        if strict_landing and name not in ultra_names and \
+                routing.model_capability(model) != 'deep':
+            # An unknown or weaker profile sitting in a Deep stage is not the
+            # authorized landing model; keep guidance equal to dispatch.
+            continue
         provider = str(model).split('/', 1)[0]
         if provider == exclude or routing.is_retired_model(model):
             continue
@@ -2732,14 +3042,29 @@ def _options(t, c, q, blocked_reason, partial_work=False, billing_reason=None, p
         instruction = ('No viable route in this task tier is currently dispatchable. Report this specific '
                        'blockage; do not expect this task to resume automatically.')
         if task_tier == 'ultra':
-            # Ultra is the reserved-capability tier. Exhaustion must surface as
-            # waiting, never as an unrecorded downgrade to a cheaper model.
-            action = 'wait_for_ultra_capacity'
-            instruction = ('Ultra is the reserved native Kimi K3.1 Pro tier and never silently '
-                           'downgrades. Wait for the weekly reserve/account pool to recover and '
-                           'resolve the reported account or billing blocker; if the work genuinely '
-                           'no longer needs Ultra, the coordinator may request an explicit '
-                           'same-task retier to Deep with a handoff checkpoint.')
+            # Ultra is the reserved-capability tier. The user-authorized default
+            # permits exactly one automatic step DOWN to the Deep primary, and
+            # only on re-validated capacity-exhaustion proof. Reaching this
+            # branch means neither an Ultra nor a Deep landing was dispatchable.
+            if ultra_capacity_fallback_enabled(t, c):
+                action = 'wait_for_ultra_or_deep_capacity'
+                instruction = ('Ultra capacity is exhausted and the automatic one-level step-down found '
+                               'no dispatchable Deep primary (Max blocked, disabled, or unproven right '
+                               'now). The SAME task keeps waiting; it never moves below Deep and never '
+                               'blends into cheaper pools. When Ultra capacity recovers, the bridge '
+                               'returns the task at a safe idle checkpoint with the same session and '
+                               'exactly-once continuation. Resolve the reported account or quota '
+                               'blocker, or use an explicit same-task retier to Deep with a handoff '
+                               'checkpoint if the work no longer needs Ultra.')
+            else:
+                action = 'wait_for_ultra_capacity'
+                instruction = ('Ultra is the reserved native Kimi K3.1 Pro tier and no automatic '
+                               'fallback applies to this task: it carries an explicit Ultra capability '
+                               'floor or the operator disabled the one-level Deep step-down. Wait for '
+                               'the weekly reserve/account pool to recover and resolve the reported '
+                               'account or billing blocker; if the work genuinely no longer needs '
+                               'Ultra, the coordinator may request an explicit same-task retier to '
+                               'Deep with a handoff checkpoint.')
         if billing_reason == MONTHLY_REASON and retry_allowed:
             # Waiting on window telemetry cannot prove a monthly cycle recovered.
             action = 'top_up_or_authorize_manual_retry'

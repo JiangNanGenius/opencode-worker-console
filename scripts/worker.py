@@ -862,7 +862,15 @@ def _reroute_after_capacity_stop(t, provider, trigger, messages=None):
     excluded = set(t.get('excluded_providers') or [])
     if provider:
         excluded.add(provider)
-    route_task = dict(t, requested_profile='auto', excluded_providers=sorted(excluded))
+    # Seed the same capacity-exclusion provenance the park path would write:
+    # this stop already IS the authoritative capacity evidence (classified from
+    # a real model error, never an auth/permission/unknown delivery failure).
+    # The one-level Ultra fallback gate validates this provenance plus current
+    # telemetry, so an in-progress confirmed exhaustion can continue on Max in
+    # the same session instead of waiting a full park/resume cycle.
+    exclusions = _capacity_exclusion(t, provider, trigger)
+    route_task = dict(t, requested_profile='auto', excluded_providers=sorted(excluded),
+                      _capacity_exclusions=exclusions)
     q = quota.view(read_json(STATE / 'quota.json', {}))
     try:
         import common
@@ -905,6 +913,15 @@ def _reroute_after_capacity_stop(t, provider, trigger, messages=None):
         fields.update(fallback_used=True,
                       routing_notice=('Preferred routing stages were unavailable or exhausted; '
                                       'the bridge continued on the configured fallback model.'))
+    if 'ultra_fallback_deep' in str(reason):
+        # Truthful disclosure of the authorized one-level step-down: the task's
+        # tier stays Ultra, the actual running model is the Deep primary, and
+        # the return to Ultra is scheduled automatically at a safe checkpoint.
+        fields.update(fallback_used=True,
+                      routing_notice=('Ultra capacity was confirmed exhausted; the bridge continued '
+                                      'this Ultra-tier task in the same session on the Deep primary '
+                                      'model. It returns to Ultra at a safe idle checkpoint once Ultra '
+                                      'capacity recovers.'))
     t = update(t['id'], **fields)
     try:
         call(t, '/prompt_async', 'POST', {
@@ -973,7 +990,15 @@ def _return_to_preferred_if_ready(t, native_status, messages):
     if parse_report(text):
         return False  # Finished bounded deliverables are collected, never restarted.
     c = config()
-    stages = (routing.configured(c) or {}).get(quota.tier_of(t)) or []
+    policy_stages = (routing.configured(c) or {}).get(quota.tier_of(t)) or []
+    stages = policy_stages
+    if not stages and quota.tier_of(t) == 'ultra':
+        # Legacy saved config without any routing_policy: the auto resolver's
+        # Ultra primary is still the preferred route, so rank the same way a
+        # single synthesized stage would and let recovery return to it.
+        legacy_primary = quota._profile_name(t, c)
+        if legacy_primary:
+            stages = [[{'profile': legacy_primary, 'weight': 1}]]
     def rank(profile):
         return next((i for i, stage in enumerate(stages)
                      if any(item['profile'] == profile for item in stage)), len(stages))
@@ -1007,9 +1032,10 @@ def _proactive_reroute_if_needed(t, native_status):
             (t.get('requested_profile') or 'auto') != 'auto' or \
             native_status.get('type') != 'busy':
         return False
-    # Ultra is the reserved-capability tier: conservation and pay-as-you-go
-    # shedding never preempt it. Provider exhaustion still surfaces through the
-    # gate/preflight stop path without a silent downgrade.
+    # Ultra is the reserved-capability tier: proactive conservation and
+    # pay-as-you-go shedding never preempt it. Only a CONFIRMED capacity stop or
+    # a proven-exhaustion admission (the dedicated one-level Ultra fallback) may
+    # continue the task on the Deep primary; everything else waits.
     if t.get('tier') == 'ultra' or quota.tier_of(t) == 'ultra':
         return False
     # Serialize with an unresolved tier change: at most one queued

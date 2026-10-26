@@ -94,7 +94,8 @@ unresolved reasoning needs, and genuinely Deep work has no separate task-count l
 The optional `capability_floor` deliberately prevents conservation or fallback from serving the
 task below that tier (CLI: `--capability-floor` plus `--capability-reason`); it is for deliberate
 no-downgrade requirements, never a routine tier upgrade, and continuations inherit it.
-Deep and Ultra enforce a floor at their own tier even when the field is omitted or weaker.
+Deep enforces a Deep floor even when the field is omitted or weaker. Ultra's default guarded
+capacity fallback may use Qwen3.8 Max; an explicit `capability_floor=ultra` prevents it.
 The first available policy stage wins; members in that stage share actual admissions by
 weight. See [routing and plan efficiency](routing.md) for quota guidance, bounded
 quota-aware ratios, fallbacks and configuration. A direct user requirement for a named model or
@@ -230,8 +231,14 @@ weekly data pauses ordinary Kimi admissions; an account whose official plan has 
 window is marked not applicable. In-flight requests may finish, so this is a scheduling reserve.
 
 When the weekly remainder is at or below 5% and cannot last until reset, Ultra concurrency is
-limited to one. Ultra waits when its required model has no usable quota; it never silently
-falls back. Account total quota comes only from a real logged-in account reading; never infer it
+limited to one. By default (`ultra_fallback_to_deep=true`), confirmed Ultra quota, five-hour/
+monthly allowance or balance exhaustion can continue on eligible Qwen3.8 Max from the Deep
+route. Keep Ultra's own policy restricted to Ultra models; do not add Max to it. The task keeps
+its Ultra tier, ID, session, authority and checkpoint. It waits if Max is also unavailable and
+never falls below Max. Explicit profile pins or an explicit Ultra floor wait for their required
+model. Authentication, permissions, transport failures, disabled profiles and manual exclusions
+do not authorize a downgrade. Fresh recovery permits return only at an owned idle checkpoint;
+completed reports are never rerun. Account total quota comes only from a real logged-in account reading; never infer it
 as four weekly windows. Missing monthly data stays unknown. OAuth/account identity must match
 the inference key before account quota can govern that key.
 After dispatch, a model-origin HTTP 429, explicit usage-window exhaustion, insufficient balance
@@ -331,8 +338,9 @@ never clear anything.
 `status`, `wait` and `collect` retain routing history and show capacity waits. A confirmed
 capacity stop with no valid route keeps the original task/session, authority and checkpoint
 alive; recovery resumes the remaining goal exactly once. Lost dispatch acknowledgement is
-observed, never replayed. Explicit pins remain on their profile; Ultra never silently
-falls back. Temporary fallbacks may return to the preferred route only at an owned idle
+observed, never replayed. Explicit pins remain on their profile, and an explicit Ultra floor
+keeps its model requirement. Default Ultra capacity fallback stops at Qwen3.8 Max. Temporary
+fallbacks may return to the preferred route only at an owned idle
 checkpoint, after fresh guarded recovery/admission and a cooldown. Completed tasks are never
 restarted simply to change their historical model.
 

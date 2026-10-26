@@ -108,7 +108,7 @@ python3 scripts/install.py --preset three-plan
 四档默认模型为 Fast = DeepSeek Flash、Normal = K2.8 Preview / Qwen3.8 Flash、
 Deep = Qwen3.8 Max、Ultra = 原厂 Kimi K3.1 Pro（标准版、max）。旧原厂和 Ark K3 不再参与新任务路由，
 历史模型记录保留。Kimi 为 K3.1 Pro 默认设置 30% 的基础／最高周保护。动态释放默认开启：按真实周刷新时间，后半周闲时逐步降至基础值与 5% 中的较小值，释放给 Normal；Ultra 有需求或信号未知时保持基础值。五小时和账户总额度分别限制，缺失总池显示未知，
-不按四倍周额度估算。Ultra 不可用时等待，不静默降档。详见[路由说明](references/routing.zh-CN.md)。
+不按四倍周额度估算。Ultra 确认额度耗尽后默认以检查点续接 Qwen3.8 Max；两者均不可用时等待，显式锁模或 Ultra 能力底线仍等待所需模型。详见[路由说明](references/routing.zh-CN.md)。
 
 单 Key 接入时，把 API Key 放在仅本人可读的文件中：在私有
 pool 配置里设置 `provider_api_key_files` 为 `{"bailian-token-plan": "/私有/路径/key"}`，运行时
@@ -146,7 +146,7 @@ delegate-opencode usage-report --windows 1,24,48
 | --- | --- | --- |
 | `senior-code` | Kimi K2.8 Preview | Normal 层套餐池 |
 | `aliyun-max` | Qwen3.8 Max | Deep 推理 |
-| `ultra-reasoning` | Kimi K3.1 Pro | Ultra 推理，不可用时等待 |
+| `ultra-reasoning` | Kimi K3.1 Pro | Ultra 推理；确认额度耗尽后可续接 Qwen3.8 Max |
 | `fallback` | DeepSeek V4.1 Flash | 前置阶段均不可用后的最终兜底 |
 
 上游 Harness 只选择 Fast、Normal、Deep 或 Ultra，并以 `profile=auto` 提交；具体 profile、供应商、套餐比例和兜底均由桥接层决定。上表是管理员配置视图，不是 Agent 的角色清单。预设使用 `max`；新增模型要选择供应商实际支持的思考档位。只有用户明确要求指定模型或进行受控对比时才固定 profile。详见[路由与套餐利用率](references/routing.zh-CN.md)。
@@ -169,7 +169,7 @@ Worker 可以承担调查、编码、测试修复、文档、SSH 操作和常规
 ### 四档能力路由
 
 协调 Agent 按不确定性与模型延迟对交付的具体作用选择 Fast、Normal、Deep 或 Ultra，默认 Normal。
-桥接层选模型，Ultra 固定使用原厂 K3.1 Pro，缺额度时等待。检查点交接与动态周保护规则见[路由说明](references/routing.zh-CN.md)。
+桥接层选模型，Ultra 优先原厂 K3.1 Pro，确认额度耗尽后默认续接 Qwen3.8 Max；两者均不可用时等待。显式锁模和 `capability_floor=ultra` 保持所需模型。检查点交接与动态周保护规则见[路由说明](references/routing.zh-CN.md)。
 
 额度保护同时计算总体曲线和各供应商自己的曲线。一个套餐紧张时可以从同能力池完全退出，由健康伙伴承担 100%，而总体池仍可保持健康。一级随着套餐续航下降，逐步让后段按量模型承担 Fast/Normal；Fast 按自己的来源套餐续航计算，不会被刚恢复的 Normal/Deep 套餐掩盖。二级下降更快，在 DeepSeek 余额高于保护线时可把只有单一套餐来源的 Fast 路由完整转给 DeepSeek。Deep 和显式指定模型不会掉到更低能力阶段。闲时更快到达高压上限，峰时只有套餐续航严重不足才逐步升高。周末始终按闲时处理，工作日法定节假日通过可配置订阅识别并在本机缓存。详见[路由与套餐利用率](references/routing.zh-CN.md)。
 

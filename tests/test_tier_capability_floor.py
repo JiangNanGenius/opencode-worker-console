@@ -60,12 +60,22 @@ class TierCapabilityFloorTests(unittest.TestCase):
             self.assertTrue(quota.meets_capability_floor('aliyun-max', task, c))
             self.assertTrue(quota.meets_capability_floor('ultra-reasoning', task, c))
 
-    def test_ultra_never_falls_back_to_qwen_even_with_weaker_explicit_floor(self):
+    def test_ultra_default_floor_allows_only_the_authorized_deep_landing(self):
         c = config()
-        for floor in (None, 'fast', 'normal', 'deep', 'ultra'):
+        for floor in (None, 'fast', 'normal', 'deep'):
             task = {'tier': 'ultra', 'requested_profile': 'auto', 'capability_floor': floor}
-            self.assertFalse(quota.meets_capability_floor('aliyun-max', task, c))
+            # The implicit Ultra minimum is Deep: the Deep primary (Max) is the
+            # one authorized capacity landing; nothing below it is ever eligible.
+            self.assertTrue(quota.meets_capability_floor('aliyun-max', task, c))
+            self.assertFalse(quota.meets_capability_floor('aliyun-flash', task, c))
+            self.assertTrue(quota.meets_capability_floor('ultra-reasoning', task, c))
+            # A generic available=False with no fresh zero window is not proof,
+            # so even a default Ultra task keeps waiting rather than downgrading.
             self.assertIsNone(quota.route(task, c, self.quotas(kimi=False))[0])
+        # An explicit Ultra floor is a hard requirement: Max never satisfies it.
+        hard = {'tier': 'ultra', 'requested_profile': 'auto', 'capability_floor': 'ultra'}
+        self.assertFalse(quota.meets_capability_floor('aliyun-max', hard, c))
+        self.assertIsNone(quota.route(hard, c, self.quotas(kimi=False))[0])
         self.assertEqual(quota.route({'tier': 'ultra', 'requested_profile': 'auto'},
                                      c, self.quotas())[0], 'ultra-reasoning')
 

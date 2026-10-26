@@ -108,8 +108,8 @@ python3 scripts/install.py --preset three-plan
 
 The four-tier setup uses Fast = DeepSeek Flash, Normal = K2.8 Preview / Qwen3.8 Flash,
 Deep = Qwen3.8 Max, and Ultra = native Kimi K3.1 Pro with maximum supported reasoning.
-Old native/Ark K3 routes are retired; historical records stay accurate. Ultra has no silent
-lower-model fallback. Kimi's base / maximum weekly protection for K3.1 Pro defaults to 30%. Dynamic release is on
+Old native/Ark K3 routes are retired; historical records stay accurate. Confirmed Ultra capacity
+exhaustion defaults to a checkpointed Qwen3.8 Max fallback; explicit pins and Ultra floors still wait. Kimi's base / maximum weekly protection for K3.1 Pro defaults to 30%. Dynamic release is on
 by default: the idle final half of the real weekly cycle lowers protection toward min(base, 5)%,
 opening that allowance to Normal. Ultra demand or unknown signals keep the base. The five-hour
 window and account total remain separate limits. Missing account total is unknown,
@@ -158,7 +158,7 @@ These options initialize a **fresh** installation, not replace existing profiles
 | --- | --- | --- |
 | `senior-code` | Kimi K2.8 Preview | Normal-tier subscription pool |
 | `aliyun-max` | Qwen3.8 Max | Deep reasoning |
-| `ultra-reasoning` | Kimi K3.1 Pro | Ultra reasoning; waits rather than downgrades |
+| `ultra-reasoning` | Kimi K3.1 Pro | Ultra reasoning; confirmed capacity exhaustion can continue on Qwen3.8 Max |
 | `fallback` | DeepSeek V4.1 Flash | Final fallback after preferred stages are unavailable |
 
 The upstream harness chooses Fast, Normal, Deep or Ultra only from task uncertainty and submits with `profile=auto`; the bridge privately owns the profile, provider, allowance balance, conservation and fallback. Ordinary task results do not disclose automatic model or route changes, while the operator console retains the full audit trail. The profile table above is an operator configuration view, not an agent role list. The preset uses `max` reasoning; other models need a variant their provider actually supports. Only a user-required named model or controlled comparison should pin a profile. [Routing and plan efficiency](references/routing.md).
@@ -185,8 +185,9 @@ visible for review.
 ### Route by capability
 
 The coordinator chooses Fast, Normal, Deep or Ultra from uncertainty and the concrete benefit
-of model latency. The bridge chooses the model; Ultra uses native K3.1 Pro and waits when it
-has no usable capacity. [The tier and quota contract](references/routing.md) describes checkpoint
+of model latency. The bridge chooses the model; Ultra prefers native K3.1 Pro and defaults to
+Qwen3.8 Max after confirmed capacity exhaustion. Both unavailable means waiting; explicit pins
+and `capability_floor=ultra` retain their required model. [The tier and quota contract](references/routing.md) describes checkpoint
 handoffs and dynamic weekly protection. Released percentage points are not available quota; spent quota cannot be reclaimed.
 
 Capacity protection combines a global curve with a curve for each provider pool. A constrained provider can leave a same-capability pair entirely while its healthy peer takes 100%; the global pool can still remain healthy. Level 1 gradually gives a later pay-as-you-go model some Fast/Normal work as subscription runway falls. Fast follows the runway of its own configured source, so a freshly restored Normal/Deep subscription cannot hide a nearly exhausted Fast plan. Level 2 ramps faster and can move a provider-only Fast route fully to DeepSeek while the configured balance floor is intact. Deep and explicitly pinned models never fall to a lower-capability stage. Off-peak reaches the high-pressure ceiling earlier; peak traffic rises from the Level 1 ceiling only as subscription runway becomes severe. Weekends are always off-peak, while weekday public holidays come from a configurable, locally cached calendar subscription. See [routing and plan efficiency](references/routing.md).

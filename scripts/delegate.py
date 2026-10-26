@@ -164,6 +164,17 @@ def routing_assignment(t, profile, reason):
                 'the bridge dispatched the configured fallback model.'
             ),
         )
+    if 'ultra_fallback_deep' in str(reason):
+        # Truthful disclosure: the task keeps its Ultra tier and identity, while
+        # the actual running model is the Deep primary until Ultra recovers.
+        fields.update(
+            fallback_used=True,
+            routing_notice=(
+                'Ultra capacity was confirmed exhausted; the bridge started this '
+                'Ultra-tier task on the Deep primary model. It returns to Ultra at '
+                'a safe idle checkpoint once Ultra capacity recovers.'
+            ),
+        )
     return fields
 
 
@@ -652,8 +663,11 @@ def main():
     s.add_argument('--profile-reason', help='Why this task must bypass automatic routing')
     s.add_argument('--tier', choices=['fast', 'normal', 'deep', 'ultra'],
                    help='Worker capability tier; the bridge selects the model. Ultra is the '
-                        'reserved native Kimi K3.1 Pro tier for the most extreme-complexity work '
-                        'and is never silently downgraded')
+                        'reserved native Kimi K3.1 Pro tier for the most extreme-complexity work. '
+                        'On confirmed capacity exhaustion a default Ultra task may step down one '
+                        'level to the Deep primary (Max) in the same session and returns at a safe '
+                        'idle checkpoint; it never goes below Deep. Explicit model pins and '
+                        'capability_floor=ultra never step down and wait instead.')
     s.add_argument('--capability-floor', choices=['fast', 'normal', 'deep', 'ultra'])
     s.add_argument('--capability-reason', help='Why this task cannot use lower capability routes')
     s.add_argument('--mode', choices=['read', 'write'], default='read')
@@ -776,7 +790,9 @@ def main():
                          'reserved for extreme-complexity work where a wrong architecture or a '
                          'missed constraint dominates, or after an ordinary task made no '
                          'substantive progress in two consecutive rounds at a checkpoint. Ultra '
-                         'never silently downgrades and an explicit reason is required')
+                         'keeps its tier; on confirmed capacity exhaustion it may continue one '
+                         'level down on the Deep primary and returns to Ultra at a safe idle '
+                         'checkpoint, never below Deep. An explicit reason is required')
     tr.add_argument('--handoff-file', required=True,
                     help='Absolute path to a private owner-only JSON checkpoint: '
                          'done, remaining, decisions, evidence, do_not_repeat (text or arrays). '

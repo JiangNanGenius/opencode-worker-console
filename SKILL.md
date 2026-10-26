@@ -114,8 +114,14 @@ reasoning). Old native and Ark K3 routes are retired; historical records remain 
 Start clearly extreme reasoning work directly on Ultra. After two rounds without material
 progress, review the checkpoint and upgrade when reasoning is the blocker. Authentication,
 permissions, missing tools and environment failures need their own repair before escalation.
-When uncertainty is resolved, give routine implementation to Normal. Ultra never silently
-falls back to a lower model; it waits for capacity. Ordinary coordinators still use `profile=auto`.
+When uncertainty is resolved, give routine implementation to Normal. By default, confirmed
+Ultra quota, five-hour/monthly allowance or balance exhaustion can continue on Qwen3.8 Max
+without changing the Ultra tier, task, session, authority or checkpoint. It does not fall below
+Max; when both routes are unavailable it waits. Fresh recovery allows a return to K3.1 Pro only
+at an owned idle checkpoint; completed reports are never rerun. Authentication, permissions,
+transport failures and manual exclusions do not authorize this downgrade. Explicit profile pins
+or `capability_floor=ultra` wait for their required model. Operators may disable this chain with
+`ultra_fallback_to_deep=false`; ordinary coordinators still use `profile=auto`.
 
 Kimi weekly protection has a base / maximum of 30% by default. The bridge may release idle
 protection to Normal in the final half of the real weekly cycle; Ultra demand, including activity

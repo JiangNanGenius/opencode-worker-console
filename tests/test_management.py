@@ -385,6 +385,7 @@ class ManagementTests(unittest.TestCase):
                                               'fast_bias_runway_percent',
                                               'budget_signals',
                                               'auto_reroute_on_quota_exhaustion',
+                                              'ultra_fallback_to_deep',
                                               'proactive_long_task_reroute',
                                               'proactive_reroute_after_seconds',
                                               'notifications', 'opencode_updates', 'memory'})
@@ -402,6 +403,7 @@ class ManagementTests(unittest.TestCase):
         self.assertEqual(result['fast_bias_runway_percent'], 38)
         self.assertEqual(result['budget_signals'], {})
         self.assertTrue(result['auto_reroute_on_quota_exhaustion'])
+        self.assertTrue(result['ultra_fallback_to_deep'])
         self.assertEqual(result['profiles']['fallback'],
                          {'model': 'deepseek/deepseek-flash', 'label': 'Flash', 'variant': 'high', 'enabled': True})
         # Generic disabled defaults are exported when the schedule was never configured.

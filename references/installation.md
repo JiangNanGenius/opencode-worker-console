@@ -77,7 +77,7 @@ python3 scripts/install.py --preset ark-agent-plan
 
 Custom installs use the supplied model. The four-tier preset uses DeepSeek Flash, K2.8 Preview,
 Qwen3.8 Max and Kimi K3.1 Pro with maximum supported reasoning. Old native/Ark K3 models are
-retired from new-task choices. See [routing](routing.md) for the Ultra capability floor and weekly
+retired from new-task choices. See [routing](routing.md) for the Ultra-to-Max capacity fallback, explicit capability floors and weekly
 reserve. Presets do not create accounts or grant model access; existing installs retain their
 configuration, and migration requires separate verification.
 

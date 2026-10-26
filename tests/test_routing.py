@@ -902,10 +902,13 @@ class RoutePolicyTests(unittest.TestCase):
         self.assertFalse(quota.meets_capability_floor('senior-code', deep, c))
         self.assertEqual(quota.route(deep, c, self.q)[0], 'deep-research')
         # The Ultra floor still accepts only its explicit primary; the Deep
-        # default never leaks into an Ultra requirement.
+        # default never leaks into a HARD Ultra requirement. Under the new
+        # default the Ultra implicit minimum is Deep, so the Deep primary is the
+        # authorized one-level capacity landing for an automatic Ultra task.
         self.assertTrue(quota.meets_capability_floor('ark-k3', {'tier': 'ultra'}, c))
-        self.assertFalse(quota.meets_capability_floor('deep-research',
-                                                      {'tier': 'ultra'}, c))
+        self.assertTrue(quota.meets_capability_floor('deep-research', {'tier': 'ultra'}, c))
+        self.assertFalse(quota.meets_capability_floor(
+            'deep-research', {'tier': 'ultra', 'capability_floor': 'ultra'}, c))
 
     def test_generic_single_plan_uses_curves_without_cost_guesses(self):
         now = 1_800_000_000

@@ -46,10 +46,52 @@ RETIRED_MODELS = frozenset(('kimi-for-coding/k3', 'volcengine-agent-plan/kimi-k3
 # other Kimi model (quota.kimi_request_allowed owns the policy evaluation).
 KIMI_RESERVED_MODEL = 'kimi-for-coding/k3.1-pro'
 
+# Physical model capability ranks for this deployment's known models. A capability
+# floor is a statement about the MODEL's reasoning capacity, not merely about which
+# stage a profile happens to sit in: a legacy or hand-edited policy that places
+# Qwen3.8 Max or a Flash model inside the Ultra tier must not make that profile
+# satisfy an Ultra requirement, and the automatic Ultra -> Deep capacity fallback
+# may land only on a profile that can actually deliver Deep work. Unknown models
+# (public installs, new providers) carry no claim here and are never blocked by a
+# guess; only a known lower capability is excluded.
+CAPABILITY_RANKS = {'fast': 0, 'normal': 1, 'deep': 2, 'ultra': 3}
+MODEL_CAPABILITY = {
+    KIMI_RESERVED_MODEL: 'ultra',
+    'bailian-token-plan/qwen3.8-max': 'deep',
+    'bailian-token-plan/qwen3.8-flash': 'normal',
+    'kimi-for-coding/kimi-for-coding': 'normal',
+    'deepseek/deepseek-flash': 'fast',
+}
+
 
 def is_retired_model(model):
     """True for a retired provider/model reference; historical records stay intact."""
     return isinstance(model, str) and model.strip() in RETIRED_MODELS
+
+
+def model_capability(model):
+    """Known physical capability rank name for one model, or None when unknown."""
+    if not isinstance(model, str):
+        return None
+    text = model.strip()
+    return MODEL_CAPABILITY.get(text) if text else None
+
+
+def profile_capability(profile):
+    """Capability of one profile record; None makes no capability claim."""
+    return model_capability((profile or {}).get('model') if isinstance(profile, dict) else None)
+
+
+def meets_capability_rank(profile, floor):
+    """True unless the profile's KNOWN capability is below the floor rank.
+
+    An unknown capability never blocks: this guard excludes demonstrably weaker
+    models (Flash for Deep, Deep for Ultra) while preserving generic installs whose
+    models this file has no physical knowledge of.
+    """
+    capability = profile_capability(profile)
+    return (capability is None or
+            CAPABILITY_RANKS.get(capability, 0) >= CAPABILITY_RANKS.get(floor, 0))
 
 # Quota-aware dynamic admission weights inside one same-capability stage.
 # Stored policy weights stay the baseline preference; only the in-memory advance
@@ -329,6 +371,15 @@ def validate_policy(value, profiles):
                 profile = clean_profiles.get(name) if isinstance(name, str) else None
                 if not isinstance(profile, dict) or profile.get('enabled') is False or not profile.get('model'):
                     raise ValueError('routing_policy.' + tier + ' must reference enabled profiles')
+                if tier == 'ultra' and not meets_capability_rank(profile, 'ultra'):
+                    # A known sub-Ultra model (for example Qwen3.8 Max or a Flash)
+                    # must never be parked in the Ultra tier to fake a fallback:
+                    # the Ultra -> Deep capacity fallback is an admission-chain
+                    # decision gated on confirmed exhaustion, and the Ultra floor
+                    # keeps its physical meaning. Use tier=deep or an explicit
+                    # capability floor for lower-capability work.
+                    raise ValueError('routing_policy.ultra may only reference Ultra-capable models; '
+                                     'automatic Ultra capacity fallback uses the Deep tier by itself')
                 if name in seen:
                     raise ValueError('routing_policy.' + tier + ' must not repeat a profile')
                 seen.add(name)
@@ -379,6 +430,14 @@ def runtime_policy(value, profiles):
                 name = entry.get('profile')
                 profile = profiles.get(name) if isinstance(name, str) else None
                 if not isinstance(profile, dict) or profile.get('enabled') is False or not profile.get('model'):
+                    continue
+                if tier == 'ultra' and not meets_capability_rank(profile, 'ultra'):
+                    # Legacy or hand-edited stored configs may already place a
+                    # known lower-capability model inside the Ultra tier. The
+                    # runtime drops such entries instead of letting them satisfy
+                    # an Ultra floor: the authorized Ultra -> Deep fallback is
+                    # the Deep tier's own primary, reached only on confirmed
+                    # capacity exhaustion. Unknown models keep their prior.
                     continue
                 try:
                     weight = _weight(entry.get('weight'))

@@ -20,7 +20,14 @@ Old native and Ark K3 models are retired from new-task choices and routing; hist
 records remain accurate. Start clearly extreme reasoning work on Ultra. After two rounds without
 material progress, the coordinator reviews a checkpoint before upgrading. Repair authentication,
 permissions and environment blockers directly. Use Normal for routine implementation once the
-uncertainty is resolved. Ultra waits when unavailable and never silently downgrades.
+uncertainty is resolved. With `ultra_fallback_to_deep` enabled (the default), confirmed Ultra
+quota, five-hour/monthly allowance or balance exhaustion may continue on Qwen3.8 Max. The
+bridge preserves the Ultra tier, task ID, session, authority and checkpoint, and never falls
+below Max. If both routes are unavailable it waits. Fresh recovery permits return to K3.1 Pro
+only at an owned idle checkpoint; completed reports are never rerun. Authentication, permission
+and transport failures, disabled profiles and manual exclusions do not establish exhaustion.
+Explicit profile pins and `capability_floor=ultra` continue to wait for their required model.
+Setting `ultra_fallback_to_deep=false` disables the default capacity fallback.
 
 Entering Ultra preserves the task ID, authority and checkpoint, but creates a fresh model session.
 Carry completed work, evidence, decisions and remaining goals; do not replay completed operations.
@@ -61,7 +68,10 @@ then choose one of these patterns in **Models & routing**:
 
 Ordered fallback and weighted sharing can be mixed independently for each task tier. A user with
 one subscription needs no policy at all; a user with one paid plan and one pay-as-you-go backup can
-use two one-model stages. Ultra is restricted to K3.1 Pro and has no lower-capability fallback.
+use two one-model stages. Keep Ultra's configured policy restricted to physical Ultra models
+(K3.1 Pro in this setup). Do not add Max to its primary or backup stages: the bridge derives the
+capacity fallback from eligible Qwen3.8 Max profiles in the Deep route and admits it only after
+confirmed Ultra exhaustion.
 
 Tier selection weighs unresolved ambiguity and the expected benefit of faster model work, not
 workload size or a weak-to-strong model ranking. Normal is the default for ordinary executable
@@ -230,13 +240,16 @@ Do not restart productive work merely to change tiers and replay its context.
 
 ## Capability floor (optional)
 
-Deep and Ultra always have an effective floor at their own tier, including retained tasks;
-omitting the field or supplying a weaker floor cannot enable an automatic downgrade.
+Deep always has an effective Deep floor, including retained tasks; omitting the field or
+supplying a weaker floor does not permit Deep-to-Flash downgrades. Ultra defaults to a Deep
+minimum only for its guarded capacity fallback to Qwen3.8 Max. An explicit Ultra floor removes
+that exception; quota pressure never overrides it.
 
 A task spec may set `capability_floor` (`fast`/`normal`/`deep`/`ultra`) with a required, nonempty
 `capability_reason` (1-500 characters). The floor must not exceed the requested tier; for a
 `normal` floor only profiles in the Normal/Deep/Ultra first stages are eligible, and for a `deep`
-floor only the Deep/Ultra first stages. An `ultra` floor permits only the Ultra first stage.
+floor only the Deep/Ultra first stages. An `ultra` floor permits only physically Ultra-capable
+models in the Ultra first stage; putting a known weaker model there cannot satisfy the floor.
 Fallback, spillover and in-session rerouting never select a
 profile below the floor — if none is available the task queues with
 `capability_floor_unavailable` rather than downgrading. Parent-task continuations inherit the

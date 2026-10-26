@@ -155,6 +155,7 @@ def settings():
            'kimi_gate': _kimi_gate_view(c),
            'fast_bias_runway_percent': c.get('fast_bias_runway_percent', 38),
            'auto_reroute_on_quota_exhaustion': c.get('auto_reroute_on_quota_exhaustion', True),
+           'ultra_fallback_to_deep': c.get('ultra_fallback_to_deep', True),
            'proactive_long_task_reroute': c.get('proactive_long_task_reroute', True),
            'proactive_reroute_after_seconds': c.get('proactive_reroute_after_seconds', 900),
            'budget_signals': {}, 'revision': c.get('revision', 0),
@@ -353,6 +354,13 @@ def _validate_settings(body):
         if not isinstance(body['auto_reroute_on_quota_exhaustion'], bool):
             raise ValueError('auto_reroute_on_quota_exhaustion must be boolean')
         result['auto_reroute_on_quota_exhaustion'] = body['auto_reroute_on_quota_exhaustion']
+    if 'ultra_fallback_to_deep' in body:
+        # Optional operator opt-out of the one-level Ultra capacity fallback.
+        # Default true; false restores pure Ultra waiting (explicit Ultra
+        # floors and model pins always wait regardless).
+        if not isinstance(body['ultra_fallback_to_deep'], bool):
+            raise ValueError('ultra_fallback_to_deep must be boolean')
+        result['ultra_fallback_to_deep'] = body['ultra_fallback_to_deep']
     if 'proactive_long_task_reroute' in body:
         if not isinstance(body['proactive_long_task_reroute'], bool):
             raise ValueError('proactive_long_task_reroute must be boolean')
