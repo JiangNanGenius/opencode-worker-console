@@ -333,6 +333,88 @@ class BoardAndTaskTests(unittest.TestCase):
         self.assertTrue(expired_row['stale'])
         self.assertEqual(expired_row['windows'], [])
 
+    @staticmethod
+    def _addon_record(**addon):
+        base = {'state': 'ok', 'source': 'personal_console', 'plan_edition': 'personal',
+                'sampled_at': 1000.0, 'available': True, 'balances': [],
+                'windows': [{'name': 'Monthly', 'unit': 'percent', 'valid': True,
+                             'remaining_percent': 97.5, 'duration_minutes': 43200,
+                             'resets_at': '2099-11-26T16:00:00+00:00'}]}
+        base['addon'] = dict({'known': True, 'unit': 'credits', 'remaining': 19643.114675,
+                              'limit': 20000.0, 'used': 356.885325, 'active_count': 1,
+                              'remaining_percent': 98.215573375,
+                              'nearest_expires_at': '2026-11-28T16:00:00+00:00'}, **addon)
+        return base
+
+    def test_personal_addon_renders_display_window_without_touching_admission(self):
+        record = self._addon_record()
+        row = ht.normalize_worker('bailian-token-plan', record)
+        # The stored admission windows are unchanged: one monthly percentage window.
+        self.assertEqual(len(record['windows']), 1)
+        addon_rows = [w for w in row['windows'] if w.get('addon') is True]
+        self.assertEqual(len(addon_rows), 1)
+        addon = addon_rows[0]
+        self.assertEqual(addon['label'], '用量包')
+        self.assertEqual(addon['unit'], 'credits')
+        self.assertAlmostEqual(addon['remaining'], 19643.114675, places=2)
+        self.assertEqual(addon['limit'], 20000.0)
+        self.assertAlmostEqual(addon['remaining_percent'], 98.215573375, places=2)
+        self.assertEqual(addon['expires_at'], 1795881600.0)
+        self.assertAlmostEqual(row['addon']['used'], 356.885325)
+        self.assertEqual(row['addon']['active_count'], 1)
+        self.assertEqual(row['addon']['nearest_expires_at'], 1795881600.0)
+        self.assertTrue(row['available'])
+
+    def test_known_exhausted_addon_disappears_while_metadata_stays(self):
+        record = self._addon_record(remaining=0.0, used=20000.0, remaining_percent=0.0,
+                                    active_count=0)
+        row = ht.normalize_worker('aliyun-personal', record)
+        self.assertFalse(any(w.get('addon') is True for w in row['windows']))
+        self.assertEqual(row['addon']['remaining'], 0.0)
+        self.assertEqual(row['addon']['used'], 20000.0)
+
+    def test_unknown_addon_is_explicit_and_never_zero(self):
+        record = self._addon_record()
+        record['addon'] = {'known': False}
+        row = ht.normalize_worker('aliyun-personal', record)
+        self.assertEqual(row['addon'], {'known': False})
+        self.assertEqual(row['state'], 'unknown')
+        self.assertTrue(row['available'])
+        self.assertFalse(any(w.get('addon') is True for w in row['windows']))
+
+    def test_inconsistent_nearest_bundle_stays_visible_and_marked_unknown(self):
+        record = self._addon_record(inconsistent=True)
+        row = ht.normalize_worker('aliyun-personal', record)
+        addon_rows = [w for w in row['windows'] if w.get('addon') is True]
+        self.assertEqual(len(addon_rows), 1)
+        self.assertAlmostEqual(addon_rows[0]['remaining'], 19643.114675, places=2)
+        self.assertTrue(row['addon']['inconsistent'])
+        self.assertEqual(row['state'], 'unknown')
+        self.assertNotIn('expired', row['addon'])
+
+    def test_active_addon_window_is_not_duplicated_by_metadata_display(self):
+        record = self._addon_record(remaining=500.0, used=19500.0, remaining_percent=2.5)
+        record['windows'].insert(1, {'name': 'Addon', 'unit': 'credits', 'valid': True,
+                                     'remaining': 500.0, 'limit': 20000.0,
+                                     'remaining_percent': 2.5, 'used': 19500.0,
+                                     'active_count': 1,
+                                     'nearest_expires_at': '2026-11-28T16:00:00+00:00'})
+        record['windows'][0].update(valid=False, superseded_by_addon=True)
+        row = ht.normalize_worker('aliyun-personal', record)
+        addon_rows = [w for w in row['windows'] if w.get('addon') is True]
+        self.assertEqual(len(addon_rows), 1)
+        self.assertEqual(addon_rows[0]['label'], '用量包')
+        self.assertEqual(addon_rows[0]['expires_at'], 1795881600.0)
+
+    def test_team_row_never_gains_personal_addon_fields(self):
+        record = {'state': 'ok', 'plan_edition': 'team', 'sampled_at': 1000.0, 'balances': [],
+                  'windows': [{'name': 'Credits(pool)', 'valid': True, 'remaining': 100.0,
+                               'limit': 1000.0, 'remaining_percent': 10.0,
+                               'resets_at': '2026-11-16T10:00:00+00:00'}]}
+        row = ht.normalize_worker('aliyun-team', record)
+        self.assertNotIn('addon', row)
+        self.assertFalse(any(w.get('addon') is True for w in row['windows']))
+
     def test_normalize_worker_reports_billing_exhaustion_and_availability(self):
         record = {'state': 'billing_blocked', 'sampled_at': 1000.0, 'available': False,
                   'billing': {'reason': 'monthly_usage_limit', 'monthly_exhausted': True,
@@ -492,6 +574,29 @@ class SequentialPlanQuotaTests(unittest.TestCase):
                 'plan_quotas': {'team': team, 'personal': personal},
                 'active_plan': active, 'sampled_at': personal_sampled,
                 'checked_at': personal_sampled}
+
+    def test_personal_row_shows_addon_stats_while_monthly_is_positive(self):
+        namespace = self._namespace()
+        namespace['plan_quotas']['personal']['addon'] = {
+            'known': True, 'unit': 'credits', 'remaining': 19643.114675, 'limit': 20000.0,
+            'used': 356.885325, 'active_count': 1, 'remaining_percent': 98.215573375,
+            'nearest_expires_at': '2026-11-28T16:00:00+00:00'}
+        common.write_json(self.root / 'bailian-plan-quota.json', namespace)
+        with self._edition('sequential'), patch.object(ht, 'STATE', self.root):
+            rows = ht.worker_rows('bailian-token-plan', self._team_shared())
+        team, personal = rows
+        self.assertNotIn('addon', team)
+        self.assertFalse(personal['windows'][0].get('addon'))
+        self.assertEqual(personal['windows'][0]['remaining_percent'], 97.48)
+        addon_rows = [w for w in personal['windows'] if w.get('addon') is True]
+        self.assertEqual(len(addon_rows), 1)
+        self.assertEqual(addon_rows[0]['label'], '用量包')
+        self.assertEqual(addon_rows[0]['unit'], 'credits')
+        self.assertAlmostEqual(addon_rows[0]['remaining'], 19643.114675, places=2)
+        self.assertEqual(addon_rows[0]['limit'], 20000.0)
+        self.assertEqual(addon_rows[0]['expires_at'], 1795881600.0)
+        self.assertEqual(personal['addon']['active_count'], 1)
+        self.assertAlmostEqual(personal['addon']['used'], 356.885325)
 
     @staticmethod
     def _edition(edition):

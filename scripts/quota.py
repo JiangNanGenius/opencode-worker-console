@@ -921,6 +921,36 @@ def _window_key(value):
     return '%s|%s' % (value.get('name', ''), value.get('duration_minutes', ''))
 
 
+def _addon_history_sample(value):
+    """Observed usage-bundle numbers only; no lifetime totals or pack identity.
+
+    The server summary describes the current active pool, so each sample keeps
+    exactly what that reading supplied. When the provider later removes an
+    exhausted pack, older observed amounts stay in history instead of being
+    reconstructed or discarded; nothing implies cumulative purchases.
+    """
+    addon = value.get('addon') if isinstance(value, dict) else None
+    if not isinstance(addon, dict) or addon.get('known') is not True:
+        return None
+    sample = {}
+    percent = number(addon.get('remaining_percent'))
+    if percent is not None and 0 <= percent <= 100:
+        sample['remaining_percent'] = percent
+    for key in ('remaining', 'limit', 'used'):
+        amount = number(addon.get(key))
+        if amount is not None and amount >= 0:
+            sample[key] = amount
+    count = addon.get('active_count')
+    if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
+        sample['active_count'] = count
+    expires = addon.get('nearest_expires_at')
+    if isinstance(expires, str) and 0 < len(expires) <= 64:
+        sample['nearest_expires_at'] = expires
+    if addon.get('inconsistent') is True:
+        sample['inconsistent'] = True
+    return sample or None
+
+
 def _record_history(result, now):
     """Retain bounded, credential-scoped quota samples without request content or secrets."""
     history = read_json(STATE / HISTORY, {})
@@ -936,6 +966,15 @@ def _record_history(result, now):
             if item.get('valid', True) and remaining is not None:
                 windows[_window_key(item)] = {'remaining_percent': remaining,
                                               'resets_at': item.get('resets_at')}
+        if provider == BAILIAN_PROVIDER:
+            # Usage-bundle observations survive provider-side pack removal: each
+            # sample keeps only the numbers that reading supplied, never a
+            # reconstructed lifetime purchased/consumed total or pack identity.
+            addon = _addon_history_sample(value)
+            if addon is None and isinstance(value.get('plan_quotas'), dict):
+                addon = _addon_history_sample(value['plan_quotas'].get('personal'))
+            if addon is not None:
+                windows['Addon|'] = addon
         balances = {}
         for item in value.get('balances', []):
             currency = item.get('currency') if isinstance(item, dict) else None

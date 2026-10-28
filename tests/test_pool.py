@@ -268,6 +268,39 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(stored['samples'][0]['balances'], {'CNY': 61.12})
         self.assertNotIn('secret', json.dumps(stored))
 
+    def test_quota_history_keeps_observed_addon_amounts_after_pack_disappears(self):
+        now = time.time()
+        addon = {'known': True, 'remaining': 5000.0, 'limit': 20000.0, 'used': 15000.0,
+                 'active_count': 2, 'remaining_percent': 25.0,
+                 'nearest_expires_at': '2026-11-28T16:00:00+00:00'}
+        personal = {'state': 'ok', 'sampled_at': now, '_credential': 'opaque-id',
+                    'windows': [], 'balances': [], 'addon': addon}
+        quota._record_history({'bailian-token-plan': personal}, now)
+        sample = common.read_json(self.state / quota.HISTORY, {})['bailian-token-plan']['samples'][0]
+        observed = {key: value for key, value in addon.items() if key != 'known'}
+        self.assertEqual(sample['windows']['Addon|'], observed)
+        # The provider later removes the exhausted pack: only a new zero is seen.
+        exhausted = {'state': 'ok', 'sampled_at': now + 60, '_credential': 'opaque-id',
+                     'windows': [], 'balances': [],
+                     'addon': {'known': True, 'remaining': 0.0, 'limit': 0.0, 'used': 0.0,
+                               'active_count': 0, 'remaining_percent': None}}
+        quota._record_history({'bailian-token-plan': exhausted}, now + 60)
+        # A failed addon query afterwards must not erase either observation.
+        failed = {'state': 'ok', 'sampled_at': now + 120, '_credential': 'opaque-id',
+                  'windows': [], 'balances': [], 'addon': {'known': False}}
+        quota._record_history({'bailian-token-plan': failed}, now + 120)
+        stored = common.read_json(self.state / quota.HISTORY, {})['bailian-token-plan']
+        self.assertEqual(len(stored['samples']), 2)
+        self.assertEqual(stored['samples'][0]['windows']['Addon|'], observed)
+        self.assertEqual(stored['samples'][1]['windows']['Addon|']['remaining'], 0.0)
+        self.assertNotIn('"_credential"', json.dumps(stored['samples']))
+        sequential = {'state': 'ok', 'sampled_at': now + 180, '_credential': 'opaque-id',
+                      'windows': [], 'balances': [],
+                      'plan_quotas': {'team': {'state': 'ok'}, 'personal': personal}}
+        quota._record_history({'bailian-token-plan': sequential}, now + 180)
+        stored = common.read_json(self.state / quota.HISTORY, {})['bailian-token-plan']
+        self.assertEqual(stored['samples'][-1]['windows']['Addon|'], observed)
+
     def test_normal_background_prefers_kimi_fast_prefers_deepseek(self):
         t = self.new(profile='auto')
         self.assertEqual(quota.route(t, self.c, self.q)[0], 'senior-code')

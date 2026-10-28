@@ -931,6 +931,13 @@ def normalize_worker(provider, value):
                         row[key] = _bounded(window[key], 64)
                 if window.get('expires_at'):
                     row['expires_at'] = epoch(window['expires_at'])
+            if window.get('name') == 'Addon' or window.get('addon') is True:
+                # Supplemental usage bundles render as their own labelled window.
+                row['addon'] = True
+                row['label'] = '用量包'
+                expiry = epoch(window.get('nearest_expires_at') or window.get('expires_at'))
+                if expiry:
+                    row['expires_at'] = expiry
             amount, limit = window.get('remaining'), window.get('limit')
             if _finite(amount):
                 row['remaining'] = round(amount, 3)
@@ -946,6 +953,42 @@ def normalize_worker(provider, value):
             if window.get('expired') is True:
                 row['expired'] = True
             result['windows'].append(row)
+    addon = value.get('addon') if isinstance(value.get('addon'), dict) else None
+    if addon is not None and (provider == 'aliyun-personal' or
+                              value.get('plan_edition') == 'personal'):
+        # Addon statistics are display-only metadata: the admission Addon window
+        # stays exactly as the quota sampler produced it. An unknown or malformed
+        # summary is never shown as zero, and a known-exhausted bundle disappears
+        # from the current card while remaining inside the record for admission.
+        known = addon.get('known') is True
+        # Existing firmware marks an incomplete display row unknown while
+        # preserving known monthly values; admission is independent of this row.
+        if not known or addon.get('inconsistent') is True:
+            result['state'] = 'unknown'
+        remaining, limit = addon.get('remaining'), addon.get('limit')
+        percent = addon.get('remaining_percent')
+        visible = (known and _finite(remaining) and remaining > 0
+                   and _finite(percent) and 0 <= percent <= 100)
+        projected = any(row.get('addon') is True for row in result['windows'])
+        if visible and not projected and len(result['windows']) < 4:
+            row = {'label': '用量包', 'remaining_percent': round(percent, 3),
+                   'resets_at': 0, 'addon': True, 'remaining': round(remaining, 3)}
+            if _finite(limit) and limit > 0:
+                row['limit'] = round(limit, 3)
+                row['unit'] = 'credits'
+            expiry = epoch(addon.get('nearest_expires_at'))
+            if expiry:
+                row['expires_at'] = expiry
+            result['windows'].append(row)
+        meta = {key: addon[key] for key in ('known', 'remaining', 'limit', 'used',
+                                           'active_count', 'remaining_percent')
+                if key in addon}
+        expiry = epoch(addon.get('nearest_expires_at'))
+        if expiry:
+            meta['nearest_expires_at'] = expiry
+        if addon.get('inconsistent') is True:
+            meta['inconsistent'] = True
+        result['addon'] = meta
     for balance in (value.get('balances') or [])[:2]:
         if _finite(balance.get('remaining')):
             result['balances'].append({'currency': _bounded(balance.get('currency'), 8),

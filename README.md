@@ -135,7 +135,11 @@ delegate-opencode quota --import-snapshot /private/path/snapshot.json
 Multiple independent Alibaba seats with the same expiry are counted as one combined Credits
 pool, with optional per-seat detail. An optional authenticated loopback proxy consumes keys
 sequentially and switches after a confirmed key-level rejection; existing single-key installs
-keep working. See [combined Credits](references/bailian-seat-ledger.md) and
+keep working. Personal Edition usage bundles (add-ons) are reported separately from
+the monthly percentage: observed remaining/total/used Credits, active pack count and the
+server's nearest pack expiry stay visible while the monthly allowance is positive, a
+known-exhausted bundle disappears from the current card without erasing observed history,
+and a failed query stays unknown rather than zero. See [combined Credits](references/bailian-seat-ledger.md) and
 [multi-key setup and idle-safe activation](references/bailian-pool.md).
 
 Snapshots are shown with explicit freshness, never as live readings; an expired-period or

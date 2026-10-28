@@ -185,7 +185,11 @@
 
   function quotaRowHTML(quota, translate) {
     const tr = typeof translate === 'function' ? translate : (key => key);
-    const windows = (quota.windows || []).filter(w => w.valid !== false && coercible(w.remaining_percent));
+    const allWindows = (quota.windows || []).filter(w => w.valid !== false && coercible(w.remaining_percent));
+    const baseWindows = allWindows.filter(w => w.addon !== true);
+    // Monthly-positive semantics keep the base window as the headline; only when
+    // no base window exists (base exhausted) may the active addon stand in as it.
+    const windows = baseWindows.length ? baseWindows : allWindows;
     const worst = windows.reduce((best, w) => !best || Number(w.remaining_percent) < Number(best.remaining_percent) ? w : best, null);
     const isKimi=['kimi','kimi-for-coding'].includes(quota.id);
     const total=isKimi?windows.find(w=>w.kind==='month_total'):null;
@@ -215,7 +219,19 @@
     const expiryRaw=isKimi&&total?total.expires_at:null;
     const expiryAt=expiryRaw==null||expiryRaw===''||typeof expiryRaw==='boolean'?NaN:typeof expiryRaw==='number'?(expiryRaw<1e11?expiryRaw*1000:expiryRaw):Date.parse(expiryRaw);
     const expiry=Number.isFinite(expiryAt)&&expiryAt>0?tr('quota.expiresAt',{time:new Date(expiryAt).toLocaleString(undefined,{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',timeZoneName:'short'})}):'';
-    const detail = [status, isKimi&&!total?tr('kimiAccount.totalMissing'):'', ...accountWindows, expiry, reset ? '↻ ' + reset : ''].filter(Boolean).join(' · ');
+    const addon = quota.addon && typeof quota.addon === 'object' ? quota.addon : null;
+    const addonExpiry = addon && coercible(addon.nearest_expires_at) && Number(addon.nearest_expires_at) > 0
+      ? new Date(Number(addon.nearest_expires_at) * 1000).toLocaleString(undefined,{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',timeZoneName:'short'}) : '';
+    const addonText = addon && addon.known === true && coercible(addon.remaining) && Number(addon.remaining) > 0
+      ? tr('quota.addonPool') + ' ' + Number(addon.remaining).toLocaleString(undefined,{maximumFractionDigits:2}) +
+        (coercible(addon.limit) ? ' / ' + Number(addon.limit).toLocaleString(undefined,{maximumFractionDigits:2}) + ' Credits' : '') +
+        (coercible(addon.remaining_percent) ? ' · ' + Number(addon.remaining_percent).toLocaleString(undefined,{maximumFractionDigits:2}) + '%' : '') +
+        (coercible(addon.used) ? ' · ' + tr('quota.addonUsed',{value:Number(addon.used).toLocaleString(undefined,{maximumFractionDigits:2})}) : '') +
+        (coercible(addon.active_count) ? ' · ' + tr('quota.addonPacks',{count:Number(addon.active_count)}) : '') +
+        ' · ' + (addonExpiry ? tr('quota.addonNearestExpiry',{time:addonExpiry}) : tr('quota.addonExpiryUnknown')) +
+        (addon.inconsistent === true ? ' · ' + tr('quota.addonInconsistent') : '')
+      : addon && addon.known === false ? tr('quota.addonUnknown') : '';
+    const detail = [status, isKimi&&!total?tr('kimiAccount.totalMissing'):'', ...accountWindows, addonText, expiry, reset ? '↻ ' + reset : ''].filter(Boolean).join(' · ');
     return '<div class="hostov-quota ' + esc(tone) + '"><span class="hostov-quota-name">' + esc(label) + '</span>' +
       '<strong>' + esc(value) + '</strong>' + track + '<small>' + esc(detail) + '</small></div>';
   }

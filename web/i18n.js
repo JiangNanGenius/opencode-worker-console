@@ -2750,11 +2750,26 @@
     });
   });
 
-  Object.assign(MESSAGES.en, {'quota.aliyunPersonal': 'Personal Edition monthly allowance', 'quota.addonPool': 'Usage bundle'});
-  Object.assign(MESSAGES['zh-CN'], {'quota.aliyunPersonal': '个人版月度额度', 'quota.addonPool': '用量包'});
-  Object.assign(MESSAGES['zh-TW'], {'quota.aliyunPersonal': '個人版每月額度', 'quota.addonPool': '用量包'});
-  Object.assign(MESSAGES.ja, {'quota.aliyunPersonal': 'Personal 版の月間使用枠', 'quota.addonPool': '追加使用枠'});
-  Object.assign(MESSAGES.ko, {'quota.aliyunPersonal': '개인용 월간 사용 한도', 'quota.addonPool': '추가 사용량'});
+  Object.assign(MESSAGES.en, {'quota.aliyunPersonal': 'Personal Edition monthly allowance', 'quota.addonPool': 'Usage bundle',
+    'quota.addonUnknown': 'Usage bundle usage unknown (query unavailable)', 'quota.addonUsed': 'used {value}',
+    'quota.addonPacks': '{count} pack(s)', 'quota.addonNearestExpiry': 'nearest expiry {time}',
+    'quota.addonExpiryUnknown': 'nearest expiry unknown', 'quota.addonInconsistent': 'nearest expiry passed while credits remain — status unknown'});
+  Object.assign(MESSAGES['zh-CN'], {'quota.aliyunPersonal': '个人版月度额度', 'quota.addonPool': '用量包',
+    'quota.addonUnknown': '用量包用量未知（查询暂不可用）', 'quota.addonUsed': '已用 {value}',
+    'quota.addonPacks': '{count} 个', 'quota.addonNearestExpiry': '最近到期 {time}',
+    'quota.addonExpiryUnknown': '最近到期时间未知', 'quota.addonInconsistent': '最近到期已过但仍有剩余，状态未知'});
+  Object.assign(MESSAGES['zh-TW'], {'quota.aliyunPersonal': '個人版每月額度', 'quota.addonPool': '用量包',
+    'quota.addonUnknown': '用量包用量未知（查詢暫時不可用）', 'quota.addonUsed': '已用 {value}',
+    'quota.addonPacks': '{count} 個', 'quota.addonNearestExpiry': '最近到期 {time}',
+    'quota.addonExpiryUnknown': '最近到期時間未知', 'quota.addonInconsistent': '最近到期已過但仍有剩餘，狀態未知'});
+  Object.assign(MESSAGES.ja, {'quota.aliyunPersonal': 'Personal 版の月間使用枠', 'quota.addonPool': '追加使用枠',
+    'quota.addonUnknown': '追加使用枠の使用量は不明です（照会できません）', 'quota.addonUsed': '使用済み {value}',
+    'quota.addonPacks': '{count} 個', 'quota.addonNearestExpiry': '最も近い有効期限 {time}',
+    'quota.addonExpiryUnknown': '最も近い有効期限は不明', 'quota.addonInconsistent': '最も近い有効期限が過ぎているのに残量あり（状態不明）'});
+  Object.assign(MESSAGES.ko, {'quota.aliyunPersonal': '개인용 월간 사용 한도', 'quota.addonPool': '추가 사용량',
+    'quota.addonUnknown': '추가 사용량을 알 수 없음(조회 불가)', 'quota.addonUsed': '사용됨 {value}',
+    'quota.addonPacks': '{count}개', 'quota.addonNearestExpiry': '가장 가까운 만료 {time}',
+    'quota.addonExpiryUnknown': '가장 가까운 만료 알 수 없음', 'quota.addonInconsistent': '가장 가까운 만료가 지났지만 잔량이 남아 있음(상태 불명)'});
 
   Object.assign(MESSAGES.en, {'quota.aliyunSequential': 'Team first; Personal after confirmed Team exhaustion', 'quota.teamFirst': 'Team Edition · first', 'quota.personalStandby': 'Personal Edition · standby', 'quota.planActive': 'In use'});
   Object.assign(MESSAGES['zh-CN'], {'quota.aliyunSequential': '优先团队版；确认耗尽后接力个人版', 'quota.teamFirst': '团队版 · 优先', 'quota.personalStandby': '个人版 · 备用', 'quota.planActive': '正在使用'});

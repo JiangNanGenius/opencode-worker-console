@@ -521,7 +521,8 @@ _SAMPLE_FIELDS = frozenset(('state', 'source', 'plan_edition', 'available', 'sam
 _WINDOW_FIELDS = frozenset(('name', 'kind', 'unit', 'limit', 'remaining', 'remaining_percent',
                             'duration_minutes', 'resets_at', 'subscribed_at', 'valid', 'expired',
                             'seat_type', 'seat_count', 'credits_service_degraded',
-                            'superseded_by_addon', 'addon_quota_unknown'))
+                            'superseded_by_addon', 'addon_quota_unknown',
+                            'used', 'active_count', 'nearest_expires_at', 'expires_at'))
 
 
 def public_plan_record(value):
@@ -538,7 +539,9 @@ def public_plan_record(value):
         out['subscription'] = {key: value['subscription'][key] for key in ('start_at', 'end_at')
                                if key in value['subscription']}
     if isinstance(value.get('addon'), dict):
-        out['addon'] = {key: value['addon'][key] for key in ('remaining', 'limit', 'active_count', 'known', 'remainingCredits', 'totalCredits', 'activeCount')
+        out['addon'] = {key: value['addon'][key] for key in
+                        ('known', 'unit', 'remaining', 'limit', 'used', 'active_count',
+                         'remaining_percent', 'nearest_expires_at', 'inconsistent')
                         if key in value['addon']}
     return out
 

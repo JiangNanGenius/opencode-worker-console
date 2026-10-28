@@ -171,6 +171,10 @@ def normalize_worker(provider,value):
             if provider=='kimi-for-coding':
                 row['kind']=kind
                 if w.get('expires_at'):row['expires_at']=epoch(w['expires_at'])
+            if w.get('name')=='Addon' or w.get('addon') is True:
+                row['addon']=True;row['label']='用量包'
+                expiry=epoch(w.get('nearest_expires_at') or w.get('expires_at'))
+                if expiry:row['expires_at']=expiry
             amount,limit=w.get('remaining'),w.get('limit')
             if valid_number(amount):row['remaining']=round(amount,3)
             if valid_number(limit):row['limit']=round(limit,3)
@@ -178,6 +182,32 @@ def normalize_worker(provider,value):
             unit=own_unit if isinstance(own_unit,str) and own_unit else (None if value.get('plan_edition')=='personal' else WINDOW_UNITS.get(provider))
             if unit and (own_unit or 'remaining' in row):row['unit']=bounded(unit,16)
             result['windows'].append(row)
+    addon=value.get('addon') if isinstance(value.get('addon'),dict) else None
+    if addon is not None and (provider=='aliyun-personal' or value.get('plan_edition')=='personal'):
+        # Display-only bundle statistics; unknown stays unknown, known-exhausted hides.
+        known=addon.get('known') is True
+        # Expose incomplete bundle telemetry on the existing firmware's status
+        # line while preserving known monthly values and real availability.
+        if not known or addon.get('inconsistent') is True:result['state']='unknown'
+        remaining,limit=addon.get('remaining'),addon.get('limit')
+        percent=addon.get('remaining_percent')
+        visible=(known and valid_number(remaining) and remaining>0 and
+                 valid_number(percent) and 0<=percent<=100)
+        projected=any(r.get('addon') is True for r in result['windows'])
+        if visible and not projected and len(result['windows'])<4:
+            row=dict(label='用量包',remaining_percent=round(percent,3),resets_at=0,addon=True,
+                     remaining=round(remaining,3))
+            if valid_number(limit) and limit>0:
+                row['limit']=round(limit,3);row['unit']='credits'
+            expiry=epoch(addon.get('nearest_expires_at'))
+            if expiry:row['expires_at']=expiry
+            result['windows'].append(row)
+        meta={k:addon[k] for k in ('known','remaining','limit','used','active_count','remaining_percent')
+              if k in addon}
+        expiry=epoch(addon.get('nearest_expires_at'))
+        if expiry:meta['nearest_expires_at']=expiry
+        if addon.get('inconsistent') is True:meta['inconsistent']=True
+        result['addon']=meta
     for b in value.get('balances',[])[:2]:
         if valid_number(b.get('remaining')):result['balances'].append(dict(currency=bounded(b.get('currency'),8),remaining=b['remaining']))
     if 'available' in value:

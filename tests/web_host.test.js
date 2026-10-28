@@ -146,6 +146,48 @@ test('quota rows surface exhaustion, snapshots and Credits amounts honestly', ()
   assert.match(unknown, /—/);
 });
 
+test('personal addon details stay separate from the monthly headline', () => {
+  const t = key => ({ 'quota.addonPool': 'bundle' }[key] || key);
+  const html = View.quotaRowHTML({ id: 'aliyun-personal', name: '阿里个人', state: 'ok',
+    available: true, windows: [
+      { remaining_percent: 97, resets_at: 1800000000, unit: 'percent' },
+      { remaining_percent: 2.5, remaining: 500, limit: 20000, unit: 'credits', addon: true,
+        expires_at: 1795881600 }],
+    addon: { known: true, remaining: 500, limit: 20000, used: 19500, active_count: 1,
+             remaining_percent: 2.5, nearest_expires_at: 1795881600 },
+    balances: [] }, t);
+  assert.match(html, /97%/);
+  assert.match(html, /bundle 500 \/ 20,000 Credits/);
+  assert.match(html, /quota.addonPacks/);
+  assert.match(html, /quota.addonNearestExpiry/);
+});
+
+test('base-exhausted addon-only row uses the active addon as its headline', () => {
+  const html = View.quotaRowHTML({ id: 'aliyun-personal', name: '阿里个人', state: 'ok',
+    available: true, windows: [
+      { remaining_percent: 88.02, remaining: 17604.400795, limit: 20000, unit: 'credits',
+        addon: true, expires_at: 1795881600 }],
+    addon: { known: true, remaining: 17604.400795, limit: 20000, used: 2395.599205,
+             active_count: 1, remaining_percent: 88.02, nearest_expires_at: 1795881600 },
+    balances: [] }, key => key);
+  assert.match(html, /17,604\.\d+ Credits/);
+  assert.doesNotMatch(html, /—/);
+  assert.match(html, /quota.addonPool/);
+});
+
+test('known exhausted addon details disappear while unknown stays visible', () => {
+  const t = key => key;
+  const exhausted = View.quotaRowHTML({ id: 'aliyun-personal', state: 'ok', available: true,
+    windows: [{ remaining_percent: 90, unit: 'percent' }],
+    addon: { known: true, remaining: 0, limit: 20000, used: 20000, active_count: 0,
+             remaining_percent: 0 }, balances: [] }, t);
+  assert.doesNotMatch(exhausted, /quota.addonPool/);
+  const unknown = View.quotaRowHTML({ id: 'aliyun-personal', state: 'ok', available: true,
+    windows: [{ remaining_percent: 90, unit: 'percent' }], addon: { known: false },
+    balances: [] }, t);
+  assert.match(unknown, /quota.addonUnknown/);
+});
+
 test('quota rows keep live percentages when no exhaustion is reported', () => {
   const healthy = View.quotaRowHTML({ id: 'deepseek', name: 'DeepSeek', state: 'ok',
     windows: [{ remaining_percent: 42 }], balances: [] });

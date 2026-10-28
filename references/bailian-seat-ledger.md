@@ -159,6 +159,47 @@ Manual imports made while Personal is selected get the current plan binding;
 they remain explicitly marked snapshots and never inherit Team depletion latches.
 
 
+### Personal usage bundles (add-ons)
+
+The Personal adapter reads the fixed `addon/summary` API alongside the monthly
+subscription and usage. Its observed fields are `remainingCredits`,
+`totalCredits`, `activeCount` and `nearestExpireTime` (epoch milliseconds, also
+accepted as seconds). `used` is derived as `total - remaining`; no `used` field,
+pack ID, per-pack breakdown or lifetime-purchase total is invented. The summary
+describes the current active pool, so total can drop when the provider removes
+an exhausted pack.
+
+An add-on is its own Credits unit and is never summed with the monthly
+percentage. The addon becomes an admission window only after the monthly
+allowance is genuinely exhausted; while the monthly allowance remains positive
+the add-on is display metadata and never participates in min-exhaustion,
+capacity forecasts or dynamic runway. A known-empty active pool (both windows
+zero) remains internal exhaustion evidence, while an absent or failed add-on
+query leaves availability unknown instead of asserting exhaustion.
+
+Display rules for the console and the host board:
+
+* While remaining Credits are positive, the add-on is always shown with its
+  observed remaining/total/used, active pack count and nearest pack expiry. The
+  nearest expiry is the closest single pack expiry, never a claim that every
+  pack expires simultaneously.
+* A known-exhausted bundle disappears from the current quota card; earlier
+  observed history stays in quota history.
+* A failed or malformed add-on query is shown as unknown, never as zero.
+* A nearest expiry in the past beside positive remaining Credits is an
+  inconsistent sample: it is marked unknown, never inferred as all packs
+  expired or as a usable current window, and the monthly allowance keeps
+  working.
+
+The host board receives an additive, display-only window labelled `用量包`
+(credits amount, remaining percentage and `expires_at`) plus bounded addon
+metadata. It is deduplicated against an already-present admission Addon window,
+fits the existing firmware 0.4 window model and requires no firmware change.
+Quota history records the observed add-on percentage and supplied amounts per
+sample; when the provider later removes an exhausted pack, older observations
+remain and nothing is reconstructed cumulatively. Team `GetSubscriptionStats`
+has no add-on fields and Team rows never receive this metadata.
+
 ### Sequential accounting and legacy readers
 
 Sequential inference keeps the existing ordered pool behavior: a positive quota

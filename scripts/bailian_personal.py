@@ -218,25 +218,42 @@ def _normalize(subscription, usage, addon, payload, now):
     windows = [monthly]
     available = True if fraction < 1 else None
     addon_known = False
-    addon_info = None
+    # Unknown is never zero: a failed or malformed addon summary stays an explicit
+    # unknown display state while the bound monthly allowance keeps working.
+    addon_info = {'known': False}
     if isinstance(addon, dict):
         remaining, total, count = (_number(addon.get(field)) for field in
                                    ('remainingCredits', 'totalCredits', 'activeCount'))
+        expiry = _epoch(addon.get('nearestExpireTime'))
         addon_known = (remaining is not None and total is not None and count is not None
                        and 0 <= remaining <= total and count >= 0 and count.is_integer()
                        and (remaining == 0 or count > 0))
         if addon_known:
-            addon_info = {'unit': 'Credits', 'remaining': remaining, 'limit': total,
+            # used is derived from the active pool only, never lifetime purchases.
+            addon_info = {'known': True, 'unit': 'credits', 'remaining': remaining,
+                          'limit': total, 'used': max(0.0, total - remaining),
                           'active_count': int(count),
                           'remaining_percent': remaining / total * 100 if total > 0 else None}
-            if remaining > 0 and fraction == 1:
-                windows.append(dict(addon_info, name='Addon', valid=True))
-                monthly.update(valid=False, superseded_by_addon=True)
-                available = True
+            if expiry is not None:
+                # Server-supplied nearest expiry across packs: never all packs at once.
+                addon_info['nearest_expires_at'] = _iso(expiry)
+                if expiry <= now and remaining > 0:
+                    # One past pack expiry beside a positive aggregate is an
+                    # inconsistent sample, not proof that every pack expired or
+                    # that the addon is empty. Show it as unknown, keep monthly.
+                    addon_info['inconsistent'] = True
+    addon_active = (addon_known and addon_info['remaining'] > 0 and
+                    not addon_info.get('inconsistent'))
+    if addon_active and fraction == 1:
+        # Only after real monthly exhaustion is the addon an admission window.
+        windows.append(dict(addon_info, name='Addon', valid=True))
+        monthly.update(valid=False, superseded_by_addon=True)
+        available = True
     if fraction == 1:
-        if addon_known and remaining == 0:
+        if addon_known and addon_info['remaining'] == 0:
+            # Known-empty active pool is preserved internally as exhaustion evidence.
             available = False
-        elif available is None:
+        elif not addon_active:
             monthly.update(valid=False, addon_quota_unknown=True)
     return {'state': 'ok', 'sampled_at': now, 'source': SOURCE, 'plan_edition': 'personal',
             'windows': windows, 'balances': [], 'available': available,

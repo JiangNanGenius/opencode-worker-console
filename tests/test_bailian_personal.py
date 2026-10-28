@@ -163,6 +163,110 @@ class PersonalQuotaTests(unittest.TestCase):
         self.assertTrue(result['available'])
         self.assertTrue(result['windows'][0]['valid'])
 
+    def test_positive_addon_metadata_is_complete_while_monthly_stays_admission(self):
+        result = self.fetch(addon={'remainingCredits': 19643.114675, 'totalCredits': 20000,
+                                   'activeCount': 1,
+                                   'nearestExpireTime': 1795881600000})
+        self.assertTrue(result['available'])
+        self.assertEqual([window['name'] for window in result['windows']], ['Monthly'])
+        self.assertTrue(result['windows'][0]['valid'])
+        addon = result['addon']
+        self.assertTrue(addon['known'])
+        self.assertEqual(addon['unit'], 'credits')
+        self.assertAlmostEqual(addon['remaining'], 19643.114675)
+        self.assertAlmostEqual(addon['limit'], 20000.0)
+        self.assertAlmostEqual(addon['used'], 20000.0 - 19643.114675)
+        self.assertEqual(addon['active_count'], 1)
+        self.assertAlmostEqual(addon['remaining_percent'], 98.215573375)
+        self.assertEqual(addon['nearest_expires_at'], '2026-11-28T16:00:00+00:00')
+        self.assertNotIn('expired', addon)
+
+    def test_addon_nearest_expiry_accepts_seconds_and_never_invents_one(self):
+        seconds = self.fetch(addon={'remainingCredits': 10, 'totalCredits': 100,
+                                    'activeCount': 1, 'nearestExpireTime': 1795881600})
+        self.assertEqual(seconds['addon']['nearest_expires_at'], '2026-11-28T16:00:00+00:00')
+        for value in ('soon', None, 42, float('nan')):
+            with self.subTest(value=value):
+                result = self.fetch(addon={'remainingCredits': 10, 'totalCredits': 100,
+                                           'activeCount': 1, 'nearestExpireTime': value})
+                self.assertTrue(result['addon']['known'])
+                self.assertNotIn('nearest_expires_at', result['addon'])
+                self.assertNotIn('expired', result['addon'])
+
+    def test_past_nearest_expiry_with_positive_multipack_aggregate_is_unknown_not_empty(self):
+        addon = {'remainingCredits': 15000, 'totalCredits': 20000, 'activeCount': 3,
+                 'nearestExpireTime': (NOW - 3600) * 1000}
+        result = self.fetch(usage=dict(USAGE, per1MonthPercentage=1), addon=addon)
+        self.assertIsNone(result['available'])
+        self.assertTrue(result['addon']['known'])
+        self.assertEqual(result['addon']['remaining'], 15000.0)
+        self.assertEqual(result['addon']['used'], 5000.0)
+        self.assertEqual(result['addon']['active_count'], 3)
+        self.assertTrue(result['addon']['inconsistent'])
+        self.assertNotIn('expired', result['addon'])
+        self.assertEqual([window['name'] for window in result['windows']], ['Monthly'])
+        self.assertFalse(result['windows'][0]['valid'])
+        self.assertTrue(result['windows'][0]['addon_quota_unknown'])
+        self.assertFalse(any(window.get('name') == 'Addon' for window in result['windows']))
+        # Monthly-positive usage keeps working; only the addon display is unknown.
+        positive = self.fetch(addon=addon)
+        self.assertTrue(positive['available'])
+        self.assertTrue(positive['windows'][0]['valid'])
+        self.assertTrue(positive['addon']['inconsistent'])
+        self.assertEqual(positive['addon']['remaining'], 15000.0)
+
+    def test_known_empty_addon_metadata_remains_internal_evidence(self):
+        empty = {'remainingCredits': 0, 'totalCredits': 20000, 'activeCount': 0,
+                 'nearestExpireTime': 1795881600000}
+        positive = self.fetch(addon=empty)
+        self.assertTrue(positive['available'])
+        self.assertTrue(positive['addon']['known'])
+        self.assertEqual(positive['addon']['remaining'], 0.0)
+        self.assertEqual(positive['addon']['limit'], 20000.0)
+        self.assertEqual(positive['addon']['used'], 20000.0)
+        self.assertEqual([window['name'] for window in positive['windows']], ['Monthly'])
+        exhausted = self.fetch(usage=dict(USAGE, per1MonthPercentage=1), addon=empty)
+        self.assertFalse(exhausted['available'])
+        self.assertEqual([window['name'] for window in exhausted['windows']], ['Monthly'])
+        self.assertFalse(any(window.get('name') == 'Addon' for window in exhausted['windows']))
+
+    def test_missing_addon_summary_is_explicit_unknown_never_zero(self):
+        with patch.object(personal, '_request', side_effect=[SUBSCRIPTION, USAGE,
+                personal._QuotaError(True)]):
+            result = personal.fetch()
+        self.assertEqual(result['addon'], {'known': False})
+        self.assertTrue(result['available'])
+        self.assertTrue(result['windows'][0]['valid'])
+        self.assertNotIn('remaining', result['addon'])
+
+    def test_active_addon_window_carries_amounts_count_and_nearest_expiry(self):
+        result = self.fetch(usage=dict(USAGE, per1MonthPercentage=1), addon={
+            'remainingCredits': 19643.114675, 'totalCredits': 20000, 'activeCount': 2,
+            'nearestExpireTime': 1795881600000})
+        monthly, addon = result['windows']
+        self.assertFalse(monthly['valid'])
+        self.assertTrue(monthly['superseded_by_addon'])
+        self.assertTrue(addon['valid'])
+        self.assertEqual(addon['unit'], 'credits')
+        self.assertEqual(addon['active_count'], 2)
+        self.assertAlmostEqual(addon['used'], 20000.0 - 19643.114675)
+        self.assertEqual(addon['nearest_expires_at'], '2026-11-28T16:00:00+00:00')
+        self.assertNotIn('resets_at', addon)
+
+    def test_public_plan_record_keeps_addon_fields_and_no_bindings(self):
+        import bailian_quota
+        value = {'state': 'ok', 'sampled_at': NOW, 'plan_edition': 'personal',
+                 'windows': [], 'balances': [], 'instance': 'private-instance',
+                 'addon': {'known': True, 'unit': 'credits', 'remaining': 10.0, 'limit': 100.0,
+                           'used': 90.0, 'active_count': 1, 'remaining_percent': 10.0,
+                           'nearest_expires_at': '2026-11-28T16:00:00+00:00',
+                           'remainingCredits': 10.0, 'secret': 'nope'}}
+        public = bailian_quota.public_plan_record(value)
+        self.assertEqual(public['addon'], {'known': True, 'unit': 'credits', 'remaining': 10.0,
+                                           'limit': 100.0, 'used': 90.0, 'active_count': 1,
+                                           'remaining_percent': 10.0,
+                                           'nearest_expires_at': '2026-11-28T16:00:00+00:00'})
+        self.assertNotIn('instance', public)
     def test_malformed_ratios_and_timestamps_never_receive_sample_time(self):
         for ratio in (True, float('nan'), float('inf'), -0.1, 1.01, '0.1', None):
             with self.subTest(ratio=ratio):

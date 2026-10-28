@@ -36,7 +36,7 @@ function cardContext(){
   });
   for(const name of ['clock','resetDate','resetCountdown','resetTime','accountPercent','expiryTime',
     'kimiTotalMissing','kimiCardWindows','estimatedRange','windowRunway','expectedRemaining',
-    'quotaPace','quotaTrack','windowName','quotaWindows']){
+    'quotaPace','quotaTrack','windowName','quotaWindowTiming','quotaWindows']){
     const definition=source.match(new RegExp('^function '+name+'\\(.*$','m'));
     assert.ok(definition,name+' is available in app.js');
     vm.runInContext(definition[0],context);
