@@ -1,4 +1,4 @@
-import plistlib,os,copy,json,pathlib,sqlite3,sys,tempfile,threading,time,unittest
+import plistlib,os,copy,datetime,json,pathlib,sqlite3,sys,tempfile,threading,time,unittest
 from unittest.mock import patch
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[1]/'host'))
 from dashboard_sources import *
@@ -176,6 +176,47 @@ class SequentialFallbackQuotas(unittest.TestCase):
                     'personal':{'state':'ok','sampled_at':1001,'available':True,
                                 'source':'personal_console','windows':[{'name':'Monthly','valid':True,
                                     'unit':'percent','duration_minutes':40320,'remaining_percent':97.1234}]}}}
+
+    def terminal_sequence(self,personal_percent=0.0):
+        now=time.time();team_end=datetime.datetime.fromtimestamp(now+17*86400,datetime.timezone.utc).isoformat()
+        personal_end=datetime.datetime.fromtimestamp(now+27*86400,datetime.timezone.utc).isoformat()
+        team={'state':'ok','source':'openapi_live','plan_edition':'team','sampled_at':now,
+              'available':False,'windows':[{'name':'Credits(max)','limit':250000.0,'remaining':0.0,
+              'remaining_percent':0.0,'resets_at':team_end,'valid':True}],'balances':[],
+              'subscription':{'start_at':datetime.datetime.fromtimestamp(now-14*86400,datetime.timezone.utc).isoformat(),'end_at':team_end}}
+        personal={'state':'ok','source':'personal_console','plan_edition':'personal','sampled_at':now,
+                  'available':personal_percent>0,'windows':[{'name':'Monthly','unit':'percent',
+                  'remaining_percent':personal_percent,'resets_at':personal_end,'valid':True}],'balances':[],
+                  'subscription':{'start_at':datetime.datetime.fromtimestamp(now-4*86400,datetime.timezone.utc).isoformat(),'end_at':personal_end},
+                  'addon':{'known':True,'remaining':0.0,'limit':40000.0,'used':40000.0,
+                           'active_count':2,'remaining_percent':0.0,
+                           'nearest_expires_at':datetime.datetime.fromtimestamp(now+29*86400,datetime.timezone.utc).isoformat()}}
+        return {'plan_edition':'sequential','state':'ok','sampled_at':now,'checked_at':now,
+                'attempted_at':now,'available':personal_percent>0,'windows':[],'balances':[],
+                'plan_quotas':{'team':team,'personal':personal},'active_plan':'team'}
+
+    def test_terminal_fallback_rows_are_filtered_until_replenished(self):
+        self.assertEqual(worker_rows('bailian-token-plan',self.terminal_sequence()),[])
+        rows=worker_rows('bailian-token-plan',self.terminal_sequence(personal_percent=97.48))
+        self.assertEqual([row['id'] for row in rows],['aliyun-personal'])
+        zero={'state':'ok','sampled_at':time.time(),'available':False,'windows':[],
+              'balances':[{'currency':'CNY','remaining':0.0}]}
+        self.assertEqual(worker_rows('deepseek',zero),[])
+        self.assertEqual(len(worker_rows('deepseek',dict(zero,available=True,balances=[{'currency':'CNY','remaining':1.0}]))),1)
+
+    def test_quota_snapshot_omits_terminal_alibaba_rows(self):
+        import dashboard_sources as ds
+        def collect(provider):
+            if provider=='bailian-token-plan':return worker_rows('bailian-token-plan',self.terminal_sequence())
+            if provider=='deepseek':return worker_rows('deepseek',{'state':'ok','sampled_at':time.time(),
+                'available':False,'windows':[],'balances':[{'currency':'CNY','remaining':0.0}]})
+            return normalize_worker(provider,{'state':'unknown'})
+        with patch.object(ds,'worker_quota',side_effect=collect), \
+                patch.object(ds,'codex_quota',return_value={'id':'codex','state':'unknown'}):
+            rows=quota_snapshot()
+        ids=[row['id'] for row in rows]
+        self.assertNotIn('aliyun-team',ids);self.assertNotIn('aliyun-personal',ids);self.assertNotIn('deepseek',ids)
+        self.assertIn('kimi',ids);self.assertIn('ark',ids)
 
     def test_independent_cards_do_not_inherit_parent_or_team_zero(self):
         team,personal=worker_rows('bailian-token-plan',self.sequence())

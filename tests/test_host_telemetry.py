@@ -5,6 +5,7 @@ provider CLIs are touched.
 """
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 import tempfile
@@ -513,6 +514,25 @@ class QuotaCollectionTests(unittest.TestCase):
         self.assertEqual(by_id['deepseek']['balances'][0]['remaining'], 12.5)
         self.assertEqual(by_id['volcengine-agent-plan']['state'], 'unavailable')
 
+    def test_terminal_ark_monthly_pool_is_filtered_from_host_rows(self):
+        now = time.time()
+        end = datetime.fromtimestamp(now + 20 * 86400, timezone.utc).isoformat()
+        short = {'name': 'AFPFiveHour', 'valid': True, 'remaining': 9000,
+                 'remaining_percent': 90,
+                 'resets_at': datetime.fromtimestamp(now + 300, timezone.utc).isoformat()}
+        monthly = {'name': 'AFPMonthly', 'valid': True, 'remaining': 0.0,
+                   'remaining_percent': 0.0, 'resets_at': end}
+        record = {'state': 'ok', 'sampled_at': now, 'available': False, 'balances': [],
+                  'plan': {'type': 'Medium', 'active': True, 'ends_at': end},
+                  'windows': [short, monthly]}
+        self.assertEqual(ht.worker_rows('volcengine-agent-plan', record), [])
+
+        record['windows'] = [dict(short, remaining=0.0, remaining_percent=0.0),
+                             dict(monthly, remaining=50000.0, remaining_percent=50.0)]
+        rows = ht.worker_rows('volcengine-agent-plan', record)
+        self.assertEqual([row['id'] for row in rows], ['volcengine-agent-plan'])
+        self.assertEqual(rows[0]['windows'][1]['remaining'], 50000.0)
+
     def test_failed_codex_sample_preserves_previous_windows(self):
         common.write_json(self.root / 'quota.json', {})
         collector = ht.Collector(state_dir=self.root, codex_root=self.root / 'no')
@@ -547,7 +567,7 @@ class SequentialPlanQuotaTests(unittest.TestCase):
         """Shape the long-lived Team-edition writer puts into quota.json."""
         return {'state': 'ok', 'sampled_at': sampled_at, 'checked_at': sampled_at,
                 'source': 'openapi_live', 'available': False, '_credential': 'a' * 64,
-                'windows': [{'name': 'Credits(max)', 'limit': 424194.0, 'remaining': 0.0,
+                'windows': [{'name': 'Credits(max)', 'limit': 250000.0, 'remaining': 0.0,
                              'remaining_percent': 0.0, 'duration_minutes': 44640,
                              'resets_at': '2026-11-16T10:00:00+00:00', 'valid': True}],
                 'balances': []}
@@ -557,7 +577,7 @@ class SequentialPlanQuotaTests(unittest.TestCase):
         binding = binding or self.BINDING
         team = {'state': 'ok', 'source': 'openapi_live', 'plan_edition': 'team',
                 'available': False, 'sampled_at': team_sampled,
-                'windows': [{'name': 'Credits(max)', 'limit': 424194.0, 'remaining': 0.0,
+                'windows': [{'name': 'Credits(max)', 'limit': 250000.0, 'remaining': 0.0,
                              'remaining_percent': 0.0, 'duration_minutes': 44640,
                              'resets_at': '2026-11-16T10:00:00+00:00', 'valid': True}],
                 'balances': []}
@@ -603,6 +623,92 @@ class SequentialPlanQuotaTests(unittest.TestCase):
         return patch.object(ht, '_PLAN_EDITION_CACHE',
                             {'edition': edition, 'checked_at': time.time()})
 
+    @staticmethod
+    def _stamp(seconds):
+        return datetime.fromtimestamp(seconds, timezone.utc).isoformat()
+
+    def _terminal_namespace(self, now, team_remaining=0.0, personal_percent=0.0,
+                            addon_known=True, sampled_at=None):
+        """Production-shaped sequential snapshot: paid-term-end resets, zero pools."""
+        sampled_at = now if sampled_at is None else sampled_at
+        team_end = self._stamp(now + 17 * 86400)
+        personal_end = self._stamp(now + 27 * 86400)
+        team = {'state': 'ok', 'source': 'openapi_live', 'plan_edition': 'team',
+                'available': team_remaining > 0, 'sampled_at': sampled_at,
+                'windows': [{'name': 'Credits(max)', 'seat_type': 'max', 'limit': 250000.0,
+                             'remaining': team_remaining,
+                             'remaining_percent': team_remaining / 250000.0 * 100,
+                             'duration_minutes': 44640.0, 'resets_at': team_end,
+                             'valid': True}],
+                'balances': [],
+                'subscription': {'start_at': self._stamp(now - 14 * 86400),
+                                 'end_at': team_end}}
+        personal = {'state': 'ok', 'source': 'personal_console', 'plan_edition': 'personal',
+                    'available': personal_percent > 0, 'sampled_at': sampled_at,
+                    'windows': [{'name': 'Monthly', 'unit': 'percent',
+                                 'remaining_percent': personal_percent,
+                                 'duration_minutes': 45111.23, 'resets_at': personal_end,
+                                 'valid': True}],
+                    'balances': [],
+                    'subscription': {'start_at': self._stamp(now - 4 * 86400),
+                                     'end_at': personal_end},
+                    'addon': {'known': addon_known, 'unit': 'credits', 'remaining': 0.0,
+                              'limit': 40000.0, 'used': 40000.0, 'active_count': 2,
+                              'remaining_percent': 0.0,
+                              'nearest_expires_at': self._stamp(now + 29 * 86400)}}
+        return {'state': 'ok', 'source': 'plan_sequence', 'plan_edition': 'sequential',
+                '_plan_identity': self.BINDING, '_credential': self.BINDING,
+                '_display_identity': self.BINDING, 'available': personal_percent > 0 or team_remaining > 0,
+                'attempted_at': sampled_at, 'windows': [], 'balances': [],
+                'plan_quotas': {'team': team, 'personal': personal},
+                'active_plan': 'team', 'sampled_at': sampled_at, 'checked_at': sampled_at}
+
+    def test_terminal_alibaba_plans_disappear_from_host_and_board(self):
+        now = time.time()
+        common.write_json(self.root / ht.PLAN_CACHE_FILE, self._terminal_namespace(now))
+        collector = ht.Collector(state_dir=self.root, codex_root=self.root / 'no-codex')
+        collector.latest_quotas = [{'id': 'codex', 'state': 'ok', 'sampled_at': now,
+                                    'windows': [], 'balances': []}]
+        with self._edition('sequential'), patch.object(ht, 'STATE', self.root):
+            rows = ht.worker_rows(ht.BAILIAN_PROVIDER, {})
+            board = collector.board_payload()
+            web = collector.snapshot()
+        self.assertEqual(rows, [])
+        self.assertEqual([q['id'] for q in board['quotas']], ['codex'])
+        self.assertEqual([q['id'] for q in web['quotas']], ['codex'])
+
+    def test_partial_terminal_plan_keeps_the_live_sibling(self):
+        now = time.time()
+        common.write_json(self.root / ht.PLAN_CACHE_FILE,
+                          self._terminal_namespace(now, personal_percent=97.48))
+        with self._edition('sequential'), patch.object(ht, 'STATE', self.root):
+            rows = ht.worker_rows(ht.BAILIAN_PROVIDER, {})
+        self.assertEqual([row['id'] for row in rows], ['aliyun-personal'])
+        self.assertEqual(rows[0]['windows'][0]['remaining_percent'], 97.48)
+
+    def test_replenished_plan_reappears_while_the_other_stays_hidden(self):
+        now = time.time()
+        common.write_json(self.root / ht.PLAN_CACHE_FILE,
+                          self._terminal_namespace(now, team_remaining=1000.0))
+        with self._edition('sequential'), patch.object(ht, 'STATE', self.root):
+            rows = ht.worker_rows(ht.BAILIAN_PROVIDER, {})
+        self.assertEqual([row['id'] for row in rows], ['aliyun-team'])
+        self.assertAlmostEqual(rows[0]['windows'][0]['remaining'], 1000.0)
+
+    def test_stale_or_unknown_terminal_evidence_stays_visible(self):
+        now = time.time()
+        common.write_json(self.root / ht.PLAN_CACHE_FILE,
+                          self._terminal_namespace(now, sampled_at=now - 3600))
+        with self._edition('sequential'), patch.object(ht, 'STATE', self.root):
+            rows = ht.worker_rows(ht.BAILIAN_PROVIDER, {})
+        self.assertEqual([row['id'] for row in rows], ['aliyun-team', 'aliyun-personal'])
+
+        common.write_json(self.root / ht.PLAN_CACHE_FILE,
+                          self._terminal_namespace(now, addon_known=False))
+        with self._edition('sequential'), patch.object(ht, 'STATE', self.root):
+            rows = ht.worker_rows(ht.BAILIAN_PROVIDER, {})
+        self.assertEqual([row['id'] for row in rows], ['aliyun-personal'])
+
     def test_sequential_expands_independent_team_and_personal_cards(self):
         common.write_json(self.root / 'bailian-plan-quota.json', self._namespace())
         # The old writer stamped the shared file later than the namespace did.
@@ -614,7 +720,7 @@ class SequentialPlanQuotaTests(unittest.TestCase):
         team, personal = rows
         self.assertTrue(all(row['plan_edition'] == 'sequential' for row in rows))
         self.assertEqual(team['windows'][0]['remaining'], 0.0)
-        self.assertEqual(team['windows'][0]['limit'], 424194.0)
+        self.assertEqual(team['windows'][0]['limit'], 250000.0)
         self.assertEqual(team['windows'][0]['unit'], 'credits')
         self.assertEqual(team['windows'][0]['remaining_percent'], 0.0)
         self.assertFalse(team['available'])
@@ -658,7 +764,7 @@ class SequentialPlanQuotaTests(unittest.TestCase):
         common.write_json(self.root / 'bailian-plan-quota.json', self._namespace())
         team_record = {'state': 'ok', 'sampled_at': 9000.0, 'checked_at': 9000.0,
                        'source': 'openapi_live', 'available': False,
-                       'windows': [{'name': 'Credits(max)', 'limit': 424194.0, 'remaining': 0.0,
+                       'windows': [{'name': 'Credits(max)', 'limit': 250000.0, 'remaining': 0.0,
                                     'remaining_percent': 0.0, 'duration_minutes': 44640,
                                     'resets_at': '2099-11-16T10:00:00+00:00', 'valid': True}],
                        'balances': []}

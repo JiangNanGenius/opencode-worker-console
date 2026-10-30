@@ -36,6 +36,7 @@ import sys
 import threading
 import time
 
+import allowance_visibility
 from common import STATE, read_json
 
 # --- cadence and retention -------------------------------------------------
@@ -1136,13 +1137,22 @@ def _sequential_display_record(stored):
 
 
 def _sequential_plan_rows(display):
-    """One independent row per plan; each keeps its own state and freshness."""
+    """One independent row per surviving plan; each keeps its state/freshness.
+
+    A plan whose fresh, complete reading is terminally exhausted (the next
+    recovery needs a new purchase) is omitted so the host overview, shared
+    board payload and physical display hide it together. The other plan stays
+    visible; a null/unknown plan is always retained.
+    """
     plans = display.get('plan_quotas') or {}
     active = display.get('active_plan') if isinstance(display.get('active_plan'), str) else None
     rows = []
     for edition in ('team', 'personal'):
+        plan = plans.get(edition) or {}
+        if allowance_visibility.terminal_exhausted(plan, provider='aliyun-' + edition):
+            continue
         row_id, name = SEQUENTIAL_PLAN_ROWS[edition]
-        row = normalize_worker(row_id, plans.get(edition) or {})
+        row = normalize_worker(row_id, plan)
         row['name'] = name
         row['plan_edition'] = 'sequential'
         if active in ('team', 'personal'):
@@ -1171,10 +1181,14 @@ def worker_rows(provider, record):
     its Team Credits and Personal allowance rows, taken only from the
     identity-bound namespace record; the legacy provider row is replaced so a
     stale Team-edition writer cannot keep showing 0 Credits as the only plan.
+    Current rows whose fresh, complete exhaustion requires a new purchase are
+    filtered here, so every host/board consumer sees the same source list.
     """
     if provider == BAILIAN_PROVIDER and _cached_plan_edition() == 'sequential':
         display = _sequential_display_record(record if isinstance(record, dict) else None)
         return _sequential_plan_rows(display) if display is not None else _sequential_unknown_rows()
+    if allowance_visibility.terminal_exhausted(record, provider=provider):
+        return []
     return [normalize_worker(provider, record)]
 
 

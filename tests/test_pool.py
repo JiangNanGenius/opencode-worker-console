@@ -190,6 +190,47 @@ class PoolTests(unittest.TestCase):
         self.assertIn('consumption_estimate', rendered)
         self.assertNotIn('samples', rendered)
 
+    def test_terminal_funding_pool_public_flag_matches_short_cycle_semantics(self):
+        now = time.time()
+        end = datetime.fromtimestamp(now + 20 * 86400, timezone.utc).isoformat()
+        ark = {'state': 'ok', 'sampled_at': now, 'available': False, 'balances': [],
+               'plan': {'type': 'Medium', 'active': True, 'ends_at': end},
+               'windows': [
+                   {'name': 'AFPFiveHour', 'valid': True, 'remaining': 9000,
+                    'remaining_percent': 90,
+                    'resets_at': datetime.fromtimestamp(now + 300, timezone.utc).isoformat()},
+                   {'name': 'AFPMonthly', 'valid': True, 'remaining': 0,
+                    'remaining_percent': 0, 'resets_at': end}]}
+        rendered = quota.view({'volcengine-agent-plan': ark})['volcengine-agent-plan']
+        self.assertTrue(rendered['display_hidden'])
+
+        ark['windows'][1].update(remaining=50000, remaining_percent=50)
+        ark['windows'][0].update(remaining=0, remaining_percent=0)
+        rendered = quota.view({'volcengine-agent-plan': ark})['volcengine-agent-plan']
+        self.assertFalse(rendered['display_hidden'])
+
+        kimi = {'state': 'ok', 'sampled_at': now, 'available': False, 'balances': [],
+                'windows': [
+                    {'name': 'window_0', 'valid': True, 'remaining': 0,
+                     'remaining_percent': 0,
+                     'resets_at': datetime.fromtimestamp(now + 300, timezone.utc).isoformat()},
+                    {'name': 'overall', 'valid': True, 'remaining': 0,
+                     'remaining_percent': 0,
+                     'resets_at': datetime.fromtimestamp(now + 3 * 86400, timezone.utc).isoformat()}]}
+        self.assertFalse(quota.view({'kimi-for-coding': kimi})['kimi-for-coding']['display_hidden'])
+
+    def test_zero_cash_balance_is_publicly_hidden_but_the_query_record_survives(self):
+        now = time.time()
+        raw = {'deepseek': {'state': 'ok', 'sampled_at': now, 'available': False,
+                            'balances': [{'currency': 'CNY', 'remaining': 0.0}],
+                            'windows': []}}
+        rendered = quota.view(raw)['deepseek']
+        self.assertTrue(rendered['display_hidden'])
+        self.assertEqual(rendered['balances'][0]['remaining'], 0.0)
+        positive = {'deepseek': dict(raw['deepseek'], available=True,
+                                     balances=[{'currency': 'CNY', 'remaining': 0.01}])}
+        self.assertFalse(quota.view(positive)['deepseek']['display_hidden'])
+
     def test_payg_balance_range_uses_real_balance_burn_and_keeps_history_private(self):
         now = time.time()
         raw = {'deepseek': {'state': 'ok', 'sampled_at': now, 'available': True,

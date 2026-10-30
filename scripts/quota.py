@@ -7,6 +7,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from common import config, STATE, HttpFailure, auth_key, credential_identity, locked, read_json, redact, request, write_json
 from providers import ARK_PROVIDER, BAILIAN_PROVIDER
+import allowance_visibility
 import ark_quota
 import bailian_quota
 import routing
@@ -1551,6 +1552,22 @@ def view(values):
                 age = time.time() - (_epoch(account.get('sampled_at')) or 0)
                 account['stale'] = account.get('state') != 'ok' or age > KIMI_ACCOUNT_MAX_AGE
             v['account_total'] = kimi_account_total_state({KIMI_PROVIDER: v})
+        # Public display-only flag. A confirmed fresh terminal exhaustion hides
+        # the current card/source row; explicit unknown, stale or failed data
+        # stays visible. Raw telemetry, history, configuration and admission
+        # never read this field.
+        if p == BAILIAN_PROVIDER and v.get('plan_edition') == 'sequential':
+            plans = v.get('plan_quotas') if isinstance(v.get('plan_quotas'), dict) else {}
+            hidden = {edition: allowance_visibility.terminal_exhausted(
+                plans.get(edition), provider='aliyun-' + edition, now=now)
+                for edition in ('team', 'personal')}
+            for edition, flag in hidden.items():
+                if isinstance(plans.get(edition), dict):
+                    plans[edition]['display_hidden'] = flag
+            v['display_hidden'] = all(hidden.values())
+        else:
+            v['display_hidden'] = allowance_visibility.terminal_exhausted(
+                v, provider=p, now=now)
         v['workload'] = loads.get(p, {})
         import capacity
         v['capacity_forecast'] = capacity.provider(v, now)

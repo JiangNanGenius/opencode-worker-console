@@ -116,6 +116,18 @@ def window_label(minutes):
 
 WINDOW_UNITS={'bailian-token-plan':'credits','aliyun-team':'credits','volcengine-agent-plan':'afp'}
 
+def terminal_exhausted(value,provider):
+    """Shared display rule; fail open (keep the row) if the worker module is absent."""
+    try:
+        roots=[pathlib.Path(__file__).resolve().parents[3]/'scripts',WORKER]
+        for root in roots:
+            if (root/'allowance_visibility.py').is_file():
+                if str(root) not in sys.path:sys.path.insert(0,str(root))
+                import allowance_visibility
+                return allowance_visibility.terminal_exhausted(value,provider=provider)
+    except Exception:pass
+    return False
+
 def kimi_window_key(window):
     kind=window.get('kind')
     if kind in ('short','weekly','month_total','month_code'):return kind
@@ -225,12 +237,14 @@ def worker_rows(provider,value):
             plan=plans.get(edition) if isinstance(plans,dict) else None
             plan=dict(plan) if isinstance(plan,dict) else {'state':'unknown','available':None}
             plan['plan_edition']=edition
+            if terminal_exhausted(plan,'aliyun-'+edition):continue
             row=normalize_worker('aliyun-'+edition,plan)
             row['plan_edition']='sequential'
             if value.get('active_plan') in ('team','personal'):
                 row['plan_slot']='active' if value['active_plan']==edition else 'standby'
             rows.append(row)
         return rows
+    if terminal_exhausted(value,provider):return []
     return [normalize_worker(provider,value)]
 
 def normalize_codex(data,now=None):

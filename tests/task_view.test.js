@@ -238,6 +238,51 @@ test('every provider header exposes a quota-level state', async () => {
   assert.match(h.get('kimi-state').className,/critical/);
 });
 
+test('terminal provider cards and work-pool sources vanish until replenishment', async () => {
+  const h=appHarness();await tick();
+  h.run(`data.profiles={ali:{model:"bailian-token-plan/qwen3.8-max"},ds:{model:"deepseek/flash"},
+      kimi:{model:"kimi-for-coding/k3"},ark:{model:"volcengine-agent-plan/ark-code-latest"}};
+    data.quota={"bailian-token-plan":{state:"ok",plan_edition:"sequential",available:false,display_hidden:true,windows:[],
+      plan_quotas:{team:{display_hidden:true,windows:[]},personal:{display_hidden:true,windows:[]}}},
+      deepseek:{state:"ok",available:false,display_hidden:true,balances:[{currency:"CNY",remaining:0}],windows:[]},
+      "kimi-for-coding":{state:"ok",available:false,display_hidden:true,windows:[]},
+      "volcengine-agent-plan":{state:"ok",available:false,display_hidden:true,windows:[]}};
+    data.economics={work_pool:{capacity:10,total:0,remaining_percent:0,components:{}}};renderQuota()`);
+  assert.equal(h.get('.aliyun-block').hidden,true);
+  assert.equal(h.get('.deepseek-block').hidden,true);
+  assert.equal(h.get('.kimi-block').hidden,true);
+  assert.equal(h.get('.ark-block').hidden,true);
+  assert.equal(h.get('.pool-block').hidden,true);
+  assert.equal(h.get('.quota-section').hidden,true);
+
+  h.run(`data.quota["bailian-token-plan"].display_hidden=false;
+    data.quota["bailian-token-plan"].available=true;
+    data.quota["bailian-token-plan"].plan_quotas.personal={display_hidden:false,windows:[{name:"Monthly",unit:"percent",remaining_percent:97.48,valid:true}]};renderQuota()`);
+  assert.equal(h.get('.aliyun-block').hidden,false);
+  assert.equal(h.get('.pool-block').hidden,false);
+  assert.match(h.get('pool-components').innerHTML,/quota\.aliyunPlan/);
+  const windows=h.get('aliyun-windows').innerHTML;
+  assert.doesNotMatch(windows,/quota\.teamFirst/);
+  assert.match(windows,/quota\.personalStandby/);
+});
+
+test('a hidden provider refill is not shown as the next pool recovery', async () => {
+  const h=appHarness();await tick();
+  const future=new Date(Date.now()+6*3600000).toISOString();
+  h.run(`data.profiles={ali:{model:"bailian-token-plan/qwen3.8-max"},kimi:{model:"kimi-for-coding/k3"}};
+    data.quota={"bailian-token-plan":{state:"ok",plan_edition:"sequential",display_hidden:true,windows:[],
+      plan_quotas:{team:{display_hidden:true,windows:[]},personal:{display_hidden:true,windows:[]}}},
+      "kimi-for-coding":{state:"ok",display_hidden:false,windows:[{name:"overall",remaining_percent:50}]}};
+    data.economics={work_pool:{capacity:10,total:5,remaining_percent:50,refills:[
+      {provider:"bailian-token-plan",resets_at:"${future}",projected_remaining_percent:80},
+      {provider:"kimi",resets_at:"${future}",projected_remaining_percent:60}],
+      components:{kimi:{capacity:10,amount:5,remaining_percent:50}}}};renderQuota()`);
+  const next=h.get('pool-next').innerHTML;
+  assert.doesNotMatch(next,/quota\.aliyunPlan/);
+  assert.match(next,/quota\.kimiPlan/);
+  assert.match(next,/quota\.poolProjected/);
+});
+
 test('work pool uses fitted runtime, with DeepSeek as a small observed share', async () => {
   const h=appHarness();await tick();
   h.run('data.quota={deepseek:{available:true,balances:[{remaining:50,currency:"CNY"}]},"kimi-for-coding":{available:false,windows:[{name:"overall",remaining_percent:0}]},"volcengine-agent-plan":{available:true,windows:[{name:"AFPWeekly",remaining_percent:44}]}};data.tier_guidance={conservation_level:2};data.economics={work_pool:{capacity:321.667,total:80,remaining_percent:24.87,refills:[{provider:"kimi",resets_at:new Date(Date.now()+72000000).toISOString(),projected_remaining_percent:66}],components:{balance:{capacity:30,amount:25,remaining_percent:83.333},kimi:{capacity:166.667,amount:0,remaining_percent:0},plan:{capacity:125,amount:55,remaining_percent:44}}}};data.profiles={ds:{model:"deepseek/flash"},kimi:{model:"kimi-for-coding/k3"},ark:{model:"volcengine-agent-plan/k3"}};renderQuota()');

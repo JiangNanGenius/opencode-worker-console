@@ -75,6 +75,26 @@ class PersonalPlanAccounting(unittest.TestCase):
     def view(self, record):
         return quota.view({PROVIDER: record})
 
+    def test_terminal_personal_plan_is_publicly_hidden_but_still_queryable(self):
+        value = self.record(0, personal=True)
+        reset = value['windows'][0]['resets_at']
+        value['subscription'] = {'start_at': iso(self.now - 86400), 'end_at': reset}
+        value['addon'] = {'known': True, 'unit': 'credits', 'remaining': 0.0,
+                          'limit': 40000.0, 'used': 40000.0, 'active_count': 2,
+                          'remaining_percent': 0.0,
+                          'nearest_expires_at': iso(self.now + 30 * 86400)}
+        rendered = self.view(value)[PROVIDER]
+        self.assertTrue(rendered['display_hidden'])
+        # Display-only: the zero sample, window and query result stay intact.
+        self.assertEqual(rendered['windows'][0]['remaining_percent'], 0)
+        self.assertFalse(rendered['available'])
+
+        positive = self.record(50, personal=True)
+        positive['subscription'] = {'start_at': iso(self.now - 86400),
+                                    'end_at': positive['windows'][0]['resets_at']}
+        positive['addon'] = dict(value['addon'], remaining=100.0, remaining_percent=0.25)
+        self.assertFalse(self.view(positive)[PROVIDER]['display_hidden'])
+
     def test_team_zero_does_not_block_personal_before_refresh(self):
         q = self.view(self.record(0))
         self.assertEqual(q[PROVIDER]['plan_edition'], 'personal')

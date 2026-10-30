@@ -153,6 +153,25 @@ test('sequential plans render Team first and Personal standby without combining 
 });
 
 
+test('terminal plans are omitted from the sequential card, live siblings stay', () => {
+  const seen=[];
+  const scope=vm.createContext({tr:key=>key,esc:value=>String(value),
+    alibabaQuotaStamp:q=>q.source||'unknown',quotaWindows:rows=>{seen.push(rows);return 'window';}});
+  vm.runInContext(source.match(/^function alibabaPlanWindows\(q\).*$/m)[0],scope);
+  const team=[{name:'Credits(max)',remaining:0,remaining_percent:0,valid:true,display_hidden:true}];
+  const personal=[{name:'Monthly',unit:'percent',remaining_percent:97.48,valid:true}];
+  const value={plan_edition:'sequential',active_plan:'personal',windows:[],
+    plan_quotas:{team:{source:'openapi_live',display_hidden:true,windows:team},
+      personal:{source:'personal_console',display_hidden:false,windows:personal}}};
+  const html=scope.alibabaPlanWindows(value);
+  assert.doesNotMatch(html,/quota.teamFirst/);
+  assert.match(html,/quota.personalStandby/);
+  assert.deepEqual(seen,[personal]);
+
+  value.plan_quotas.personal.display_hidden=true;
+  assert.equal(scope.alibabaPlanWindows(value),'');
+});
+
 test('Team exhaustion is not total exhaustion while Personal remains available', () => {
   const scope=vm.createContext({tr:key=>key,quotaPace:()=>['on-track','ready']});
   vm.runInContext(source.slice(source.indexOf('function planQuotaState('),source.indexOf('function balanceQuotaState(')),scope);
