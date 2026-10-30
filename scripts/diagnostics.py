@@ -206,15 +206,19 @@ def collect(task_id, full=False):
                 'status', 'reason', 'errors', 'pending')
         result = {key: result[key] for key in keys if key in result}
     out = {'task': common.coordinator_task(t), 'result': result}
-    if (t.get('requested_profile') or 'auto') == 'auto' and isinstance(out['result'], dict):
+    automatic = (t.get('requested_profile') or 'auto') == 'auto'
+    if automatic and isinstance(out['result'], dict):
         out['result'].pop('actual_models', None)
+        if common.automatic_capacity_reason(out['result'].get('reason')):
+            out['result'].pop('reason', None)
         errors = []
-        hide_owned_capacity = t.get('status') not in ('failed', 'needs_attention', 'uncertain')
         for item in out['result'].get('errors') or []:
             if not isinstance(item, dict):
                 errors.append(item)
                 continue
-            if hide_owned_capacity and (item.get('billing') or item.get('usage_window')):
+            # Individual capacity stops are operator telemetry. The generic
+            # all-routes-exhausted recovery is added below when applicable.
+            if common.capacity_owned_error(item):
                 continue
             cleaned = dict(item)
             cleaned.pop('provider', None)
@@ -228,10 +232,13 @@ def collect(task_id, full=False):
     try:
         # Read-only live derivation replaces the persisted snapshot (None clears a stale
         # one); it never re-arms the billing circuit and never replays anything.
-        recovery = quota.guidance(t, common.config(),
-                                  quota.view(common.read_json(common.STATE / 'quota.json', {})))
+        recovery = quota.coordinator_recovery(
+            t, common.config(),
+            quota.view(common.read_json(common.STATE / 'quota.json', {})))
     except Exception:
-        pass  # Keep the persisted snapshot only when live derivation is unavailable.
+        if automatic:
+            recovery = None
+        # Explicit pins may keep the persisted detailed snapshot.
     if recovery:
         out['recovery'] = recovery
         out['task']['recovery'] = recovery

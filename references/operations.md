@@ -248,8 +248,18 @@ applies the low-weekly guard again and submits a continuation to the next route 
 OpenCode session. This preserves transcript, workspace and partial work. The continuation tells
 the new model to inspect existing state and not repeat completed edits, deployments, messages,
 payments, destructive operations or other external side effects. It never replays the original
-prompt. Authentication failures, network failures and ordinary model errors do not trigger this
-transition. If no route is suitable or rerouting is disabled, the original task stays active
+prompt, and it does not disclose the failed provider, plan, tier, balance or transition trigger
+to the worker. Task `status`, `wait` and `collect` projections likewise omit individual capacity
+stops and recovery hints while a legal automatic route remains. A requested-tier-only blockage,
+unknown/stale reading or unproven denial stays an ordinary queued task with no recovery object,
+and `wait` continues; the base task keeps its requested tier/floor. Only after every configured
+automatic route across all tiers is proven exhausted may they report a generic
+`automatic_routes_exhausted` blockage; unknown/stale reads, auth/transport errors, manual
+exclusions, capability floors and disabled or unconfigured policies never qualify. Explicit
+model pins, capability floors, auth, permission and transport failures keep their actionable
+detail; the console and `quota` views retain full operator telemetry. Authentication
+failures, network failures and ordinary model errors do not trigger this transition. If no route
+is suitable or rerouting is disabled, the original task stays active
 with a capacity-wait reason and a durable checkpoint. It retains scope/resource ownership but
 does not occupy an execution slot while merely waiting. Explicit model pins wait for that
 profile. Once admission recovers, original waiting tasks and maintenance checkpoints take

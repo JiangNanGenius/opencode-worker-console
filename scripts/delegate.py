@@ -50,14 +50,23 @@ def live_recovery(t):
     """Fresh guidance for queued blockages and billing-failed tasks.
 
     Live derivation replaces the persisted snapshot; when routing is healthy again the
-    result is None so stale recovery never lingers. The snapshot is kept only when live
-    derivation itself is unavailable.
+    result is None so stale recovery never lingers. Automatic routing projects only a
+    generic whole-route exhaustion after every configured route across every tier is
+    proven unavailable; partial/unproven tier stops return no recovery object at all.
+    Explicit pins keep the detailed
+    operator recovery. The persisted snapshot is never exposed for an automatic task,
+    because it may contain the individual provider/quota stop that transparent routing
+    deliberately keeps operator-only.
     """
     if t.get('status') not in ('queued', 'failed', 'needs_attention'):
         return None
+    automatic = (t.get('requested_profile') or 'auto') == 'auto'
     try:
-        return quota.guidance(t, config(), quota.view(read_json(STATE / 'quota.json', {})))
+        return quota.coordinator_recovery(t, config(),
+                                          quota.view(read_json(STATE / 'quota.json', {})))
     except Exception:
+        if automatic:
+            return None
         return t.get('recovery') if isinstance(t.get('recovery'), dict) else None
 
 
@@ -74,11 +83,14 @@ def wait_result(t, waited_seconds):
     alternatives = recovery.get('alternatives') if isinstance(recovery, dict) else None
     monthly = isinstance(recovery, dict) and recovery.get('billing_reason') == 'monthly_usage_limit'
     window = isinstance(recovery, dict) and recovery.get('usage_window_exhausted') is True
+    all_routes_exhausted = isinstance(recovery, dict) and \
+        recovery.get('automatic_routes_exhausted') is True
     result.update(
         terminal=terminal,
         continue_waiting=not terminal and not blocked,
         waited_seconds=max(0, round(waited_seconds, 3)),
         next_action=(
+            'wait_for_capacity_recovery' if actionable and all_routes_exhausted else
             'resubmit_same_tier_auto' if actionable and alternatives else
             'release_manual_retry_then_resubmit' if actionable and monthly and
             isinstance(recovery, dict) and recovery.get('manual_release_required') else

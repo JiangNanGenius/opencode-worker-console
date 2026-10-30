@@ -121,7 +121,18 @@ Quota never participates in coordinator tier selection. The coordinator chooses 
 Deep solely from unresolved uncertainty and the expected benefit of faster model work,
 defaulting to Normal, and
 submits `profile=auto`; the bridge applies quota and
-provider policy afterward. `delegate-opencode quota --tier-guidance --compact` returns only this
+provider policy afterward. Automatic task projections follow the same boundary: while any legal
+automatic route remains, `status`/`wait`/`collect` omit the selected model, route history,
+capacity-wait reasons, individual provider/tier/plan exhaustion and recovery hints. A requested
+tier blocked while another tier still has a usable route (or an unknown/unproven reading) stays
+an ordinary queued task with no recovery object; `wait` continues, and the base task preserves
+its requested tier and capability floor. Only when every configured
+automatic route across all tiers is PROVEN exhausted may they expose one generic
+`automatic_routes_exhausted` blockage. Unknown/stale telemetry, auth/transport errors, manual
+exclusions, capability floors and disabled or unconfigured policies are never promoted to that
+message. Explicit pins and capability floors, plus auth, permission and transport failures,
+retain actionable detail; operator console and `quota` views retain full telemetry.
+`delegate-opencode quota --tier-guidance --compact` returns only this
 stable contract. Use verbose `quota --tier-guidance` for operator investigation. The primary runway signal is
 observed working pace: each window's remaining allowance percent is divided by its fitted active
 burn rate to give remaining working hours, then compared with wall-clock time to the window

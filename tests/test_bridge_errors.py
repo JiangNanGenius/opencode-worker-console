@@ -39,7 +39,8 @@ class ErrorBridgeTests(unittest.TestCase):
         common.init()
         common.write_json(common.CONFIG, {'profiles': {'fast': {'model': 'test/model'}}})
         common.write_json(common.task_path('job-error'), {
-            'id': 'job-error', 'profile': 'fast', 'status': 'running', 'mode': 'read',
+            'id': 'job-error', 'profile': 'fast', 'requested_profile': 'fast',
+            'status': 'running', 'mode': 'read',
             'scopes': [], 'directory': str(self.root), 'session_id': 'ses_error',
             'message_id': 'msg_test', 'started_at': time.time(), 'timeout_seconds': 30,
             'dispatch_attempted_at': time.time()})

@@ -1167,8 +1167,12 @@ class PoolTests(unittest.TestCase):
                       rec['autonomous_next_action']['instruction'])
         waited = delegate.wait_result(common.task(t['id']), 0)
         self.assertTrue(waited['terminal'])
-        self.assertTrue(waited['attention'])
-        self.assertEqual(waited['next_action'], 'release_manual_retry_then_resubmit')
+        # The fallback profile is disabled, so this is a policy-disabled state,
+        # not proven full-service exhaustion. Automatic routing hides it while
+        # the operator recovery above keeps the actionable provider detail.
+        self.assertFalse(waited.get('attention'))
+        self.assertNotIn('recovery', waited)
+        self.assertEqual(waited['next_action'], 'collect_and_inspect_errors')
 
     def running(self, owner, scope, profile='fallback', group=None):
         t = self.new(scopes=[scope], profile=profile)

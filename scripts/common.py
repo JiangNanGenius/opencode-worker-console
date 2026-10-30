@@ -271,30 +271,138 @@ def public_task(t):
     return {k: t[k] for k in keys if k in t}
 
 
+# Bridge-owned capacity/routing state. These values are operator telemetry and
+# must not reach an automatically routed task model while another legal route
+# may continue the same task. Explicit profile pins keep the existing detailed
+# semantics; only transparent automatic routing is projected through this set.
+AUTO_CAPACITY_REASONS = frozenset((
+    'capacity_wait', 'capacity_wait_preferred_return',
+    'capacity_continuation_intent', 'capacity_continuation_observing',
+    'capacity_continuation_rejected', 'capacity_continuation_acknowledgement_unknown',
+    'quota_reroute_acknowledgement_unknown',
+    'proactive_reroute_acknowledgement_unknown',
+    'window_exhausted_abort_not_confirmed', 'provider_usage_window_limit',
+    'provider_usage_or_rate_limit', 'quota_exhausted_or_account_unavailable',
+    'provider_still_blocked', 'continuation_excluded_provider',
+))
+AUTO_CAPACITY_REASON_PREFIXES = (
+    'capacity_', 'quota_reroute_', 'proactive_reroute_', 'provider_billing_',
+)
+
+
+def automatic_capacity_reason(value):
+    """True only for known bridge-owned capacity/recovery reason strings."""
+    text = str(value or '')
+    return bool(text) and (text in AUTO_CAPACITY_REASONS or
+                           text.startswith(AUTO_CAPACITY_REASON_PREFIXES))
+
+
+def automatic_route_queue_reason(value):
+    """True for scheduler route decisions; the coordinator never needs the detail."""
+    return str(value or '').startswith('routing_policy:')
+
+
+# Internal phases/codes emitted while the bridge is handling a capacity stop.
+# They are operator telemetry even when the individual item itself has no
+# billing/usage flag (for example a bridge summary of a failed reroute).
+AUTO_CAPACITY_PHASES = frozenset((
+    'quota_reroute', 'quota_reroute_dispatch', 'proactive_quota_reroute',
+    'capacity_reroute', 'capacity_continuation', 'capacity_wait', 'billing_recovery',
+))
+AUTO_CAPACITY_CODE_PREFIXES = (
+    'quota_reroute_', 'proactive_reroute_', 'proactive_quota_reroute',
+    'capacity_', 'provider_billing_',
+)
+
+
+def capacity_owned_error(item):
+    """True for an error that only reports provider plan/window/billing/reroute state."""
+    if not isinstance(item, dict):
+        return False
+    if item.get('billing') or item.get('billing_reason') or \
+            item.get('usage_window') or item.get('usage_window_reason'):
+        return True
+    if item.get('code') == 'provider_usage_window_limit':
+        return True
+    # Bridge-generated summaries of capacity work carry internal phase/code text
+    # but no billing flag. Restrict this arm to bridge/model items so genuine tool
+    # output with a coincidental code is never erased.
+    if item.get('source') not in ('bridge', 'model'):
+        return False
+    phase = str(item.get('phase') or '')
+    if phase in AUTO_CAPACITY_PHASES or phase.startswith(('quota_reroute', 'proactive_', 'capacity_')):
+        return True
+    code = str(item.get('code') or '')
+    return automatic_capacity_reason(code) or code.startswith(AUTO_CAPACITY_CODE_PREFIXES)
+
+
+def _capacity_activity_text(value, t):
+    """Match a bounded activity label/message to known capacity metadata.
+
+    This deliberately compares against recorded capacity errors and exact reason
+    strings instead of using a broad quota regex over genuine tool or worker text.
+    """
+    if not isinstance(value, str) or not value:
+        return False
+    if automatic_capacity_reason(value) or automatic_route_queue_reason(value):
+        return True
+    for item in t.get('errors') or []:
+        if not capacity_owned_error(item):
+            continue
+        message = item.get('message')
+        if isinstance(message, str) and message and (
+                message.startswith(value) or value.startswith(message[:400])):
+            return True
+    return False
+
+
+def _coordinator_activity(value, t):
+    """Drop/sanitise only activity generated from bridge-owned capacity metadata."""
+    if not isinstance(value, list):
+        return value
+    result = []
+    for event in value:
+        if not isinstance(event, dict):
+            continue
+        if event.get('type') == 'status' and _capacity_activity_text(event.get('text'), t):
+            result.append(dict(event, text='Waiting for automatic worker admission'))
+        elif event.get('type') == 'error' and _capacity_activity_text(event.get('text'), t):
+            continue
+        else:
+            result.append(event)
+    return result
+
+
 def coordinator_task(t):
     """Task view for the coordinating model, with automatic routing kept internal.
 
     The console and operator diagnostics retain provider/model history. For an
     automatically routed task the coordinator only needs the requested tier,
-    lifecycle, evidence and recovery action; exposing the selected model or
-    conservation hop invites it to second-guess a bridge-owned decision.
+    lifecycle, evidence and recovery action; exposing the selected model,
+    conservation hop, or an individual provider/tier quota stop invites it to
+    second-guess a bridge-owned decision. A true all-routes-exhausted condition
+    is represented by the generic recovery action added by the CLI projection.
     Explicit user-requested profile pins remain visible.
     """
     out = public_task(t)
     if (t.get('requested_profile') or 'auto') == 'auto':
         for key in ('profile', 'route_reason', 'route_history', 'actual_models',
                     'fallback_used', 'routing_notice', 'proactive_reroute_levels',
-                    'excluded_providers'):
+                    'excluded_providers', 'current_model', 'current_variant', 'recovery'):
             out.pop(key, None)
+        if automatic_capacity_reason(out.get('reason')):
+            out.pop('reason', None)
+        if automatic_route_queue_reason(out.get('queue_reason')) or \
+                automatic_capacity_reason(out.get('queue_reason')):
+            out.pop('queue_reason', None)
         errors = []
-        hide_owned_capacity = t.get('status') not in ('failed', 'needs_attention', 'uncertain')
         for item in out.get('errors') or []:
             if not isinstance(item, dict):
                 errors.append(item)
                 continue
-            # Capacity stops that the bridge owns are route telemetry. A true
-            # no-route condition is represented by the generic recovery action.
-            if hide_owned_capacity and (item.get('billing') or item.get('usage_window')):
+            # Capacity stops are operator telemetry. A true no-route condition is
+            # represented by the generic recovery action, never by this detail.
+            if capacity_owned_error(item):
                 continue
             cleaned = dict(item)
             cleaned.pop('provider', None)
@@ -303,6 +411,16 @@ def coordinator_task(t):
             out['errors'] = errors
         else:
             out.pop('errors', None)
+        if 'last_activity' in out:
+            last = _coordinator_activity([out['last_activity']], t)
+            if last:
+                out['last_activity'] = last[0]
+            else:
+                out.pop('last_activity', None)
+        if 'recent_activity' in out:
+            out['recent_activity'] = _coordinator_activity(out['recent_activity'], t)
+        if 'last_activity' not in out and out.get('recent_activity'):
+            out['last_activity'] = out['recent_activity'][-1]
     return out
 
 

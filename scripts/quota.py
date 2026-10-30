@@ -3792,3 +3792,168 @@ def guidance(t, c, q):
     if t.get('status') == 'queued':
         return recovery(t, c, q)
     return None
+
+
+# Route denials that describe a capacity/route-pressure condition. They are
+# hidden from automatic task projections unless the FULL automatic service is
+# proven exhausted; a single tier's denial is never enough.
+AUTO_ROUTE_CAPACITY_DENIALS = frozenset((
+    'quota_exhausted_or_account_unavailable', 'provider_billing_blocked',
+    'provider_usage_window_limit', 'provider_usage_or_rate_limit',
+    'kimi_account_total_exhausted', 'kimi_weekly_reserved_for_ultra',
+    'kimi_weekly_unknown', 'bailian_slots_waiting_or_unavailable',
+    'continuation_excluded_provider', 'provider_still_blocked',
+    'provider_reserved_for_fast',
+))
+
+
+def automatic_route_state(t, c, q):
+    """(profile, denial, known) for the task's automatic route preview."""
+    try:
+        profile, why = route(dict(t, requested_profile='auto'), c, q)
+    except Exception:
+        return None, None, False
+    return profile, why, True
+
+
+def _route_denial(why):
+    text = str(why or '')
+    if text.startswith('routing_policy:'):
+        return text[len('routing_policy:'):]
+    return text
+
+
+def _tier_probe(tier):
+    return {'requested_profile': 'auto',
+            'tier': 'normal' if tier == 'background' else tier,
+            'complexity': 'deep' if tier in ('deep', 'ultra') else 'normal'}
+
+
+def _automatic_route_candidates(c):
+    """All automatic (profile, tier) candidates and whether every tier is configured.
+
+    The second return value is False when a public tier has no automatic candidate
+    at all. Such an unconfigured/policy-disabled tier must never be presented as
+    proven exhaustion, even if every other configured route is empty.
+    """
+    policy = routing.configured(c) or {}
+    spill = routing.configured_spillover(c, policy)
+    pairs = []
+    complete = True
+    for tier in routing.TIERS:
+        names = [entry['profile'] for entry in routing.tier_entries(policy, tier)]
+        if not names:
+            profile = _profile_name(_tier_probe(tier), c)
+            if profile:
+                names.append(profile)
+        if spill and spill.get('enabled') and tier in (spill.get('tiers') or ()):
+            target = spill.get('profile')
+            if isinstance(target, str) and target:
+                names.append(target)
+        unique = []
+        for name in names:
+            if name not in unique:
+                unique.append(name)
+        if not unique:
+            complete = False
+        for name in unique:
+            pairs.append((name, tier))
+    return pairs, complete
+
+
+def whole_service_exhausted(c, q):
+    """True only when every configured automatic route is PROVEN exhausted.
+
+    Disabled/missing/retired profiles, manual exclusions, capability floors,
+    auth rejections, control-plane/transport errors and unknown or stale quota
+    all fail closed. A single usable route (including another tier's route) or a
+    single unproven failure means the service is not proven exhausted.
+    """
+    # Cheap first pass: a single usable route (including another tier's route)
+    # disproves whole-service exhaustion before any per-profile proof work.
+    for tier in routing.TIERS:
+        profile, _why = route(_tier_probe(tier), c, q)
+        if profile:
+            return False
+    pairs, complete = _automatic_route_candidates(c)
+    if not complete or not pairs:
+        return False
+    for name, tier in pairs:
+        probe = _tier_probe(tier)
+        provider, ok, why = _allowed_profile(name, probe, c, q)
+        if ok:
+            return False
+        if not is_capacity_exhaustion_reason(why, provider, probe, q):
+            return False
+    return True
+
+
+def generic_capacity_recovery():
+    """Model-facing shape for a true all-automatic-routes-exhausted condition.
+
+    Deliberately contains no provider, model, plan, balance, alternative, tier or
+    retry-command hints. Individual capacity telemetry remains available through
+    operator views (public task records, console, quota diagnostics).
+    """
+    return {
+        'blocked_reason': 'automatic_capacity_unavailable',
+        'suggested_action': 'wait_for_capacity_recovery',
+        'automatic_routes_exhausted': True,
+        'alternatives': [],
+        'autonomous_reselection': False,
+        'autonomous_next_action': {
+            'action': 'wait_for_capacity_recovery',
+            'instruction': ('All usable automatic routes for this task are temporarily unavailable. '
+                            'Keep the task and its checkpoint; the bridge continues automatically when '
+                            'capacity recovers. Do not inspect quota or change the requested tier.'),
+            'requires_user_approval': False,
+            'wait_for_quota': True,
+        },
+        'note': ('Generic whole-route blockage only; individual provider, plan and tier telemetry '
+                 'is operator-only.'),
+    }
+
+
+def _task_has_auth_failure(t):
+    reason = str(t.get('reason') or '')
+    if reason == 'provider_authentication_blocked' or reason.startswith('provider_authentication_'):
+        return True
+    return any(isinstance(item, dict) and item.get('auth') for item in t.get('errors') or [])
+
+
+def _task_auth_blocked(t, c):
+    """A current inference-key auth circuit stays an actionable auth failure."""
+    provider, _name = _task_provider(t, c)
+    block = billing_block(provider) if provider else None
+    return bool(block) and block.get('reason') == AUTH_REASON
+
+
+def coordinator_recovery(t, c, q):
+    """Recovery projection for ordinary model-facing task status/collect views.
+
+    Explicit profile pins keep the existing detailed semantics. Automatic routing
+    hides an individual provider/tier capacity stop while a legal route remains.
+    A requested-tier-only capacity stop, unknown/stale reading or unproven denial
+    becomes ordinary queued waiting with no recovery object. Whole-service
+    exhaustion is shown only when every configured automatic route across every
+    tier is PROVEN exhausted; unknown, stale, auth, manual-exclusion,
+    capability-floor and policy/config failures are never promoted to that message.
+    """
+    if (t.get('requested_profile') or 'auto') != 'auto':
+        return guidance(t, c, q)
+    profile, why, known = automatic_route_state(t, c, q)
+    if not known or profile:
+        return None
+    if _task_has_auth_failure(t) or _task_auth_blocked(t, c):
+        return guidance(t, c, q)
+    if _route_denial(why) not in AUTO_ROUTE_CAPACITY_DENIALS:
+        # Non-capacity denials (auth-path fallback, disabled/retired profile,
+        # capability floor, manual exclusion, config) preserve their actionable
+        # guidance rather than being misreported as exhaustion.
+        return guidance(t, c, q)
+    if whole_service_exhausted(c, q):
+        return generic_capacity_recovery()
+    # A requested-tier-only capacity stop, unknown/stale reading or unproven
+    # denial is ordinary queued waiting: no recovery object, no tier hint, no
+    # wait_for_quota. The base task already carries its requested tier/floor.
+    return None

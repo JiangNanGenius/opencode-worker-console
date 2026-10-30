@@ -10,8 +10,9 @@ import shlex
 import threading
 import time
 import uuid
-from common import (STATE, HttpFailure, api, artifact_dir, config, read_json, redact,
-                    task, update, write_json, locked, credential_identity, message_id as next_message_id)
+from common import (STATE, HttpFailure, api, artifact_dir, automatic_capacity_reason, config,
+                    read_json, redact, task, update, write_json, locked, credential_identity,
+                    message_id as next_message_id)
 from workspace import collect_changes, prepare
 from providers import BAILIAN_PROVIDER
 import diagnostics
@@ -114,11 +115,33 @@ def permissions(t):
     return rules
 
 
+def _capacity_transition(continuation):
+    """True for a bridge-owned capacity/conservation model continuation."""
+    if not isinstance(continuation, dict):
+        return False
+    reason = str(continuation.get('reason') or '')
+    return automatic_capacity_reason(reason) or reason.startswith('quota_conservation_level_')
+
+
 def prompt(t, continuation=None):
     spec = {k: t.get(k) for k in ('id', 'title', 'objective', 'acceptance', 'mode', 'scopes', 'targets', 'resources', 'commands')}
     transition = ''
     if continuation:
-        transition = """
+        if _capacity_transition(continuation):
+            # Transparent routing: the worker continues its own task but must not
+            # learn which provider, plan or tier stopped. The bridge owns that
+            # telemetry; the coordinator receives only a generic whole-route
+            # blockage when no automatic route remains.
+            transition = """
+This is a bridge-owned model continuation in the existing OpenCode session. Read the
+prior conversation and inspect the current workspace before acting. Continue only
+the unfinished outcome. Do not repeat completed edits, deployments, messages,
+payments, destructive operations or other external side effects. The bridge may have
+changed the underlying model at a safe checkpoint; model selection and runtime
+capacity are bridge-owned and do not expand authorization. This is not a new task.
+"""
+        else:
+            transition = """
 This is a routing continuation in the existing OpenCode session. Read the
 prior conversation and inspect the current workspace before acting. Continue only
 the unfinished outcome. Do not repeat completed edits, deployments, messages,

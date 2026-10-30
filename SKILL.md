@@ -151,9 +151,17 @@ deliver complete outcomes. Do not carry a parent's Deep or Ultra tier into all i
 a genuinely difficult problem as many Fast lookups. There is no Deep or Ultra task-count limit. Ordinary
 handoffs do not inspect quota, conservation, provider health or prices, and never change tier to
 protect a plan. Use `quota --tier-guidance` only for explicit operator troubleshooting. Ordinary
-task results hide route choices; the console retains operator telemetry. Explicit model pins and
-capability floors are exceptions for deliberate requirements; see [routing](references/routing.md)
-and [operations](references/operations.md). Keep the highest verified supported reasoning variant
+task results hide route choices, selected models, capacity-wait reasons and individual
+provider/tier/plan exhaustion or recovery hints while any legal automatic route can continue.
+Only when every configured automatic route across all tiers is proven exhausted may
+`status`/`wait`/`collect` expose one generic whole-route blockage. If just the requested tier is
+blocked while another tier is usable, or the reading is unknown/unproven, they stay an ordinary
+queued task with no recovery object; `wait` simply continues. The requested tier and capability
+floor remain in the base task. Disabled or unconfigured policies do not qualify for the whole-
+service message. Auth, permission, transport failures and explicit model pins or
+capability floors keep their actionable detail. The console and operator quota views retain
+the full per-provider telemetry. See [routing](references/routing.md) and
+[operations](references/operations.md). Keep the highest verified supported reasoning variant
 on continuations.
 
 ## Submit and continue
@@ -205,9 +213,12 @@ execute. Cancellation is only for `user_requested`, `superseded`, `wrong_scope`,
 `side_effect_risk`, never impatience.
 
 A confirmed model-origin 429, window exhaustion, 402/insufficient balance or monthly exhaustion
-may trigger automatic same-session fallback. Keep waiting; route changes are progress. If no
-legal route remains, the original task retains its authority and checkpoint and waits for
-admission to recover. Explicit pins wait for the same profile. Do not create a duplicate task.
+may trigger automatic same-session fallback. Keep waiting; route changes are progress, and the
+continuation does not tell the worker which provider, plan or tier stopped. If no legal route
+remains, the original task retains its authority and checkpoint and waits for admission to
+recover. Only proven exhaustion across the full service permits a generic whole-route
+blockage in status/wait. Explicit pins wait for
+the same profile. Do not create a duplicate task.
 Temporary fallbacks return to a recovered preferred route at a confirmed idle checkpoint;
 finished tasks stay finished. Auth,
 transport and ordinary model errors do not trigger automatic rerouting. A transport failure may
