@@ -166,18 +166,25 @@ These options initialize a **fresh** installation, not replace existing profiles
 | `ultra-reasoning` | Kimi K3.1 Pro | Ultra reasoning; confirmed capacity exhaustion can continue on Qwen3.8 Max |
 | `fallback` | DeepSeek V4.1 Flash | Final fallback after preferred stages are unavailable |
 
-The upstream harness chooses Fast, Normal, Deep or Ultra only from task uncertainty and submits with `profile=auto`; the bridge privately owns the profile, provider, allowance balance, conservation and fallback. Ordinary task results do not disclose automatic model or route changes, while the operator console retains the full audit trail. The profile table above is an operator configuration view, not an agent role list. The preset uses `max` reasoning; other models need a variant their provider actually supports. Only a user-required named model or controlled comparison should pin a profile. [Routing and plan efficiency](references/routing.md).
+For work worth delegating, the upstream harness chooses Fast, Normal, Deep or Ultra only from task uncertainty and submits with `profile=auto`; the bridge privately owns the profile, provider, allowance balance, conservation and fallback. Ordinary task results do not disclose automatic model or route changes, while the operator console retains the full audit trail. The profile table above is an operator configuration view, not an agent role list. The preset uses `max` reasoning; other models need a variant their provider actually supports. Only a user-required named model or controlled comparison should pin a profile. [Routing and plan efficiency](references/routing.md).
 
 Fast can complete bounded, well-specified features, known fixes, tests, documentation and routine
-deployment; it is not a mechanical-work bucket. Normal is the default for concrete outcomes. Deep handles complex work needing strong reasoning.
+deployment; it is not a mechanical-work bucket. Normal is the default for delegated concrete outcomes. Deep handles complex work needing strong reasoning.
 Ultra handles especially difficult architecture, stubborn root causes and long-horizon reasoning.
 After two rounds without material progress, the coordinator reviews a checkpoint before upgrading;
 authentication, permissions and environment failures need direct repair. Once uncertainty is
-resolved, give routine implementation to Normal. File count and importance alone do not choose a tier.
+resolved, substantial delegated implementation normally continues on Normal; finish targeted local
+corrections directly. File count and importance alone do not choose a tier.
 
 ## Product capabilities
 
 ### Delegate complete outcomes
+
+Handle targeted local fixes directly when location, cause, impact and focused verification are
+clear. This includes small review corrections after a worker has finished and there is no active
+writer or scope/resource conflict. Judge the remaining work and handoff cost rather than a fixed
+line count. Delegate repository exploration, complex investigation and substantial execution
+packages early; choose a tier only after deciding a handoff is worthwhile.
 
 Workers can own investigation, implementation, test repair, writing, SSH operations and routine deployment instead of receiving tiny code fragments. Each task carries an objective, acceptance criteria, workspace, and file or remote-resource scope. The default is four concurrent workers per owning upstream-harness conversation; separate conversations have independent capacity.
 

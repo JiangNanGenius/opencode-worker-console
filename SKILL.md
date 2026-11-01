@@ -1,22 +1,32 @@
 ---
 name: delegate-opencode
-description: Delegate executable work early to general-purpose OpenCode workers when an authorized task needs investigation, implementation, verification or routine operations. Pass sufficient context, default ordinary executable work to Normal, improve workflow efficiency without automatically selecting Fast, reserve Fast for a concrete model-latency bottleneck, use Deep for strong reasoning and Ultra for the hardest unresolved work, and keep profile=auto; retain coordination, critical judgment and complex device interaction upstream.
+description: Delegate repository exploration, substantial implementation, complex investigation and independent execution packages to OpenCode when a handoff adds value. Handle targeted local fixes directly when location, cause, impact and focused verification are clear, including small corrections to completed worker results. For delegated work default to Normal and keep profile=auto; retain coordination, critical judgment and complex device interaction upstream.
 ---
 
 # Delegate OpenCode work
 
-Use OpenCode as the execution layer, not just as a helper for leftovers. After the minimum
-entry checks needed to identify the workspace, authority and existing work, delegate a coherent,
-verifiable package before doing its substantive investigation or implementation yourself. An
-unfamiliar repository is a reason to delegate discovery, not to read it all before handing off.
-Do not wait for the user to ask for workers. Task domain, importance, size and personal familiarity
-do not determine eligibility; actual execution tools and authority do.
+First decide whether a handoff adds value; choose a worker tier only for work worth delegating.
+Make targeted local fixes directly when their location, cause, impact and focused verification
+are clear or can be confirmed with a narrow check. Examples include a few-line logic correction,
+a known parameter adjustment, and a local wording or configuration fix. Weigh the remaining
+investigation, implementation and verification against handing over context and reviewing the
+result; use no fixed line, file or time cutoff. A short diff with an unknown cause or wider
+impact still needs investigation.
+
+Delegate repository exploration, unknown-root-cause investigation, cross-module changes and
+substantial independent execution packages early, with enough context and authority to finish.
+An unfamiliar repository is a reason to delegate discovery, not to read it all before handing
+off. Do not wait for the user to request workers when that work warrants a handoff, and do not
+create a task merely because an action edits code or uses a shell.
 
 The upstream harness owns planning, dependencies, critical decisions, integration and final
 acceptance. Workers own their package's investigation, implementation, relevant verification and
-local repair. Review their critical evidence without repeating all their repository reading or
-checks. Direct execution remains reasonable for a genuinely trivial, self-contained action or a
-step that specifically needs the upstream harness; do not manufacture tasks to meet a quota.
+local repair while it is active. Review their critical evidence without repeating all their
+repository reading or checks. When a worker has finished and review leaves a targeted local
+correction, fix it directly and run the relevant check after confirming there is no active
+writer or scope/resource conflict. Do not create or restart a worker just for that correction.
+While a worker still owns the work, steer it or wait for it to finish rather than racing its
+edits; substantial unresolved repair remains a delegated package.
 
 ## Delegate at useful boundaries
 
@@ -31,17 +41,18 @@ step that specifically needs the upstream harness; do not manufacture tasks to m
   handoffs, dispatch ready independent work, resolve dependency/resource conflicts, and reuse
   verified outputs rather than repeating investigation or checks. These changes do not by
   themselves change a task's tier.
-- At a meaningful result, reassess the remaining work. Use a linked task for a distinct deliverable
-  and `task retier` for the same outcome, preserving its session and handoff. Resolved Deep
-  uncertainty normally continues as Normal. Select Fast only under the criteria below; reassess
+- At a meaningful result, reassess the remaining work, applying the direct-fix boundary first.
+  For work still worth delegating, use a linked task for a distinct deliverable and `task retier`
+  for the same outcome, preserving its session and handoff. Resolved Deep uncertainty normally
+  continues as Normal when substantial implementation remains. Select Fast only under the criteria below; reassess
   it when the bottleneck changes and return to Normal when its speed benefit is gone and
   meaningful work remains. Cost, quota and elapsed time are bridge routing concerns, not reasons
   for the coordinator to change a task's tier.
 
 ## Give enough context without delaying dispatch
 
-For a simple, self-contained task, a short objective, necessary context and concrete acceptance
-are sufficient. Do not impose the full handoff template on it. For substantial or continuing work,
+For a self-contained package worth delegating, a short objective, necessary context and concrete
+acceptance are sufficient. Do not impose the full handoff template on it. For substantial or continuing work,
 use [the handoff contract](references/handoff.md) and a private JSON spec with a structured
 `objective`. Pass the relevant facts already known: goal, current state, settled decisions,
 evidence and artifact locations, authority, constraints, dependencies and acceptance. Include
@@ -99,11 +110,12 @@ run` ([credentials](references/credentials.md)), never prompts, argv, reports or
 
 ## Choose one tier by uncertainty and latency value
 
-Keep `profile=auto`; the bridge chooses providers, models, balancing and fallback.
+After deciding to delegate, keep `profile=auto`; the bridge chooses providers, models, balancing
+and fallback. Normal is the default for delegated work, not a requirement to hand off local fixes.
 
 | Remaining task shape | Tier |
 | --- | --- |
-| Ordinary executable work: clear/bounded implementation, investigation, tests, docs, deployment, finalization | `normal` (default) |
+| Delegated executable work: clear/bounded implementation, investigation, tests, docs, deployment, finalization | `normal` (default) |
 | Direction, constraints and acceptance are clear; remaining model-driven work is the current bottleneck, and faster output has an evidence-backed benefit for a named near-term milestone or explicit deadline | `fast` |
 | Complex investigation or implementation needing strong reasoning | `deep` |
 | Especially difficult architecture, stubborn unknown root causes, long-horizon reasoning, or two rounds without material progress after checkpoint review | `ultra` |
@@ -114,7 +126,8 @@ reasoning). Old native and Ark K3 routes are retired; historical records remain 
 Start clearly extreme reasoning work directly on Ultra. After two rounds without material
 progress, review the checkpoint and upgrade when reasoning is the blocker. Authentication,
 permissions, missing tools and environment failures need their own repair before escalation.
-When uncertainty is resolved, give routine implementation to Normal. By default, confirmed
+When uncertainty is resolved, give substantial remaining implementation to Normal; finish
+targeted local corrections directly once the worker has finished. By default, confirmed
 Ultra quota, five-hour/monthly allowance or balance exhaustion can continue on Qwen3.8 Max
 without changing the Ultra tier, task, session, authority or checkpoint. It does not fall below
 Max; when both routes are unavailable it waits. Fresh recovery allows a return to K3.1 Pro only
@@ -134,7 +147,7 @@ Entering Ultra creates a fresh native model session while keeping the bridge tas
 checkpoint. Carry completed work, evidence, decisions and remaining work; do not replay completed
 side effects or inject the old model's reasoning trace. See [routing](references/routing.md).
 
-Normal remains the default even when work is simple or its direction is known. Generic efficiency
+For work worth delegating, Normal remains the default even when its direction is known. Generic efficiency
 or urgency wording, a routine downstream dependency, and critical-resource ownership do not by
 themselves justify Fast. Before selecting or switching to Fast, identify the remaining
 model-driven bottleneck and explain which concrete milestone earlier output will advance.

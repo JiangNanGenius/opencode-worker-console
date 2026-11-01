@@ -73,8 +73,13 @@ use two one-model stages. Keep Ultra's configured policy restricted to physical 
 capacity fallback from eligible Qwen3.8 Max profiles in the Deep route and admits it only after
 confirmed Ultra exhaustion.
 
-Tier selection weighs unresolved ambiguity and the expected benefit of faster model work, not
-workload size or a weak-to-strong model ranking. Normal is the default for ordinary executable
+Decide whether to delegate before choosing a tier. Handle a known local correction and its
+focused check directly, including small review fixes after the worker has finished and no
+writer or scope/resource conflict remains. Repository exploration, unknown-root-cause
+investigation and substantial execution packages warrant early delegation.
+
+For delegated work, tier selection weighs unresolved ambiguity and the expected benefit of faster model work, not
+workload size or a weak-to-strong model ranking. Normal is the default for delegated executable
 work: a concrete outcome whose direction, material constraints and acceptance are known, including
 clear/bounded implementation, investigation, tests, documentation, packaging, migration and
 deployment, even when it reads a large repository, changes many files or runs for a long time.
@@ -97,9 +102,9 @@ explicit urgency/deadline, or a genuinely identified bottleneck node whose remai
 work is the consequential current blocker, with clear direction, is
 Fast; defining the goal or rules, reconciling unclear requirements,
 designing a new system structure, finding an unknown system-wide cause or solving unusually
-complex logic is Deep. The task's label does not decide the tier: an explicit document move is
+complex logic is Deep. The task's label does not decide the tier: a batch document migration is
 Normal, while sorting mixed evidence into keep, merge and delete decisions is also Normal; a
-known patch that directly blocks a ready next build, with clear direction and acceptance, may be
+substantial known fix that directly blocks a ready next build, with clear direction and acceptance, may be
 Fast, while preparing a future-beta component whose other prerequisites still run is Normal.
 
 A practical Fast gate is: the outcome, direction or governing constraints, and observable

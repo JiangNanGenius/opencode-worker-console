@@ -1,10 +1,15 @@
 # Self-contained handoff contract
 
-Match handoff detail to the work. A simple, self-contained task needs a short objective,
-necessary context and observable acceptance; it does not require every heading below. For example,
-when a parser's exact empty-input failure and expected behavior are already known, pass those facts,
-the relevant file/test entry points and constraints, then let the worker implement and verify it.
-Do not spend more time preparing a small handoff than executing the work would require.
+Apply the [direct-fix boundary](../SKILL.md) before preparing a handoff. When a parser's exact
+empty-input failure, local correction and focused check are already known, normally fix and
+verify it directly. The same applies to a targeted correction found in a completed worker's
+result, once there is no active writer or scope/resource conflict; do not create or restart a
+worker for it. Unknown causes, repository exploration and substantial execution packages still
+warrant early delegation.
+
+For a self-contained package worth delegating, a short objective, necessary context and observable
+acceptance are sufficient; it does not require every heading below. Match the handoff detail to
+the remaining work.
 
 Use the structured template for broad implementation, continuing work, a multi-stage repair,
 deployment, release, migration, CI investigation, or work whose essential context lives in the

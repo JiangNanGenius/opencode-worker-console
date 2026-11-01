@@ -5,7 +5,12 @@ The entrypoint is `~/.local/bin/delegate-opencode`. The skill also works via
 
 ## Submit and retrieve
 
-The following is a command catalog, not a startup sequence. Ordinary handoffs submit directly;
+First apply the [direct-fix boundary](../SKILL.md): handle a known local correction and its focused
+check directly, including small review fixes after a worker has finished and released ownership.
+Repository exploration, complex investigation and substantial execution packages warrant a handoff.
+Choose a tier only after that decision; Normal is the default for delegated work.
+
+The following is a command catalog, not a startup sequence. Work worth handing off submits directly;
 quota/tier-guidance commands are operator diagnostics, and `notify` is for a verified milestone.
 
 ```sh
@@ -16,10 +21,10 @@ delegate-opencode notify --title 'Release ready' --body 'TestFlight processing c
 delegate-opencode console --open
 delegate-opencode submit --directory /absolute/repo --tier normal \
   --title 'Map configuration' 'Locate configuration loading and summarize precedence with file/line evidence.'
-delegate-opencode submit --directory /absolute/repo --mode write --scope src/parser.py --tier normal \
-  --profile auto --command 'python3 -m unittest -v tests.test_parser' \
-  --acceptance 'Preserve all existing behavior except the specified empty-input fix.' \
-  'Fix the already-identified empty-input parser failure and run the authorized tests.'
+delegate-opencode submit --directory /absolute/repo --mode write --scope src/config --scope tests/config --tier normal \
+  --profile auto --command 'python3 -m unittest discover -s tests/config' \
+  --acceptance 'File, environment and CLI settings follow documented precedence; preserve defaults.' \
+  'Investigate precedence across configuration sources, implement a consistent fix and verify the affected paths.'
 delegate-opencode status
 delegate-opencode wait JOB_ID
 delegate-opencode collect JOB_ID
@@ -72,8 +77,8 @@ commands, and do not send the whole project to Deep merely because one part is u
 Use `steer` for refinements and `task retier` when the same outcome's remaining reasoning needs
 or concrete latency value changes.
 
-Choose one tier from the uncertainty the worker must resolve and keep `--profile auto`:
-Normal is the default for ordinary executable work — a bounded, concrete outcome with a firm
+For work worth delegating, choose one tier from the uncertainty the worker must resolve and keep `--profile auto`:
+Normal is the default for delegated executable work — a bounded, concrete outcome with a firm
 direction and clear acceptance, including investigation, tests, documentation, deployment and
 finalization; known direction or low uncertainty alone is not a reason to select or switch Fast.
 Fast is the latency-priority tier when direction, constraints and acceptance are clear AND faster

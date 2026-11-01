@@ -1,6 +1,6 @@
 interface:
   display_name: "OpenCode Worker Pool"
-  short_description: "Delegate investigation and execution early to OpenCode"
-  default_prompt: "Use $delegate-opencode to delegate ready investigation and execution packages early with enough context and suitable tools, keep Normal as the default tier, improve efficiency through workflow and handoffs rather than automatically choosing Fast, reserve Fast for clear work with a concrete model-latency bottleneck use Deep for complex work needing strong reasoning, and use Ultra with Kimi K3.1 Pro for especially difficult architecture, stubborn root causes, long-horizon reasoning, or two rounds without material progress after checkpoint review; repair authentication, permissions and environment blockers directly, return routine implementation to Normal once uncertainty is resolved, keep profile=auto, and coordinate through completion and acceptance while retaining complex device interaction and visual judgment upstream."
+  short_description: "Delegate larger work; handle targeted fixes directly"
+  default_prompt: "Use $delegate-opencode to delegate repository exploration and substantial execution packages early, handle clear local fixes and small corrections to completed worker results directly, and choose a tier only after deciding a handoff is worthwhile, with Normal as the delegated default and profile=auto."
 policy:
   allow_implicit_invocation: true
