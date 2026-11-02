@@ -47,8 +47,8 @@ DEMAND_LOCK = 'kimi-demand'
 MAX_SNAPSHOT_BYTES = 64 * 1024
 MAX_COUNT = 100000
 ACTIVE_STATUSES = ('starting', 'running', 'stopping', 'uncertain')
-# One token per pool process: a restart is a new observation epoch even if the
-# on-disk snapshot is recent, so old silence is never inherited across restarts.
+# Publisher identity for diagnostics. Fresh same-account demand evidence survives
+# a short process reload; an expired observation still starts a new quiet streak.
 _INSTANCE = secrets.token_hex(8)
 # Process-local native-Ultra guard. It is set only by the loopback gate that
 # actually carried a native Ultra request (or failed to book it), using a
@@ -203,9 +203,9 @@ def task_demand_counts(all_tasks, c):
 def publish_task_demand(c, all_tasks, identity, now=None, instance=None):
     """Publish one compact demand snapshot from the pool's all_tasks listing.
 
-    ``instance`` identifies the publishing pool process. A restart, a long
-    sampling gap or an account rotation breaks the continuous-quiet streak, so
-    ``quiet_since`` starts again instead of inheriting stale silence.
+    ``instance`` identifies the publishing pool process. A long sampling gap or
+    account rotation breaks the quiet streak. A short reload may retain fresh,
+    same-account evidence instead of needlessly restarting the full cooldown.
     """
     now = time.time() if now is None else float(now)
     counts = task_demand_counts(all_tasks, c)
@@ -251,7 +251,7 @@ def read_demand(identity, now):
     Quiet is reported only for a fresh snapshot that belongs to the current
     credential, carries in-range counts, and provably observed no Ultra activity
     for the whole cooldown. Fresh counts alone are never enough: a new file, a
-    pool restart, a sampling gap, an account rotation or a clock rollback must
+    stale observation after restart, a sampling gap, an account rotation or a clock rollback must
     hold the base reserve until a full continuous-quiet streak exists. Everything
     else is unknown.
     """
@@ -314,8 +314,8 @@ def _merge_write(identity, now, counts=None, native=None, instance=None):
     """One short locked read-merge-write; the pool and gate never lose fields.
 
     ``native_last_at`` only advances (max), while task counts, their sample stamp
-    and the continuous-quiet start are owned by the pool's publish. A restart
-    (new ``instance``), a publish gap, an account rotation or a detected clock
+    and the continuous-quiet start are owned by the pool's publish. A stale
+    observation after restart, a publish gap, an account rotation or a detected clock
     rollback starts a new quiet observation instead of inheriting old silence.
     The supplied identity is rechecked against the current inference credential
     inside this short lock, so a suspended writer from a previous account can
@@ -350,8 +350,7 @@ def _merge_write(identity, now, counts=None, native=None, instance=None):
             merged['tasks_updated_at'] = now
             merged['instance'] = instance
             previous_quiet = _number(previous.get('quiet_since'))
-            continuous = (same_owner and previous_instance is not None and
-                          instance == previous_instance and previous_stamp is not None and
+            continuous = (same_owner and previous_instance is not None and previous_stamp is not None and
                           0 <= now - previous_stamp <= SNAPSHOT_MAX_AGE_SECONDS and not rollback)
             if counts[0] or counts[1]:
                 quiet_since = None

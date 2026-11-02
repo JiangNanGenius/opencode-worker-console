@@ -1,5 +1,14 @@
 # Routing and plan efficiency
 
+An operator may set `allow_kimi_k28_for_deep=true` and place the K2.8 profile in the
+Deep primary stage to serve ordinary Deep tasks. Explicit Deep/Ultra capability floors
+and the Ultra fallback retain their physical capability checks. This does not alter
+weekly protection or enable a disabled paid provider.
+
+Dynamic reserve release preserves fresh same-account quiet observations through a
+short pool reload. A sampling gap over 90 seconds, account change, clock rollback
+or Ultra activity still invalidates quiet evidence; a new publisher alone does not.
+
 [简体中文](routing.zh-CN.md)
 
 Prefer complete outcomes, usable subscription allowance and enough model/context capacity.

@@ -2065,5 +2065,19 @@ class DynamicRunwayTests(unittest.TestCase):
             self.assertEqual(quota._level2_spillover_cap(c, record, spill, 'deepseek'), 33)
 
 
+class OperatorK28DeepTests(unittest.TestCase):
+    def test_deep_override_preserves_explicit_floors_and_ultra(self):
+        c = {'allow_kimi_k28_for_deep': True,
+             'profiles': {'k28': {'model': 'kimi-for-coding/kimi-for-coding'},
+                          'flash': {'model': 'bailian-token-plan/qwen3.8-flash'}},
+             'routing_policy': {'deep': [[{'profile': 'k28', 'weight': 1}]]}}
+        self.assertTrue(quota.meets_capability_floor('k28', {'tier': 'deep'}, c))
+        self.assertFalse(quota.meets_capability_floor('k28', {'tier': 'deep', 'capability_floor': 'deep'}, c))
+        self.assertFalse(quota.meets_capability_floor('k28', {'tier': 'ultra'}, c))
+        self.assertFalse(quota.meets_capability_floor('flash', {'tier': 'deep'}, c))
+        c['allow_kimi_k28_for_deep'] = False
+        self.assertFalse(quota.meets_capability_floor('k28', {'tier': 'deep'}, c))
+
+
 if __name__ == '__main__':
     unittest.main()

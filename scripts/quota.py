@@ -2356,7 +2356,15 @@ def meets_capability_floor(name, t, c):
         # policy places it in a primary stage, and an explicit Ultra floor keeps
         # rejecting Max/Flash even if Kimi is disabled or removed. Unknown models
         # make no claim and stay admitted by membership, preserving generic setups.
-        if not routing.meets_capability_rank((c.get('profiles') or {}).get(name), floor):
+        # An explicit operator choice may use K2.8 for ordinary Deep work.
+        # Explicit Deep/Ultra floors and an Ultra task's fallback stay physical
+        # capability requirements; this exception never broadens those routes.
+        k28_deep = (floor == 'deep' and tier_of(t) == 'deep' and
+                    t.get('capability_floor') not in ('deep', 'ultra') and
+                    c.get('allow_kimi_k28_for_deep') is True and
+                    ((c.get('profiles') or {}).get(name) or {}).get('model') ==
+                    'kimi-for-coding/kimi-for-coding')
+        if not k28_deep and not routing.meets_capability_rank((c.get('profiles') or {}).get(name), floor):
             return False
     policy = routing.configured(c) or {}
     eligible = set()

@@ -367,13 +367,13 @@ class DemandEvidenceTests(StateFixture):
         kimi_reserve.publish_task_demand(c, [], IDENT, now=NOW + 1800, instance='pool-a')
         self.assertEqual(self.reserve_state(now=NOW + 1800)['release_state'], 'releasing')
 
-    def test_restart_sampling_gap_and_rotation_restart_observation(self):
+    def test_short_reload_preserves_quiet_but_gap_and_rotation_reset_it(self):
         c = config()
         self.write_demand(tasks_updated_at=NOW, quiet_since=NOW - 3600)
         self.assertEqual(self.reserve_state()['release_state'], 'releasing')
         kimi_reserve.publish_task_demand(c, [], IDENT, now=NOW + 2, instance='pool-b')
-        self.assertEqual(self.reserve_state(now=NOW + 2)['demand']['reason'],
-                         'quiet_unobserved')
+        self.assertEqual(self.reserve_state(now=NOW + 2)['release_state'], 'releasing')
+        self.assertEqual(self.reserve_state(now=NOW + 2)['demand']['quiet_since'], NOW - 3600)
         # A gap longer than the freshness horizon resets even with one instance.
         self.write_demand(tasks_updated_at=NOW, quiet_since=NOW - 3600, instance='pool-a')
         kimi_reserve.publish_task_demand(c, [], IDENT, now=NOW + 200, instance='pool-a')
