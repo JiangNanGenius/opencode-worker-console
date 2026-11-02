@@ -34,6 +34,15 @@ def wait_pause(seconds):
     time.sleep(seconds)
 
 
+def quota_refresh_interval(needs_poll, has_queue, capacity_waiting, maintenance):
+    """Quota observation continues even when admission is held or no jobs exist."""
+    if has_queue or capacity_waiting:
+        return 60
+    if needs_poll or maintenance.get('owner') == 'user-no-delegation-until-kimi-recovery':
+        return 300
+    return 1800
+
+
 def owner_key(t):
     """Immutable scheduling owner: the upstream-harness conversation, with legacy fallbacks."""
     return t.get('owner_thread_id') or t.get('group_id') or t.get('source_dir')
@@ -520,8 +529,8 @@ def daemon():
             needs_poll = any(t['status'] in ACTIVE | {'queued'} for t in all_tasks)
             has_queue = any(t['status'] == 'queued' for t in all_tasks)
             capacity_waiting = any(t.get('_capacity_wait') for t in all_tasks)
-            if just_finished or (needs_poll and time.time() - last_refresh >=
-                                 (60 if has_queue or capacity_waiting else 300)):
+            if just_finished or time.time() - last_refresh >= quota_refresh_interval(
+                    needs_poll, has_queue, capacity_waiting, maintenance):
                 q, last_refresh = quota.refresh(), time.time()
                 try:
                     import notifications
