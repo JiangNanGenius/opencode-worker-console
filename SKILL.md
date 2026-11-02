@@ -211,6 +211,13 @@ content; keep waiting on the same task. See [handoff checkpoints](references/han
 
 ## Wait through completion
 
+When `wait` or `status` reports `continue_in_coordinator`, reclaim the worker's progress,
+evidence and remaining goal. Cancel the original worker, confirm it is terminal and its native
+session/write ownership has stopped, then continue the main task directly under its existing
+authorization. Do not stop the main task merely because delegation is blocked. Never bypass a
+paid-provider lock or duplicate unfinished side effects. Operators may enable this prompt
+handoff with `coordinator_takeover_on_blocked=true`; individual route/quota details stay private.
+
 Use `wait JOB_ID` without `--seconds`: Fast observes for 5 minutes, Normal 30 and Deep/Ultra 60, returning
 immediately on completion, failure or actionable attention. These are observation windows, not
 execution deadlines. Follow a yielded command session with empty-stdin blocking polls for the

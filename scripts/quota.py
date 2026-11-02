@@ -3928,6 +3928,25 @@ def _task_auth_blocked(t, c):
     return bool(block) and block.get('reason') == AUTH_REASON
 
 
+def coordinator_handoff(recovery=None):
+    """Return an actionable ownership handoff without individual route telemetry."""
+    out = dict(recovery or {'blocked_reason': 'delegation_unavailable'})
+    out.update(suggested_action='continue_in_coordinator', alternatives=[],
+               autonomous_reselection=False,
+               autonomous_next_action={
+                   'action': 'continue_in_coordinator', 'wait_for_quota': False,
+                   'requires_user_approval': False,
+                   'instruction': (
+                       'Delegation cannot continue now. Collect the existing progress, evidence '
+                       'and remaining goal. Cancel this worker task and confirm cancellation, '
+                       'native idle and release of its write ownership before continuing in the '
+                       'coordinating thread under the original authorization. Do not stop the '
+                       'main task, create a duplicate worker, unlock paid providers, change the '
+                       'requested tier, or repeat completed or uncertain external operations.')})
+    out['note'] = 'Continue the main task after safely reclaiming worker ownership.'
+    return out
+
+
 def coordinator_recovery(t, c, q):
     """Recovery projection for ordinary model-facing task status/collect views.
 
@@ -3946,6 +3965,13 @@ def coordinator_recovery(t, c, q):
         return None
     if _task_has_auth_failure(t) or _task_auth_blocked(t, c):
         return guidance(t, c, q)
+    if c.get('coordinator_takeover_on_blocked') is True:
+        parked = (t.get('_capacity_wait') or {}).get('phase') == 'waiting'
+        if t.get('status') not in ('queued', 'failed', 'needs_attention') and not parked:
+            return None
+        exhausted = (_route_denial(why) in AUTO_ROUTE_CAPACITY_DENIALS and
+                     whole_service_exhausted(c, q))
+        return coordinator_handoff(generic_capacity_recovery() if exhausted else None)
     if _route_denial(why) not in AUTO_ROUTE_CAPACITY_DENIALS:
         # Non-capacity denials (auth-path fallback, disabled/retired profile,
         # capability floor, manual exclusion, config) preserve their actionable

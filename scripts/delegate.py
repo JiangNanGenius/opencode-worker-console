@@ -67,7 +67,8 @@ def live_recovery(t):
     because it may contain the individual provider/quota stop that transparent routing
     deliberately keeps operator-only.
     """
-    if t.get('status') not in ('queued', 'failed', 'needs_attention'):
+    parked = (t.get('_capacity_wait') or {}).get('phase') == 'waiting'
+    if t.get('status') not in ('queued', 'failed', 'needs_attention') and not parked:
         return None
     automatic = (t.get('requested_profile') or 'auto') == 'auto'
     try:
@@ -86,7 +87,8 @@ def wait_result(t, waited_seconds):
     recovery = result.get('recovery')
     # A blocked queued task or a terminal billing failure needs coordinator
     # re-selection, not another blind wait or a generic error inspection.
-    blocked = t['status'] == 'queued' and isinstance(recovery, dict)
+    parked = (t.get('_capacity_wait') or {}).get('phase') == 'waiting'
+    blocked = (t['status'] == 'queued' or parked) and isinstance(recovery, dict)
     billing_terminal = t['status'] in ('failed', 'needs_attention') and isinstance(recovery, dict)
     actionable = blocked or billing_terminal
     alternatives = recovery.get('alternatives') if isinstance(recovery, dict) else None
@@ -99,6 +101,7 @@ def wait_result(t, waited_seconds):
         continue_waiting=not terminal and not blocked,
         waited_seconds=max(0, round(waited_seconds, 3)),
         next_action=(
+            'continue_in_coordinator' if actionable and recovery.get('suggested_action') == 'continue_in_coordinator' else
             'wait_for_capacity_recovery' if actionable and all_routes_exhausted else
             'resubmit_same_tier_auto' if actionable and alternatives else
             'release_manual_retry_then_resubmit' if actionable and monthly and
@@ -131,7 +134,8 @@ def wait_ready(t):
     """Return promptly for terminal work or an actionable queued blockage."""
     if t.get('status') in TERMINAL:
         return True
-    return t.get('status') == 'queued' and isinstance(live_recovery(t), dict)
+    parked = (t.get('_capacity_wait') or {}).get('phase') == 'waiting'
+    return (t.get('status') == 'queued' or parked) and isinstance(live_recovery(t), dict)
 
 
 def wait_for_task(task_id, requested_seconds=None):

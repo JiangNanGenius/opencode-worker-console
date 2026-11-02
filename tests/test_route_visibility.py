@@ -164,6 +164,34 @@ class RouteVisibilityTests(unittest.TestCase):
         self.assertNotIn('quota_exhausted', blob)
         self.assertNotIn('insufficient balance', blob)
 
+    def test_operator_takeover_returns_promptly_without_partial_quota_detail(self):
+        self.c['coordinator_takeover_on_blocked'] = True
+        self.config.write_text(json.dumps(self.c))
+        quota.trip('sentinel-a', 'monthly usage limit reached', 'msg-a', reason='monthly_usage_limit')
+        t = self.task(tier='deep', profile='deep-plan')
+        self.assertTrue(delegate.wait_ready(t))
+        result = delegate.wait_result(t, 0)
+        self.assertFalse(result['continue_waiting'])
+        self.assertEqual(result['next_action'], 'continue_in_coordinator')
+        self.assertTrue(result['attention'])
+        self.assertNotIn('automatic_routes_exhausted', result['recovery'])
+        self.assertNotIn('sentinel-a', json.dumps(result))
+        self.assertIn('confirm cancellation', result['recovery']['autonomous_next_action']['instruction'])
+        parked = dict(t, status='running', _capacity_wait={'phase': 'waiting'})
+        self.assertTrue(delegate.wait_ready(parked))
+        self.assertEqual(delegate.wait_result(parked, 0)['next_action'], 'continue_in_coordinator')
+        self.assertNotIn('recovery', delegate.task_status(dict(t, status='completed')))
+
+    def test_operator_takeover_whole_exhaustion_is_actionable(self):
+        self.c['coordinator_takeover_on_blocked'] = True
+        self.config.write_text(json.dumps(self.c))
+        self.exhaust_all_providers()
+        t = self.task()
+        result = delegate.wait_result(t, 0)
+        self.assertEqual(result['next_action'], 'continue_in_coordinator')
+        self.assertTrue(result['recovery']['automatic_routes_exhausted'])
+        self.assertFalse(result['recovery']['autonomous_next_action']['wait_for_quota'])
+
     def test_partial_capacity_stop_hides_route_and_quota_but_keeps_tool_error(self):
         # plan-a is unavailable; plan-b remains a legal automatic route.
         self.q['sentinel-a']['available'] = False
