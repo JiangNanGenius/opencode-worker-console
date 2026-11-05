@@ -43,6 +43,10 @@ def start():
                 gate_settings = kimi_gate.settings(c)
             except ValueError as exc:
                 raise RuntimeError('Invalid kimi_gate configuration: ' + str(exc)) from None
+        import deepseek_gate
+        deepseek_settings = deepseek_gate.settings(c)
+        if c.get('deepseek_min_balance_cny', 0) and deepseek_settings is None:
+            raise ValueError('DeepSeek balance floor requires deepseek_gate.enabled')
         # Resolve both before launching anything: the console can call start()
         # from its isolated 3.12 venv during host controls/settings restarts.
         from console_runtime import interpreters
@@ -69,6 +73,8 @@ def start():
         if gate_settings:
             # The Kimi gate must listen before OpenCode can issue inference.
             entries.append(('kimi_gate', 'kimi_gate.py', []))
+        if deepseek_settings:
+            entries.append(('deepseek_gate', 'deepseek_gate.py', []))
         entries.extend([('server', 'server.py', []), ('pool', 'delegate.py', ['daemon']),
                         ('console', 'console.py', [])])
         for name, script, args in entries:
@@ -130,6 +136,15 @@ def start():
                     records.pop(name, None)
                     write_json(STATE / 'services.json', records)
                     raise RuntimeError('Kimi gate did not become ready; inspect private service logs')
+            if name == 'deepseek_gate':
+                if not deepseek_gate.wait_ready(deepseek_settings['port'], timeout=10):
+                    try:
+                        os.kill(proc.pid, signal.SIGTERM)
+                    except OSError:
+                        pass
+                    records.pop(name, None)
+                    write_json(STATE / 'services.json', records)
+                    raise RuntimeError('DeepSeek gate did not become ready')
             if name == 'server':
                 for _ in range(40):
                     try:
@@ -154,7 +169,7 @@ def stop():
                     raise RuntimeError('Worker abort not confirmed; service and ownership retained')
                 request_cancel(t['id'], 'service_stop', source='service')
         records = read_json(STATE / 'services.json', {})
-        for name in ('console', 'pool', 'server', 'bailian_pool', 'kimi_gate'):
+        for name in ('console', 'pool', 'server', 'bailian_pool', 'kimi_gate', 'deepseek_gate'):
             entry = records.get(name)
             if alive(entry):
                 os.kill(entry['pid'], signal.SIGTERM)
@@ -215,8 +230,12 @@ def reload_runtime(allow_queued=False, maintenance_held=False):
             pass
         except ValueError as exc:
             raise ValueError('Invalid kimi_gate configuration: ' + str(exc)) from None
+        import deepseek_gate
+        ds = deepseek_gate.settings(config())
+        if config().get('deepseek_min_balance_cny', 0) and ds is None:
+            raise ValueError('DeepSeek balance floor requires deepseek_gate.enabled')
         records = read_json(STATE / 'services.json', {})
-        for name in ('pool', 'server', 'bailian_pool', 'kimi_gate'):
+        for name in ('pool', 'server', 'bailian_pool', 'kimi_gate', 'deepseek_gate'):
             entry = records.get(name)
             if alive(entry):
                 os.kill(entry['pid'], signal.SIGTERM)

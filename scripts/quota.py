@@ -1475,6 +1475,10 @@ def view(values):
             if estimate is not None:
                 item['consumption_estimate'] = estimate
         v['balances'] = [dict(item) for item in v.get('balances', [])]
+        if p == 'deepseek' and config().get('deepseek_min_balance_cny', 0):
+            admitted, reason = deepseek_balance_allowed(config(), {p: v}, now)
+            v['balance_guard'] = {'minimum_cny': config()['deepseek_min_balance_cny'],
+                                  'admitted': admitted, 'reason': reason}
         for item in v['balances']:
             estimate = balance_consumption_estimate(item, samples, now, priced if p == 'deepseek' else None)
             if estimate is not None:
@@ -1593,7 +1597,30 @@ def view(values):
     return out
 
 
-def allowed(provider, q, complexity, threshold=0, retry_monthly=False, prepaid=None):
+def deepseek_balance_allowed(c, q, now=None):
+    """Live CNY spending floor; manual estimates and other currencies cannot unlock it."""
+    floor = c.get('deepseek_min_balance_cny', 0)
+    if isinstance(floor, bool) or not isinstance(floor, (int, float)) or not math.isfinite(floor) or floor < 0:
+        return False, 'deepseek_balance_floor_invalid'
+    if floor == 0:
+        return True, 'balance_floor_disabled'
+    now = time.time() if now is None else now
+    v = (q or {}).get('deepseek') or {}
+    at = number(v.get('sampled_at'))
+    raw = read_json(STATE / 'quota.json', {}).get('deepseek') or {}
+    if (v.get('state') != 'ok' or v.get('stale') is True or at is None or
+            not 0 <= now - at <= 90 or raw.get('sampled_at') != at or
+            not raw.get('_credential') or raw['_credential'] != _telemetry_identity('deepseek')):
+        return False, 'deepseek_balance_unknown'
+    amounts = [number(b.get('remaining')) for b in v.get('balances', [])
+               if b.get('currency') == 'CNY']
+    if len(amounts) != 1 or amounts[0] is None:
+        return False, 'deepseek_balance_unknown'
+    return ((False, 'deepseek_balance_below_floor') if amounts[0] <= floor else
+            (True, 'balance_above_floor'))
+
+
+def allowed(provider, q, complexity, threshold=0, retry_monthly=False, prepaid=None, c=None):
     v = q.get(provider, {})
     if prepaid is None:
         prepaid = provider_is_prepaid(provider)
@@ -1611,6 +1638,11 @@ def allowed(provider, q, complexity, threshold=0, retry_monthly=False, prepaid=N
         return False, 'credential_rejected'
     if state == 'rate_limited' and not prepaid:
         return False, 'quota_endpoint_rate_limited'
+    if provider == 'deepseek':
+        guard_config = c if c is not None else config()
+        admitted, reason = deepseek_balance_allowed(guard_config, q)
+        if not admitted:
+            return False, reason
     # Ark without control-plane credentials keeps quota unknown: the data plane
     # may still serve, and a zero-window check below only applies to real
     # telemetry. Unknown quota is never treated as unlimited or as empty.
@@ -2296,6 +2328,8 @@ def is_capacity_exhaustion_reason(why, provider=None, t=None, q=None, now=None):
     """
     if _capacity_circuit_is_auth(provider):
         return False
+    if why == 'deepseek_balance_below_floor' and provider == 'deepseek':
+        return deepseek_balance_allowed(config(), q or {}, now)[1] == why
     if why == 'quota_exhausted_or_account_unavailable':
         return _fresh_zero_capacity_window(provider, q, now)
     if why == 'kimi_account_total_exhausted':
@@ -2420,7 +2454,7 @@ def _other_plan_provider_available(t, c, q, provider, spill_provider):
         if name in (t.get('excluded_profiles') or []) or other in (t.get('excluded_providers') or []):
             continue
         if allowed(other, q, t.get('complexity', 'normal'), c.get('kimi_reserve_percent', 0),
-                   prepaid=other in prepaid)[0]:
+                   prepaid=other in prepaid, c=c)[0]:
             return True
     return False
 
@@ -2487,7 +2521,7 @@ def _allowed_profile(name, t, c, q):
             if pressured:
                 return provider, False, 'provider_reserved_for_fast'
     ok, why = allowed(provider, q, t.get('complexity', 'normal'),
-                      c.get('kimi_reserve_percent', 0), prepaid=provider in prepaid)
+                      c.get('kimi_reserve_percent', 0), prepaid=provider in prepaid, c=c)
     return provider, ok, why
 
 
@@ -2965,7 +2999,7 @@ def route(t, c, q, batch=None):
         ok, why = allowed(provider, q, t.get('complexity', 'normal'),
                           c.get('kimi_reserve_percent', 0),
                           retry_monthly=provider != KIMI_PROVIDER,
-                          prepaid=provider in prepaid_providers(c))
+                          prepaid=provider in prepaid_providers(c), c=c)
         if ok and why == 'explicit_profile_monthly_retry':
             return profile, why
         if ok:
@@ -3012,7 +3046,7 @@ def route(t, c, q, batch=None):
             return _ultra_fallback_for_legacy(t, c, q, batch, kimi_reason, provider)
     ok, why = allowed(provider, q, t.get('complexity', 'normal'),
                       c.get('kimi_reserve_percent', 0),
-                      prepaid=provider in prepaid_providers(c))
+                      prepaid=provider in prepaid_providers(c), c=c)
     if ok:
         return profile, tier_of(t) + ':' + why
     return (None, why) if excluded_here else \
@@ -3122,7 +3156,7 @@ def alternatives(t, c, q, exclude=None):
             if not kimi_ok:
                 continue
         ok, why = allowed(provider, q, t.get('complexity', 'normal'), threshold,
-                          prepaid=provider in prepaid)
+                          prepaid=provider in prepaid, c=c)
         if ok:
             out.append({'profile': name, 'model': p['model'], 'provider': provider,
                         'variant': p.get('variant'), 'route': why})
@@ -3142,7 +3176,7 @@ def _options(t, c, q, blocked_reason, partial_work=False, billing_reason=None, p
     retry_allowed = bool(provider and not window and billing_reason == MONTHLY_REASON and
                          allowed(provider, q, t.get('complexity', 'normal'),
                                  c.get('kimi_reserve_percent', 0), retry_monthly=True,
-                                 prepaid=provider in prepaid_providers(c))[0])
+                                 prepaid=provider in prepaid_providers(c), c=c)[0])
     release_required = bool(provider == KIMI_PROVIDER and retry_allowed)
     if alts:
         action = ('inspect_partial_work_and_resubmit_same_tier_auto' if partial_work else
@@ -3366,7 +3400,7 @@ def routing_status(c, q):
                 complexity = 'deep' if tier == 'deep' else 'normal'
                 target_ok, _ = allowed(target_provider, q, complexity,
                                        c.get('kimi_reserve_percent', 0),
-                                       prepaid=target_provider in prepaid_providers(c))
+                                       prepaid=target_provider in prepaid_providers(c), c=c)
                 if target_ok and target_provider not in set(provider_by_profile.values()):
                     provider_by_profile[target] = target_provider
                     level2_active = level2 or (
@@ -3574,7 +3608,7 @@ def tier_guidance(c, q, _raw=False):
                 if provider not in configured:
                     configured.append(provider)
                 ok, _ = allowed(provider, q, 'normal', c.get('kimi_reserve_percent', 0),
-                                prepaid=provider in prepaid_provider_ids)
+                                prepaid=provider in prepaid_provider_ids, c=c)
                 if ok and provider not in available:
                     available.append(provider)
             if available:
@@ -3811,7 +3845,8 @@ AUTO_ROUTE_CAPACITY_DENIALS = frozenset((
     'kimi_account_total_exhausted', 'kimi_weekly_reserved_for_ultra',
     'kimi_weekly_unknown', 'bailian_slots_waiting_or_unavailable',
     'continuation_excluded_provider', 'provider_still_blocked',
-    'provider_reserved_for_fast',
+    'provider_reserved_for_fast', 'deepseek_balance_below_floor',
+    'deepseek_balance_unknown', 'deepseek_balance_floor_invalid',
 ))
 
 

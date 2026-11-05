@@ -211,7 +211,7 @@ content; keep waiting on the same task. See [handoff checkpoints](references/han
 
 ## Wait through completion
 
-When `wait` or `status` reports `continue_in_coordinator`, reclaim the worker's progress,
+When `submit`, `wait` or `status` reports `continue_in_coordinator`, reclaim the worker's progress,
 evidence and remaining goal. Cancel the original worker, confirm it is terminal and its native
 session/write ownership has stopped, then continue the main task directly under its existing
 authorization. Do not stop the main task merely because delegation is blocked. Never bypass a

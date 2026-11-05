@@ -38,9 +38,8 @@ def quota_refresh_interval(needs_poll, has_queue, capacity_waiting, maintenance)
     """Quota observation continues even when admission is held or no jobs exist."""
     if has_queue or capacity_waiting:
         return 60
-    if needs_poll or maintenance.get('owner') == 'user-no-delegation-until-kimi-recovery':
-        return 300
-    return 1800
+    # Stay within the 15-minute telemetry freshness horizon even while idle.
+    return 300
 
 
 def owner_key(t):
@@ -325,11 +324,22 @@ def submit(spec):
     # Block accidental delegation of known stored API keys before persisting prompt text.
     if redact(t) != t:
         raise ValueError('Task contains a credential-like value; remove it before submission')
+    if c.get('deepseek_min_balance_cny', 0):
+        # An idle cache may be older than the spending-floor horizon. Refresh
+        # before projecting a blocked attempt, rather than falsely handing back
+        # work which a newly funded account can now accept.
+        try:
+            quota.refresh()
+        except Exception:
+            pass  # The floor remains closed on missing/unverified evidence.
     with locked():
         if (STATE / 'maintenance.json').exists():
             raise ValueError('Configuration update in progress; retry shortly')
         write_json(task_path(t['id']), t)
-    return coordinator_task(t)
+    result = task_status(t)
+    if (result.get('recovery') or {}).get('suggested_action') == 'continue_in_coordinator':
+        result.update(next_action='continue_in_coordinator', attention=True, continue_waiting=False)
+    return result
 
 
 def _capacity_admission_fingerprint(t):

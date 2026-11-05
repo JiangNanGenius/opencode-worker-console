@@ -35,7 +35,7 @@ class PoolTests(unittest.TestCase):
     def test_quota_observation_intervals_include_idle_and_operator_hold(self):
         interval = delegate.quota_refresh_interval
         hold = {'owner': 'user-no-delegation-until-kimi-recovery', 'paused_services': []}
-        self.assertEqual(interval(False, False, False, {}), 1800)
+        self.assertEqual(interval(False, False, False, {}), 300)
         self.assertEqual(interval(False, False, False, hold), 300)
         self.assertEqual(interval(True, False, False, {}), 300)
         self.assertEqual(interval(True, True, False, hold), 60)

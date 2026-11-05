@@ -126,6 +126,17 @@ class RequestError(Exception):
 class GateHandler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
     server_version = 'KimiGate/1'
+    provider_id = 'kimi-for-coding'
+    service_name = 'kimi_gate'
+    upstream_host = UPSTREAM_HOST
+    upstream_prefix = UPSTREAM_PREFIX
+    models = MODELS
+
+    def gate_settings(self, c):
+        return settings(c)
+
+    def preflight(self, model, c):
+        return preflight(model, c)
 
     def setup(self):
         super().setup()
@@ -155,15 +166,15 @@ class GateHandler(BaseHTTPRequestHandler):
             if path == '/health':
                 if method != 'GET':
                     raise RequestError(405, 'invalid_request_error', 'Method not allowed')
-                if settings(common.config()) is None:
-                    raise RequestError(503, 'gate_unavailable', 'Kimi gate is disabled')
-                self._json(200, {'healthy': True, 'service': 'kimi_gate'})
+                if self.gate_settings(common.config()) is None:
+                    raise RequestError(503, 'gate_unavailable', 'Model gate is disabled')
+                self._json(200, {'healthy': True, 'service': self.service_name})
                 return
             if (method, path) not in {('GET', '/v1/models'), ('POST', '/v1/chat/completions')}:
                 raise RequestError(404, 'not_found_error', 'Unknown gate path')
             c = common.config()
-            if settings(c) is None:
-                raise RequestError(503, 'gate_unavailable', 'Kimi gate is disabled')
+            if self.gate_settings(c) is None:
+                raise RequestError(503, 'gate_unavailable', 'Model gate is disabled')
             body = None
             admitted_model = None
             admitted_identity = None
@@ -177,20 +188,20 @@ class GateHandler(BaseHTTPRequestHandler):
                 except (ValueError, UnicodeError):
                     raise RequestError(400, 'invalid_request_error', 'Invalid JSON request') from None
                 if (not isinstance(value, dict) or not isinstance(value.get('model'), str)
-                        or value['model'] not in MODELS):
+                        or value['model'] not in self.models):
                     raise RequestError(400, 'unsupported_model', 'Unsupported Kimi model')
                 try:
-                    allowed, reason = preflight(value['model'], c)
+                    allowed, reason = self.preflight(value['model'], c)
                 except Exception:
-                    raise RequestError(503, 'quota_preflight_unavailable', 'Kimi quota preflight unavailable') from None
+                    raise RequestError(503, 'quota_preflight_unavailable', 'Model quota preflight unavailable') from None
                 if not allowed:
                     # The stable reason is diagnostic metadata, never arbitrary
                     # upstream text; all policy rejections are genuine admission
                     # limits, so the worker can safely select another route.
                     safe = reason if isinstance(reason, str) and re.fullmatch(r'[a-z0-9_]{1,100}', reason) else 'quota_unavailable'
-                    raise RequestError(429, safe, 'Kimi quota admission limit: ' + safe)
+                    raise RequestError(429, safe, 'Model quota admission limit: ' + safe)
                 if not hmac.compare_digest(key.encode(), self._inference_key().encode()):
-                    raise RequestError(503, 'inference_credential_changed', 'Kimi inference credential changed during admission')
+                    raise RequestError(503, 'inference_credential_changed', 'Model inference credential changed during admission')
                 admitted_model = value['model']
                 if admitted_model == NATIVE_ULTRA_MODEL:
                     # A native Ultra request must carry verified demand evidence
@@ -200,7 +211,7 @@ class GateHandler(BaseHTTPRequestHandler):
                     admitted_identity = _native_identity(key)
                     if not _track_native_activity(admitted_model, admitted_identity):
                         raise RequestError(503, 'kimi_demand_unavailable',
-                                           'Kimi native Ultra demand tracking unavailable')
+                                           'Model native Ultra demand tracking unavailable')
             try:
                 self._proxy(method, path.removeprefix('/v1'), body, key,
                             heartbeat_identity=admitted_identity)
@@ -214,10 +225,10 @@ class GateHandler(BaseHTTPRequestHandler):
                 self._error(error.status, error.code, error.message)
         except (BrokenPipeError, ConnectionResetError, socket.timeout):
             if not self._response_started:
-                self._error(504, 'gate_timeout', 'Kimi request timed out')
+                self._error(504, 'gate_timeout', 'Model request timed out')
         except Exception:
             if not self._response_started:
-                self._error(503, 'gate_unavailable', 'Kimi gate unavailable')
+                self._error(503, 'gate_unavailable', 'Model gate unavailable')
 
     def _authorize(self):
         fields = self.headers.get_all('Authorization') or []
@@ -246,9 +257,9 @@ class GateHandler(BaseHTTPRequestHandler):
         return value
 
     def _inference_key(self):
-        key = common.auth_key('kimi-for-coding')
+        key = common.auth_key(self.provider_id)
         if not isinstance(key, str) or not key or any(ord(c) < 32 or ord(c) == 127 for c in key):
-            raise RequestError(503, 'inference_credential_unavailable', 'Kimi inference credential unavailable')
+            raise RequestError(503, 'inference_credential_unavailable', 'Model inference credential unavailable')
         return key
 
     def _proxy(self, method, suffix, body, key, heartbeat_identity=None):
@@ -256,12 +267,12 @@ class GateHandler(BaseHTTPRequestHandler):
                    'Accept': 'application/json, text/event-stream', 'User-Agent': 'opencode/1.19.4'}
         if body is not None:
             headers['Content-Type'] = 'application/json'
-        connection = http.client.HTTPSConnection(UPSTREAM_HOST, timeout=REQUEST_TIMEOUT)
+        connection = http.client.HTTPSConnection(self.upstream_host, timeout=REQUEST_TIMEOUT)
         response = None
         try:
             # No redirects, endpoint supplied by caller, or retry after an
             # uncertain transport result. Exactly one upstream request.
-            connection.request(method, UPSTREAM_PREFIX + suffix, body=body, headers=headers)
+            connection.request(method, self.upstream_prefix + suffix, body=body, headers=headers)
             response = connection.getresponse()
             if not 200 <= response.status < 300:
                 self._upstream_error(response, key)
@@ -269,11 +280,11 @@ class GateHandler(BaseHTTPRequestHandler):
             if suffix == '/models':
                 raw = response.read(MAX_MODELS_BYTES + 1)
                 if len(raw) > MAX_MODELS_BYTES:
-                    raise RequestError(502, 'invalid_upstream_response', 'Kimi model response too large')
+                    raise RequestError(502, 'invalid_upstream_response', 'Model model response too large')
                 value = json.loads(raw)
                 if not isinstance(value, dict) or not isinstance(value.get('data'), list):
                     raise RequestError(502, 'invalid_upstream_response', 'Invalid Kimi model response')
-                value['data'] = [item for item in value['data'] if isinstance(item, dict) and item.get('id') in MODELS]
+                value['data'] = [item for item in value['data'] if isinstance(item, dict) and item.get('id') in self.models]
                 self._json(response.status, value)
                 return
             self.send_response(response.status)
@@ -312,7 +323,7 @@ class GateHandler(BaseHTTPRequestHandler):
             code = error.get('code') if isinstance(error, dict) else None
             kind = error.get('type') if isinstance(error, dict) else None
             if not isinstance(message, str):
-                message = 'Kimi upstream returned HTTP ' + str(response.status)
+                message = 'Model upstream returned HTTP ' + str(response.status)
             representations = []
             for secret in (key, _password()):
                 for representation in common.secret_representations(secret):
@@ -326,7 +337,7 @@ class GateHandler(BaseHTTPRequestHandler):
             if any(secret in field for secret in representations for field in (safe_code, safe_kind)):
                 safe_code, safe_kind = 'upstream_error', 'api_error'
         except Exception:
-            message, safe_code, safe_kind = 'Kimi upstream returned HTTP ' + str(response.status), 'upstream_error', 'api_error'
+            message, safe_code, safe_kind = 'Model upstream returned HTTP ' + str(response.status), 'upstream_error', 'api_error'
         self._error(response.status, safe_code, message, safe_kind)
 
     def _json(self, status, value):
@@ -349,21 +360,21 @@ class GateHandler(BaseHTTPRequestHandler):
         self._json(status, {'error': {'code': code, 'type': kind, 'message': message}})
 
 
-def create_server(c, port=None, host='127.0.0.1'):
-    value = settings(c)
+def create_server(c, port=None, host='127.0.0.1', handler=GateHandler, settings_fn=settings):
+    value = settings_fn(c)
     if value is None:
         raise ValueError('kimi_gate is disabled')
     if host != '127.0.0.1':
-        raise ValueError('Kimi gate must bind loopback')
+        raise ValueError('Model gate must bind loopback')
     bind_port = value['port'] if port is None else port
     if isinstance(bind_port, bool) or not isinstance(bind_port, int) or not 0 <= bind_port <= 65535:
         raise ValueError('Invalid Kimi gate port')
-    server = ThreadingHTTPServer((host, bind_port), GateHandler)
+    server = ThreadingHTTPServer((host, bind_port), handler)
     server.daemon_threads = True
     return server
 
 
-def wait_ready(port, password=None, timeout=10):
+def wait_ready(port, password=None, timeout=10, service_name='kimi_gate'):
     try:
         _origin_port = settings({'kimi_gate': {'enabled': True, 'port': port}})['port']
         password = _password() if password is None else password
@@ -376,7 +387,7 @@ def wait_ready(port, password=None, timeout=10):
             connection.request('GET', '/health', headers={'Authorization': 'Bearer ' + password})
             response = connection.getresponse()
             raw = response.read(8192)
-            if response.status == 200 and json.loads(raw).get('service') == 'kimi_gate':
+            if response.status == 200 and json.loads(raw).get('service') == service_name:
                 return True
         except Exception:
             pass

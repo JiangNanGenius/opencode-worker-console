@@ -192,6 +192,26 @@ class RouteVisibilityTests(unittest.TestCase):
         self.assertTrue(result['recovery']['automatic_routes_exhausted'])
         self.assertFalse(result['recovery']['autonomous_next_action']['wait_for_quota'])
 
+    def test_submit_immediately_returns_coordinator_takeover_when_all_budgets_empty(self):
+        self.c['coordinator_takeover_on_blocked'] = True
+        self.c['deepseek_min_balance_cny'] = 20
+        self.config.write_text(json.dumps(self.c))
+        self.exhaust_all_providers()
+        with patch.object(quota, 'refresh', return_value=self.q) as refresh:
+            result = delegate.submit({
+                'directory': str(self.repo), 'objective': 'Continue the original task',
+                'mode': 'write', 'scopes': ['a.txt'], 'profile': 'auto', 'tier': 'normal',
+            })
+        refresh.assert_called_once_with()
+        self.assertEqual(result['next_action'], 'continue_in_coordinator')
+        self.assertFalse(result['continue_waiting'])
+        self.assertTrue(result['attention'])
+        self.assertTrue(result['recovery']['automatic_routes_exhausted'])
+        action = result['recovery']['autonomous_next_action']
+        self.assertFalse(action['wait_for_quota'])
+        self.assertIn('confirm cancellation', action['instruction'])
+        self.assertNotIn('sentinel-', json.dumps(result))
+
     def test_partial_capacity_stop_hides_route_and_quota_but_keeps_tool_error(self):
         # plan-a is unavailable; plan-b remains a legal automatic route.
         self.q['sentinel-a']['available'] = False

@@ -159,6 +159,8 @@ def settings():
            'bailian_plan_edition': c.get('bailian_plan_edition', 'team'),
            'proactive_long_task_reroute': c.get('proactive_long_task_reroute', True),
            'proactive_reroute_after_seconds': c.get('proactive_reroute_after_seconds', 900),
+           'deepseek_min_balance_cny': c.get('deepseek_min_balance_cny', 0),
+           'deepseek_gate': c.get('deepseek_gate', {'enabled': False, 'port': 51532}),
            'budget_signals': {}, 'revision': c.get('revision', 0),
            'auto_approve': c.get('auto_approve', True)}
     import cleanup
@@ -348,6 +350,18 @@ def _validate_settings(body):
     if 'fast_bias_runway_percent' in body:
         result['fast_bias_runway_percent'] = _int_setting(
             body, 'fast_bias_runway_percent', 0, 400)
+    if 'deepseek_min_balance_cny' in body:
+        import math
+        floor = body['deepseek_min_balance_cny']
+        if isinstance(floor, bool) or not isinstance(floor, (int, float)) or not math.isfinite(floor) or floor < 0:
+            raise ValueError('deepseek_min_balance_cny must be finite and non-negative')
+        result['deepseek_min_balance_cny'] = float(floor)
+    if 'deepseek_gate' in body:
+        import deepseek_gate
+        if not isinstance(body['deepseek_gate'], dict) or not isinstance(body['deepseek_gate'].get('enabled'), bool):
+            raise ValueError('deepseek_gate must contain boolean enabled')
+        gate = deepseek_gate.settings({'deepseek_gate': body['deepseek_gate']})
+        result['deepseek_gate'] = dict(body['deepseek_gate']) if gate is None else dict(gate, enabled=True)
     if 'budget_signals' in body:
         import quota
         result['budget_signals'] = quota.validate_budget_signals(body['budget_signals'], profiles)

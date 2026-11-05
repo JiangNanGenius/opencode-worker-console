@@ -87,6 +87,17 @@ def runtime_overlay(c):
                 'variants': {level: {'reasoningEffort': level} for level in ('low', 'high', 'max')},
             } for model, (name, output) in kimi_models.items()},
         }}
+    import deepseek_gate
+    deepseek_settings = deepseek_gate.settings(c)
+    if c.get('deepseek_min_balance_cny', 0) and deepseek_settings is None:
+        raise ValueError('DeepSeek balance floor requires deepseek_gate.enabled')
+    if deepseek_settings is not None:
+        password_path = str((STATE / 'server-password').expanduser().absolute())
+        if not valid_key_file(password_path):
+            raise ValueError('Invalid DeepSeek gate password reference')
+        overlay.setdefault('provider', {})['deepseek'] = {
+            'options': {'baseURL': 'http://127.0.0.1:%d/v1' % deepseek_settings['port'],
+                        'apiKey': '{file:' + password_path + '}'}}
     if any(p.get('enabled') is not False and str(p.get('model', '')).startswith(ARK_PROVIDER + '/')
            and not routing.is_retired_model(p.get('model')) for p in c['profiles'].values()):
         overlay.setdefault('provider', {})[ARK_PROVIDER] = ark_provider()

@@ -375,7 +375,8 @@ class ManagementTests(unittest.TestCase):
         self.assertEqual(set(result.keys()), {'profiles', 'max_parallel_per_owner',
                                               'kimi_reserve_percent', 'revision', 'cleanup', 'auto_approve',
                                               'kimi_monthly_reset', 'economics',
-                                              'deepseek_holiday_calendar',
+                                              'deepseek_holiday_calendar', 'deepseek_gate',
+                                              'deepseek_min_balance_cny',
                                               'kimi_low_weekly_threshold_percent',
                                               'kimi_low_weekly_k3_limit',
                                               'kimi_weekly_reserve_percent',
@@ -413,6 +414,21 @@ class ManagementTests(unittest.TestCase):
         self.assertNotIn('max_steps', result)
         for leaked in ('server_url', 'console_url', 'opencode_binary'):
             self.assertNotIn(leaked, result)
+
+    def test_deepseek_floor_settings_validate_save_and_survive_older_client(self):
+        body = self.valid_body()
+        body.update(deepseek_min_balance_cny=20, deepseek_gate={'enabled': True, 'port': 51532})
+        with patch.object(common, 'api', return_value={}):
+            management.save_settings(body)
+            management.save_settings(self.valid_body())
+        self.assertEqual(self.read_config()['deepseek_min_balance_cny'], 20)
+        self.assertEqual(self.read_config()['deepseek_gate'], {'enabled': True, 'port': 51532})
+        for floor in (-1, True, '20', float('nan'), float('inf')):
+            with self.subTest(floor=floor), self.assertRaises(ValueError):
+                management._validate_settings(dict(body, deepseek_min_balance_cny=floor))
+        for gate in (None, True, {}, {'enabled': 'yes'}, {'enabled': True, 'port': 0}):
+            with self.subTest(gate=gate), self.assertRaises(ValueError):
+                management._validate_settings(dict(body, deepseek_gate=gate))
 
     def test_budget_signals_support_manual_windows_monetary_thresholds_and_ignore(self):
         body = self.valid_body()

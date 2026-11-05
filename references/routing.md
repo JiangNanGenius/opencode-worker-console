@@ -349,3 +349,24 @@ can reach zero even if its peer is also under pressure. Fast cash spillover reta
 the configured balance floor and ceiling; at peak prices it reaches that ceiling
 at 75% of the Level 2 runway threshold. A configured 100% ceiling permits temporary
 full cash takeover. Explicit model pins and single-provider setups remain supported.
+
+### DeepSeek spending floor
+
+Operators may set `deepseek_min_balance_cny` (0 disables; this device uses 20) and
+`deepseek_gate: {"enabled": true, "port": 51532}`. Task admission, explicit pins,
+manual retries and every native model request share the same CNY floor: remaining
+balance must be strictly above it. Only current-credential official balance data
+at most 90 seconds old can unlock it; manual balances, USD entries, unknown/stale
+samples cannot. The authenticated loopback relay uses a fixed DeepSeek endpoint,
+keeps the real key in the existing credential store, and never retries an uncertain
+upstream request. The shared sampler caches for up to 60 seconds; upstream billing
+lag and already admitted requests can cross the floor briefly. This is a dispatch
+reserve, not a provider-side spending cap. A fresh top-up above the floor restores
+admission automatically. Idle quota polling runs every five minutes, independently
+of task dispatch; queued work polls every minute and the gate refreshes on demand.
+
+With `coordinator_takeover_on_blocked=true`, blocked submit attempts immediately
+return `next_action=continue_in_coordinator`, as do status/wait for parked work.
+When all configured automatic budgets are proven unavailable the response says so
+generically, without provider/tier details. The coordinator safely reclaims progress
+and write ownership and continues the original goal; quota is not a main-task blocker.
