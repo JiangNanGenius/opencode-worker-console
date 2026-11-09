@@ -61,7 +61,8 @@ cutover, not an automatic return to the subscription after renewal.
 
 ## Runtime upgrades
 
-The managed server is verified with OpenViking **0.5.2**. Stage official binary
+The managed server is verified with OpenViking **0.5.3**, with OpenCode plugin
+`@openviking/opencode-plugin` **2026.11.5-1**. Stage official binary
 wheels in a versioned virtualenv, drain background memory tasks, stop the memory
 server, and snapshot the complete local data directory before switching the
 stable `runtime/openviking/venv` link. Keep both the previous runtime and data
@@ -75,7 +76,24 @@ Verify `doctor`, existing-memory retrieval, and a temporary write/read/search/de
 through the bridge after every upgrade. Agent plugins are separate packages;
 updating the Python server does not update an already loaded plugin.
 
-The installed 0.5.1.1 and 0.5.2 runtimes both default
+For 0.5.3, verify sessions already use `viking://user/{user_id}/sessions/...`;
+legacy `viking://session/...` access and the old admin migration endpoint were
+removed. Migrate any remaining 0.3.x sessions on an older release first. See the
+[official 0.5.3 release notes](https://github.com/volcengine/OpenViking/releases/tag/v0.5.3).
+Stage plugin updates separately, preserve the previous cache, and reload idle
+OpenCode execution to load the new plugin. Runtime checks confirm plugin startup
+and an authenticated, connected OpenViking MCP service; package installation alone
+is insufficient evidence.
+
+Run doctor with the service credential environment (`openviking_service.doctor()`),
+not an uninjected shell. Its embedding check sends a real probe; its ordinary VLM
+check validates configuration and credentials, not model inference. A temporary
+content write with `processing_mode=vectors_only`, followed by exact read,
+vector search and deletion, verifies storage and embedding without spending the
+protected DeepSeek VLM balance. Use a unique opaque fixture: existing privacy
+sanitization may replace otherwise ordinary words in test prose.
+
+The installed 0.5.1.1, 0.5.2 and 0.5.3 runtimes default
 `enable_working_memory` to false. The existing plugin commits raw turns and
 extracts long-term memories without opting into working-memory summaries; this
 upgrade preserves that behavior and does not require restarting active tasks.
