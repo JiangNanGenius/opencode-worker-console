@@ -9,9 +9,13 @@ in `~/.local/state/delegate-opencode/openviking` on the internal disk.
   `scripts/openviking_service.py`.
 - **Model configuration:** Ark plan embeddings (`doubao-embedding-vision`,
   2048 dims, `https://ark.cn-beijing.volces.com/api/plan/v3`) and the
-  DeepSeek Flash VLM (`deepseek-flash`) for session memory extraction.
+  Ark Agent Plan VLM (`ark-code-latest`) for session memory extraction, summaries
+  and other VLM work. With `memory.openviking.vlm_fallback=deepseek_paid`, the
+  second credential uses official paid DeepSeek Flash through the local balance
+  gate. It is not the Ark-hosted DeepSeek alias.
 - **Config:** `~/.openviking/ov.conf` (owner-only) keeps only environment
-  references (`${OPENVIKING_ARK_API_KEY}`, `${OPENVIKING_DEEPSEEK_API_KEY}`,
+  references (`${OPENVIKING_ARK_API_KEY}`, `${OPENVIKING_VLM_API_KEY}`,
+  `${OPENVIKING_VLM_FALLBACK_API_KEY}`,
   `${OPENVIKING_ROOT_API_KEY}`); the bridge injects real values through the
   child environment at start.
 - **Authentication:** `server.auth_mode = api_key` on loopback only. The
@@ -58,6 +62,30 @@ then remove it. Never enable this permanently or use it to bypass a genuinely
 different embedding model; such a model requires reindexing. Existing
 OpenCode task execution does not require an OpenCode restart. This is an explicit
 cutover, not an automatic return to the subscription after renewal.
+
+## Memory model priority and fallback
+
+Set the primary VLM base to `https://ark.cn-beijing.volces.com/api/plan/v3`
+and model to `ark-code-latest`; its inference key is resolved from the existing
+`volcengine-agent-plan` credential. Embeddings retain their independent plan
+credential/reference and dimensions. The same ordered VLM configuration covers
+session extraction and semantic processing; query planning inherits it unless an
+operator has explicitly configured a separate planner/account override.
+
+Enable `memory.openviking.vlm_fallback=deepseek_paid` together with
+`deepseek_gate.enabled`. The official paid fallback is `deepseek-flash` at the
+fixed DeepSeek endpoint behind that authenticated loopback gate. OpenViking
+receives only the local gate credential, not the real paid-provider key. Thus
+its fallback respects the configured CNY floor (20 on this device) and rejects
+unknown/stale balance readings too. Disabling the gate is a configuration error,
+never authorization for a direct paid request.
+
+OpenViking 0.5.3 uses native ordered `vlm.credentials`: plan first, paid fallback
+second. Recoverable provider failures advance to the fallback; request/input
+errors remain errors. Native failback tries the plan again on the next request
+after 60 seconds or 10 fallback requests. Configuration stores environment
+references only. A model-routing change needs a brief memory-service reload;
+native worker execution can continue during the observer and memory reload.
 
 ## Runtime upgrades
 

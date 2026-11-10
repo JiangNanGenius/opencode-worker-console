@@ -38,6 +38,14 @@ class MemoryManagerTests(unittest.TestCase):
                 'max_storage_mb': 63, 'max_memories': 100000,
                 'target_percent': 90, 'check_interval_hours': 24}})
 
+    def test_openviking_defaults_and_paid_fallback_survive_settings_validation(self):
+        value = memory_manager.validate({'enabled': True, 'backend': 'openviking',
+                                         'openviking': {'vlm_fallback': 'deepseek_paid'}})
+        self.assertEqual(value['openviking']['vlm_model'], 'ark-code-latest')
+        self.assertEqual(value['openviking']['vlm_fallback'], 'deepseek_paid')
+        with self.assertRaises(ValueError):
+            memory_manager.validate({'enabled': True, 'openviking': {'vlm_fallback': 'unknown'}})
+
     def test_project_tag_is_stable_without_git(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

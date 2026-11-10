@@ -21,8 +21,8 @@ DEFAULTS = {
     'embedding_dimensions': 2048,
     'capture_profile': 'volcengine-agent-plan/doubao-seed-evolving',
     'reserve': {'minimum_percent': 0.25, 'maximum_percent': 3.0, 'headroom_multiplier': 1.5},
-    'openviking': {'url': 'http://127.0.0.1:1933', 'vlm_model': 'deepseek-flash',
-                   'vlm_api_base': 'https://api.deepseek.com'},
+    'openviking': {'url': 'http://127.0.0.1:1933', 'vlm_model': 'ark-code-latest',
+                   'vlm_api_base': 'https://ark.cn-beijing.volces.com/api/plan/v3'},
     # Capacity-based rolling retention keeps durable memory independent from
     # session age. Old unpinned records leave only after the configured ceiling
     # is crossed; a lower target avoids deleting one record on every capture.
@@ -81,6 +81,8 @@ def validate(value):
         raise ValueError('memory.storage_path must be an absolute path')
     result['storage_path'] = str(storage)
     openviking = result['openviking']
+    if openviking.get('vlm_fallback') not in (None, False, 'none', 'deepseek_paid'):
+        raise ValueError('memory.openviking.vlm_fallback must be deepseek_paid or none')
     for key in ('url', 'vlm_model', 'vlm_api_base'):
         if not isinstance(openviking.get(key), str) or not openviking[key].strip():
             raise ValueError('memory.openviking.' + key + ' must be non-empty text')

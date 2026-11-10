@@ -46,7 +46,7 @@ class RuntimeConfigTests(unittest.TestCase):
     def test_runtime_config_has_no_secret_values(self):
         cfg = openviking_service.runtime_config()
         self.assertEqual(cfg['embedding']['dense']['api_key'], '${OPENVIKING_ARK_API_KEY}')
-        self.assertEqual(cfg['vlm']['api_key'], '${OPENVIKING_DEEPSEEK_API_KEY}')
+        self.assertEqual(cfg['vlm']['api_key'], '${OPENVIKING_VLM_API_KEY}')
         self.assertEqual(cfg['embedding']['dense']['api_base'], 'https://ark.example/api/plan/v3')
         self.assertEqual(cfg['embedding']['dense']['dimension'], 2048)
         self.assertEqual(cfg['vlm']['model'], 'deepseek-flash')
@@ -118,6 +118,58 @@ class RuntimeConfigTests(unittest.TestCase):
         with patch.object(credentials, '_resolve_reference', side_effect=credentials.CredentialError('missing')):
             with self.assertRaises(ValueError):
                 openviking_service.embedding_api_key()
+
+    def test_default_primary_is_ark_plan_with_no_deepseek_key_in_environment(self):
+        memory_config(self.root, openviking={})
+        with patch.object(common, 'auth_key', side_effect=lambda p: 'fixture-' + p) as auth, \
+             patch.object(openviking_service, 'api_key', return_value='user-key'):
+            cfg = openviking_service.runtime_config()
+            env = openviking_service.service_env()
+        self.assertEqual(cfg['vlm']['model'], 'ark-code-latest')
+        self.assertEqual(cfg['vlm']['api_base'], 'https://ark.cn-beijing.volces.com/api/plan/v3')
+        self.assertEqual(env['OPENVIKING_VLM_API_KEY'], 'fixture-volcengine-agent-plan')
+        self.assertNotIn('OPENVIKING_DEEPSEEK_API_KEY', env)
+        self.assertNotIn('deepseek', [call.args[0] for call in auth.call_args_list])
+
+    def test_paid_fallback_is_second_and_uses_protected_loopback(self):
+        memory_config(self.root, openviking={'vlm_fallback': 'deepseek_paid'})
+        c = json.loads(self.config.read_text())
+        c['deepseek_gate'] = {'enabled': True, 'port': 51532}
+        c['deepseek_min_balance_cny'] = 20
+        self.config.write_text(json.dumps(c))
+        with patch.object(common, 'auth_key', side_effect=lambda p: 'fixture-' + p) as auth, \
+             patch.object(openviking_service, 'api_key', return_value='user-key'), \
+             patch('kimi_gate._password', return_value='local-password'):
+            cfg = openviking_service.runtime_config()
+            env = openviking_service.service_env()
+        credentials = cfg['vlm']['credentials']
+        self.assertEqual([c['id'] for c in credentials], ['ark-plan', 'deepseek-paid'])
+        self.assertEqual(credentials[0]['api_base'], 'https://ark.cn-beijing.volces.com/api/plan/v3')
+        self.assertEqual(credentials[1]['api_base'], 'http://127.0.0.1:51532/v1')
+        self.assertEqual(credentials[1]['model'], 'deepseek-flash')
+        self.assertEqual(credentials[1]['api_key'], '${OPENVIKING_VLM_FALLBACK_API_KEY}')
+        self.assertEqual(cfg['vlm']['failback_timeout_seconds'], 60)
+        self.assertEqual(cfg['vlm']['failback_request_count'], 10)
+        self.assertEqual(env['OPENVIKING_VLM_FALLBACK_API_KEY'], 'local-password')
+        self.assertNotIn('deepseek', [call.args[0] for call in auth.call_args_list])
+        self.assertNotIn('local-password', json.dumps(cfg))
+
+    def test_paid_fallback_requires_balance_gate(self):
+        memory_config(self.root, openviking={'vlm_fallback': 'deepseek_paid'})
+        with self.assertRaisesRegex(ValueError, 'balance gate'):
+            openviking_service.runtime_config()
+
+    def test_unrecognized_primary_cannot_receive_existing_provider_credentials(self):
+        memory_config(self.root, openviking={'vlm_api_base': 'https://unrelated.example/v1'})
+        with self.assertRaises(ValueError):
+            openviking_service.service_env()
+
+    def test_inherited_direct_deepseek_key_is_removed(self):
+        memory_config(self.root, openviking={})
+        with patch.dict('os.environ', {'OPENVIKING_DEEPSEEK_API_KEY': 'old-secret'}), \
+             patch.object(common, 'auth_key', return_value='ark-fixture'), \
+             patch.object(openviking_service, 'api_key', return_value='user-key'):
+            self.assertNotIn('OPENVIKING_DEEPSEEK_API_KEY', openviking_service.service_env())
 
     def test_bootstrap_stores_user_key_owner_only(self):
         calls = []

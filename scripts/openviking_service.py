@@ -69,14 +69,37 @@ def embedding_settings():
 
 
 def vlm_settings():
-    # Settled decision: the VLM is DeepSeek Flash from the existing direct profile.
-    cfg = common.config().get('memory') if isinstance(common.config().get('memory'), dict) else {}
-    ov = cfg.get('openviking') if isinstance(cfg.get('openviking'), dict) else {}
-    return {
-        'provider': 'openai',
-        'api_base': ov.get('vlm_api_base') or 'https://api.deepseek.com',
-        'model': ov.get('vlm_model') or 'deepseek-flash',
-    }
+    """Resolve the primary memory model independently of worker routing."""
+    from providers import ARK_BASE_URL, ARK_PROVIDER
+    cfg = common.config().get('memory') or {}
+    ov = cfg.get('openviking') or {}
+    base = (ov.get('vlm_api_base') or ARK_BASE_URL).rstrip('/')
+    if base == ARK_BASE_URL:
+        credential_provider = ARK_PROVIDER
+    elif base in ('https://api.deepseek.com', 'https://api.deepseek.com/v1'):
+        credential_provider = 'deepseek'  # explicit legacy configurations
+    else:
+        raise ValueError('Memory VLM must use an official configured provider endpoint')
+    return {'provider': 'openai', 'api_base': base,
+            'model': ov.get('vlm_model') or ('ark-code-latest' if credential_provider == ARK_PROVIDER else 'deepseek-flash'),
+            'credential_provider': credential_provider}
+
+
+def vlm_fallback_settings():
+    """Paid fallback only through the authenticated balance-protected relay."""
+    ov = (common.config().get('memory') or {}).get('openviking') or {}
+    fallback = ov.get('vlm_fallback')
+    if fallback in (None, False, 'none'):
+        return None
+    if fallback != 'deepseek_paid':
+        raise ValueError('memory.openviking.vlm_fallback must be deepseek_paid or none')
+    import deepseek_gate
+    gate = deepseek_gate.settings(common.config())
+    if gate is None:
+        raise ValueError('Paid memory fallback requires the DeepSeek balance gate')
+    return {'id': 'deepseek-paid', 'provider': 'openai', 'model': 'deepseek-flash',
+            'api_base': 'http://127.0.0.1:%d/v1' % gate['port'],
+            'api_key': '${OPENVIKING_VLM_FALLBACK_API_KEY}'}
 
 
 def embedding_api_key():
@@ -97,7 +120,12 @@ def service_env():
     """Child environment with model credentials resolved from owner-only local auth."""
     env = dict(os.environ)
     env['OPENVIKING_ARK_API_KEY'] = embedding_api_key()
-    env['OPENVIKING_DEEPSEEK_API_KEY'] = common.auth_key('deepseek')
+    env.pop('OPENVIKING_DEEPSEEK_API_KEY', None)
+    env.pop('OPENVIKING_VLM_FALLBACK_API_KEY', None)
+    env['OPENVIKING_VLM_API_KEY'] = common.auth_key(vlm_settings()['credential_provider'])
+    if vlm_fallback_settings() is not None:
+        from kimi_gate import _password
+        env['OPENVIKING_VLM_FALLBACK_API_KEY'] = _password()
     env['OPENVIKING_ROOT_API_KEY'] = root_api_key(create=True)
     user_key = api_key()
     if user_key:
@@ -190,6 +218,11 @@ def _redact(text):
         return text
     values = [api_key(), root_api_key()]
     try:
+        from kimi_gate import _password
+        values.append(_password())
+    except (ValueError, OSError):
+        pass
+    try:
         values.append(embedding_api_key())
     except (ValueError, RuntimeError):
         pass
@@ -227,6 +260,12 @@ def runtime_config():
     ov = memory.get('openviking') or {}
     embedding = embedding_settings()
     vlm = vlm_settings()
+    fallback = vlm_fallback_settings()
+    primary = {'id': 'ark-plan' if vlm['credential_provider'] == 'volcengine-agent-plan' else 'legacy-primary',
+               'provider': vlm['provider'], 'model': vlm['model'],
+               'api_base': vlm['api_base'], 'api_key': '${OPENVIKING_VLM_API_KEY}'}
+    if vlm['credential_provider'] == 'volcengine-agent-plan':
+        primary['extra_request_body'] = {'thinking': {'type': 'disabled'}}
     return {
         'embedding': {
             # A one-time verified migration must never disable later checks.
@@ -248,7 +287,11 @@ def runtime_config():
         'vlm': {
             'provider': vlm['provider'],
             'api_base': vlm['api_base'],
-            'api_key': '${OPENVIKING_DEEPSEEK_API_KEY}',
+            'api_key': '${OPENVIKING_VLM_API_KEY}',
+            'credentials': [primary, fallback] if fallback else [primary],
+            'backup': None,
+            'failback_timeout_seconds': 60,
+            'failback_request_count': 10,
             'model': vlm['model'],
             'temperature': 0,
             'max_retries': 3,
