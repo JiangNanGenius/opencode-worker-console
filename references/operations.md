@@ -5,10 +5,13 @@ The entrypoint is `~/.local/bin/delegate-opencode`. The skill also works via
 
 ## Submit and retrieve
 
-First apply the [direct-fix boundary](../SKILL.md): handle a known local correction and its focused
-check directly, including small review fixes after a worker has finished and released ownership.
-Repository exploration, complex investigation and substantial execution packages warrant a handoff.
-Choose a tier only after that decision; Normal is the default for delegated work.
+First apply the [delegation boundary](../SKILL.md). Use external workers primarily for large
+implementation packages, cross-module work and systematic codebase investigation. Local
+investigation, repeated small fix/test cycles, integration and acceptance touch-ups belong to
+the coordinator or its available native agents. Finish self-tests and repairs within an active
+worker's agreed package; after delivery, confirm write ownership is released before local edits.
+If a local issue grows into substantial systemic work, hand off the full remaining package.
+Choose a tier only after deciding to delegate; Normal is the default for delegated work.
 
 The following is a command catalog, not a startup sequence. Work worth handing off submits directly;
 quota/tier-guidance commands are operator diagnostics, and `notify` is for a verified milestone.

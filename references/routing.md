@@ -82,10 +82,14 @@ use two one-model stages. Keep Ultra's configured policy restricted to physical 
 capacity fallback from eligible Qwen3.8 Max profiles in the Deep route and admits it only after
 confirmed Ultra exhaustion.
 
-Decide whether to delegate before choosing a tier. Handle a known local correction and its
-focused check directly, including small review fixes after the worker has finished and no
-writer or scope/resource conflict remains. Repository exploration, unknown-root-cause
-investigation and substantial execution packages warrant early delegation.
+Decide whether to delegate before choosing a tier. External workers primarily handle large
+implementation packages, cross-module work and systematic codebase investigations. Keep local
+investigation, repeated small fix/test cycles, integration and acceptance touch-ups with the
+coordinator or its available native agents. Unknown local causes do not automatically require
+an external task. A worker finishes necessary tests and repair within its agreed package;
+after delivery, scattered corrections stay local once it has stopped writing and released
+ownership. If local work reveals a substantial systemic issue, delegate that complete package.
+Judge remaining scale, context continuity and handoff benefit without a fixed line-count cutoff.
 
 For delegated work, tier selection weighs unresolved ambiguity and the expected benefit of faster model work, not
 workload size or a weak-to-strong model ranking. Normal is the default for delegated executable

@@ -1,32 +1,37 @@
 ---
 name: delegate-opencode
-description: Delegate repository exploration, substantial implementation, complex investigation and independent execution packages to OpenCode when a handoff adds value. Handle targeted local fixes directly when location, cause, impact and focused verification are clear, including small corrections to completed worker results. For delegated work default to Normal and keep profile=auto; retain coordination, critical judgment and complex device interaction upstream.
+description: Delegate large implementation packages, cross-module changes and systematic codebase investigations to external OpenCode workers when sustained context and independent execution justify a handoff. Keep local investigation, repeated small fix/test cycles and integration or acceptance touch-ups with the coordinator or its available native agents. For delegated work default to Normal and profile=auto; retain coordination and final acceptance upstream.
 ---
 
 # Delegate OpenCode work
 
-First decide whether a handoff adds value; choose a worker tier only for work worth delegating.
-Make targeted local fixes directly when their location, cause, impact and focused verification
-are clear or can be confirmed with a narrow check. Examples include a few-line logic correction,
-a known parameter adjustment, and a local wording or configuration fix. Weigh the remaining
-investigation, implementation and verification against handing over context and reviewing the
-result; use no fixed line, file or time cutoff. A short diff with an unknown cause or wider
-impact still needs investigation.
+First decide whether the remaining work benefits from an external worker; choose a tier only
+for work worth delegating. External OpenCode workers primarily own large implementation
+packages, cross-module implementation/refactoring and systematic codebase investigations where
+sustained context and independent execution justify the handoff. For those packages, delegate
+early with enough context and authority to finish; the coordinator need not first read the
+whole repository.
 
-Delegate repository exploration, unknown-root-cause investigation, cross-module changes and
-substantial independent execution packages early, with enough context and authority to finish.
-An unfamiliar repository is a reason to delegate discovery, not to read it all before handing
-off. Do not wait for the user to request workers when that work warrants a handoff, and do not
-create a task merely because an action edits code or uses a shell.
+Keep focused local investigation, targeted changes, repeated small fix/test cycles, integration
+and acceptance touch-ups with the coordinator directly or its available native agents, subject
+to the host's tools, permissions and agent rules. Examples include tracing a local failure,
+adjusting a parameter, correcting a few lines, updating wording/configuration and repeatedly
+checking a focused acceptance issue. An unfamiliar function or an unknown local cause alone
+does not require an external handoff. Judge remaining scale, context continuity and handoff
+benefit without fixed line, file, time or iteration thresholds.
+
+After a large package is delivered, the coordinator or its native agents own scattered review
+fixes and focused rechecks. Do not create, reopen or continue an external worker merely for
+another small correction or test cycle. If local repair exposes a systemic cause or substantial
+cross-module work, assemble the evidence and remaining goal into a complete investigation or
+implementation package and delegate that package.
 
 The upstream harness owns planning, dependencies, critical decisions, integration and final
-acceptance. Workers own their package's investigation, implementation, relevant verification and
-local repair while it is active. Review their critical evidence without repeating all their
-repository reading or checks. When a worker has finished and review leaves a targeted local
-correction, fix it directly and run the relevant check after confirming there is no active
-writer or scope/resource conflict. Do not create or restart a worker just for that correction.
-While a worker still owns the work, steer it or wait for it to finish rather than racing its
-edits; substantial unresolved repair remains a delegated package.
+acceptance. A worker still owns the necessary self-tests, investigation and repair within its
+agreed package until delivery; it must not return an incomplete package just because a repair
+is small. Review critical evidence without repeating the worker's repository reading or checks.
+Before taking over edits, confirm the original worker has stopped writing and released the
+relevant ownership; while it owns active work, steer it or wait rather than racing its edits.
 
 ## Delegate at useful boundaries
 
@@ -69,10 +74,11 @@ not to repair a deliberately thin initial assignment.
 
 ## Allocate interface work by tools and judgment
 
-Workers can implement interfaces, run terminal/headless checks and use reliable available tools
-for lightweight UI interaction. Delegate DOM or structured-element operations and straightforward
-clicks, input and state checks when the goal is clear, the path is stable, the result is observable
-and failure is recoverable. Decide by uncertainty and feedback, not by a fixed number of clicks.
+Within a substantial delegated package, workers can implement interfaces, run terminal/headless
+checks and use reliable tools for lightweight UI interaction. Include DOM or structured-element
+operations and straightforward clicks, input and state checks when the path is stable, the result
+is observable and failure is recoverable. Keep standalone local UI fixes and repeated focused
+checks with the coordinator or its available native agents. Decide by uncertainty and feedback, not by a fixed number of clicks.
 Check the execution runtime's actual capabilities; never assume it has the harness's Computer Use,
 connector or authenticated session. Do not install a new UI tool solely to force delegation.
 
@@ -115,7 +121,7 @@ and fallback. Normal is the default for delegated work, not a requirement to han
 
 | Remaining task shape | Tier |
 | --- | --- |
-| Delegated executable work: clear/bounded implementation, investigation, tests, docs, deployment, finalization | `normal` (default) |
+| Substantial delegated executable packages: implementation, systematic investigation and their tests, docs, deployment or finalization | `normal` (default) |
 | Direction, constraints and acceptance are clear; remaining model-driven work is the current bottleneck, and faster output has an evidence-backed benefit for a named near-term milestone or explicit deadline | `fast` |
 | Complex investigation or implementation needing strong reasoning | `deep` |
 | Especially difficult architecture, stubborn unknown root causes, long-horizon reasoning, or two rounds without material progress after checkpoint review | `ultra` |
@@ -185,9 +191,9 @@ missing services and installs the pinned official OpenCode when needed; `service
 
 ```sh
 delegate-opencode submit --directory "$PWD" --tier normal --profile auto \
-  --group-title 'Main outcome' --title 'Investigate the reported failure' \
-  --acceptance 'Return the cause, evidence, affected paths and remaining uncertainty.' \
-  'Investigate the reported failure and recommend a complete fix without changing systems.'
+  --group-title 'Main outcome' --title 'Map cross-module execution' \
+  --acceptance 'Trace module boundaries, data flow and failure paths with source evidence.' \
+  'Investigate the repository-wide request lifecycle and recommend an implementation plan without changing systems.'
 ```
 
 For writes add `--mode write` and `--scope`/`--target`. Use `--group-title` for the main outcome

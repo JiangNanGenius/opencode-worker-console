@@ -1,6 +1,6 @@
 interface:
   display_name: "OpenCode Worker Pool"
-  short_description: "Delegate larger work; handle targeted fixes directly"
-  default_prompt: "Use $delegate-opencode to delegate repository exploration and substantial execution packages early, handle clear local fixes and small corrections to completed worker results directly, and choose a tier only after deciding a handoff is worthwhile, with Normal as the delegated default and profile=auto."
+  short_description: "Delegate large code work; keep small fix/test cycles local"
+  default_prompt: "Use $delegate-opencode for large implementation packages, cross-module work and systematic codebase investigations; keep local investigation, repeated small fix/test cycles and post-delivery touch-ups with the coordinator or its available native agents, preserving worker ownership until safe takeover; choose a tier only after deciding to delegate, with Normal as the default and profile=auto."
 policy:
   allow_implicit_invocation: true

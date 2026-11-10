@@ -180,13 +180,17 @@ corrections directly. File count and importance alone do not choose a tier.
 
 ### Delegate complete outcomes
 
-Handle targeted local fixes directly when location, cause, impact and focused verification are
-clear. This includes small review corrections after a worker has finished and there is no active
-writer or scope/resource conflict. Judge the remaining work and handoff cost rather than a fixed
-line count. Delegate repository exploration, complex investigation and substantial execution
-packages early; choose a tier only after deciding a handoff is worthwhile.
+Use external OpenCode workers primarily for large implementation packages, cross-module work
+and systematic codebase investigations. Keep local investigation, repeated small fix/test cycles,
+integration and acceptance touch-ups with the coordinator or its available native agents. Judge
+remaining scale, context continuity and handoff benefit without fixed line-count thresholds;
+unknown local causes alone do not require an external task. Choose a tier after that decision.
 
-Workers can own investigation, implementation, test repair, writing, SSH operations and routine deployment instead of receiving tiny code fragments. Each task carries an objective, acceptance criteria, workspace, and file or remote-resource scope. The default is four concurrent workers per owning upstream-harness conversation; separate conversations have independent capacity.
+Workers complete necessary self-tests and repairs within their agreed package. After delivery,
+scattered review fixes and focused rechecks stay local once the worker has stopped writing and
+released ownership. If local repair reveals substantial systemic work, delegate the full remaining
+package. Each task has an objective, acceptance criteria, workspace and local or remote scope;
+the default is four concurrent workers per upstream-harness conversation.
 
 Write tasks use the bound shared/main checkout by default, including large and long-running work.
 An isolated worktree is reserved for an explicit isolation request, unavoidable concurrent

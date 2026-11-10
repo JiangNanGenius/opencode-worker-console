@@ -1,11 +1,13 @@
 # Self-contained handoff contract
 
-Apply the [direct-fix boundary](../SKILL.md) before preparing a handoff. When a parser's exact
-empty-input failure, local correction and focused check are already known, normally fix and
-verify it directly. The same applies to a targeted correction found in a completed worker's
-result, once there is no active writer or scope/resource conflict; do not create or restart a
-worker for it. Unknown causes, repository exploration and substantial execution packages still
-warrant early delegation.
+Apply the [delegation boundary](../SKILL.md) before preparing a handoff. External workers primarily
+own large implementation packages, cross-module work and systematic codebase investigations.
+The coordinator or its available native agents own local investigation, repeated small fix/test
+cycles, integration and acceptance touch-ups. An unknown local cause or a few unfamiliar functions
+alone do not require a handoff. A worker completes necessary self-tests and repairs inside its
+agreed package; after delivery, scattered corrections stay local. Confirm it has stopped writing
+and released ownership before takeover. If a local issue grows into systemic investigation or a
+substantial implementation, hand off that complete package with the evidence already collected.
 
 For a self-contained package worth delegating, a short objective, necessary context and observable
 acceptance are sufficient; it does not require every heading below. Match the handoff detail to
@@ -15,7 +17,7 @@ Use the structured template for broad implementation, continuing work, a multi-s
 deployment, release, migration, CI investigation, or work whose essential context lives in the
 upstream chat. Share what is already known; leave unknown repository facts to the worker's
 investigation. Missing local implementation details do not justify completing discovery upstream
-before dispatch. A meaningful investigation is itself a delegable package.
+before dispatch. A systematic codebase investigation can itself be a complete delegable package.
 
 ## Cold-start rule
 
